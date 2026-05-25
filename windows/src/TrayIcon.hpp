@@ -16,6 +16,7 @@ public:
     static constexpr int kCmdQuit        = 1001;
     static constexpr int kCmdPairAndroid = 1002;
     static constexpr int kCmdPairAirPods = 1003;
+    static constexpr int kCmdAutoStart   = 1004;
 
     // Per-peer info shown in the menu.
     struct PeerStatus {
@@ -44,6 +45,7 @@ public:
 
     void runMessageLoop();
     void postQuit();
+    void toggleAutoStart();
 
 private:
     static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);

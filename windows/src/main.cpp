@@ -238,6 +238,9 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
                     airpods.setAddress(*a);
                 }
                 break;
+            case TrayIcon::kCmdAutoStart:
+                tray.toggleAutoStart();
+                break;
         }
     });
 

@@ -40,6 +40,7 @@ set(SRC
     src/SettingsStore.cpp
     src/TeamsCallWatcher.cpp
     src/PeerRegistry.cpp
+    src/librepods.rc
 )
 
 set(HDR
