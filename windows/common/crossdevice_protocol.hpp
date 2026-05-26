@@ -25,6 +25,11 @@ inline constexpr Packet4 kAirPodsDataHeader     { 0x00, 0x04, 0x00, 0x01 };
 // Android uses these to gate takeover on the user's "takeover during call" preference.
 inline constexpr Packet4 kWindowsAudioActive    { 0x00, 0x03, 0x00, 0x01 };
 inline constexpr Packet4 kWindowsAudioIdle      { 0x00, 0x03, 0x00, 0x00 };
+// Android → Windows: AirPods stem press detected (long-press to mute).
+// Payload: [press_type: 1 byte] [bud: 1 byte]
+//   press_type: 0x08 = long, 0x07 = triple, 0x06 = double, 0x05 = single
+//   bud: 0x01 = left, 0x02 = right
+inline constexpr Packet4 kStemPress             { 0x00, 0x02, 0x00, 0x05 };
 
 enum class Incoming {
     Unknown,
@@ -38,6 +43,7 @@ enum class Incoming {
     RelayHeader,
     WindowsAudioActive,
     WindowsAudioIdle,
+    StemPress,          // peer detected AirPods stem long-press
 };
 
 inline bool equals4(std::span<const std::uint8_t> data, const Packet4& p) {
@@ -58,6 +64,7 @@ inline Incoming classify(std::span<const std::uint8_t> data) {
     if (equals4(data, kRequestConnectionStat))    return Incoming::RequestConnectionStatus;
     if (equals4(data, kWindowsAudioActive))       return Incoming::WindowsAudioActive;
     if (equals4(data, kWindowsAudioIdle))         return Incoming::WindowsAudioIdle;
+    if (startsWith4(data, kStemPress))           return Incoming::StemPress;
     if (startsWith4(data, kAirPodsDataHeader))    return Incoming::RelayHeader;
     return Incoming::Unknown;
 }

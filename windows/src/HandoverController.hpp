@@ -9,6 +9,7 @@
 
 #include "AirPodsConnector.hpp"
 #include "MediaPlaybackWatcher.hpp"
+#include "MicMuter.hpp"
 #include "PeerRegistry.hpp"
 
 namespace librepods {
@@ -58,6 +59,7 @@ private:
     PeerRegistry& m_peers;
     AirPodsConnector& m_airpods;
     MediaPlaybackWatcher& m_media;
+    std::unique_ptr<MicMuter> m_micMuter{std::make_unique<MicMuter>()};
 
     std::atomic<OwnershipState> m_state{OwnershipState::Unknown};
 
