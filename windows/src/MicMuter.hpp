@@ -1,6 +1,6 @@
-#pragma once
+﻿#pragma once
 
-namespace librepods {
+namespace Propods {
 
 // Toggles the mute state of the default eCommunications capture device
 // (i.e. the microphone Windows uses for calls / VoIP). Lightweight:
@@ -11,4 +11,4 @@ public:
     bool isMuted() const;
 };
 
-} // namespace librepods
+} // namespace Propods

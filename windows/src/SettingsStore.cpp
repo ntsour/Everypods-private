@@ -1,4 +1,4 @@
-#include "SettingsStore.hpp"
+﻿#include "SettingsStore.hpp"
 
 #include "Logger.hpp"
 
@@ -10,7 +10,7 @@
 #include <sstream>
 #include <string>
 
-namespace librepods {
+namespace Propods {
 
 namespace {
 
@@ -19,7 +19,7 @@ std::filesystem::path resolveConfigPath() {
     if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &roaming))) {
         std::filesystem::path p = roaming;
         CoTaskMemFree(roaming);
-        p /= L"LibrePods";
+        p /= L"Propods";
         std::error_code ec;
         std::filesystem::create_directories(p, ec);
         return p / L"config.txt";

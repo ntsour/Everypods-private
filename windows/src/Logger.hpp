@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <windows.h>
 #include <chrono>
@@ -10,7 +10,7 @@
 #include <string>
 #include <string_view>
 
-namespace librepods::log {
+namespace Propods::log {
 
 inline std::mutex& mutex() {
     static std::mutex m;
@@ -20,14 +20,14 @@ inline std::mutex& mutex() {
 inline std::filesystem::path logDir() {
     wchar_t buf[MAX_PATH] = {};
     DWORD len = GetEnvironmentVariableW(L"APPDATA", buf, MAX_PATH);
-    auto dir = (len > 0 ? std::filesystem::path{buf} : std::filesystem::temp_directory_path()) / L"LibrePods";
+    auto dir = (len > 0 ? std::filesystem::path{buf} : std::filesystem::temp_directory_path()) / L"Propods";
     std::filesystem::create_directories(dir);
     return dir;
 }
 
 inline std::ofstream& logFile() {
     static std::ofstream f = []() {
-        return std::ofstream{logDir() / "librepods.log", std::ios::app};
+        return std::ofstream{logDir() / "Propods.log", std::ios::app};
     }();
     return f;
 }

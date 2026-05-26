@@ -1,4 +1,4 @@
-#include "TeamsCallWatcher.hpp"
+﻿#include "TeamsCallWatcher.hpp"
 
 #include "Logger.hpp"
 
@@ -8,7 +8,7 @@
 #include <string>
 #include <vector>
 
-namespace librepods {
+namespace Propods {
 
 using Microsoft::WRL::ComPtr;
 

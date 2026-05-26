@@ -1,4 +1,4 @@
-#include <windows.h>  // for keybd_event, VK_MEDIA_PLAY_PAUSE
+﻿#include <windows.h>  // for keybd_event, VK_MEDIA_PLAY_PAUSE
 #include "MediaPlaybackWatcher.hpp"
 
 #include "Logger.hpp"
@@ -7,7 +7,7 @@ using namespace winrt;
 using namespace winrt::Windows::Foundation;
 using namespace winrt::Windows::Media::Control;
 
-namespace librepods {
+namespace Propods {
 
 namespace {
 constexpr auto Playing = GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing;

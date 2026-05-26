@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <atomic>
 #include <chrono>
@@ -12,7 +12,7 @@
 #include "MicMuter.hpp"
 #include "PeerRegistry.hpp"
 
-namespace librepods {
+namespace Propods {
 
 enum class OwnershipState {
     Unknown,

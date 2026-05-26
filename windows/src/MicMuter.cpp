@@ -1,4 +1,4 @@
-#include "MicMuter.hpp"
+﻿#include "MicMuter.hpp"
 #include "Logger.hpp"
 
 #include <windows.h>
@@ -8,7 +8,7 @@
 
 using Microsoft::WRL::ComPtr;
 
-namespace librepods {
+namespace Propods {
 
 namespace {
 
@@ -54,4 +54,4 @@ bool MicMuter::isMuted() const {
     return muted != FALSE;
 }
 
-} // namespace librepods
+} // namespace Propods

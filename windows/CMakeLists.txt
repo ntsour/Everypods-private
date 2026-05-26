@@ -1,16 +1,16 @@
-cmake_minimum_required(VERSION 3.20)
-project(LibrePods LANGUAGES CXX)
+﻿cmake_minimum_required(VERSION 3.20)
+project(Propods LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 if(NOT WIN32)
-    message(FATAL_ERROR "LibrePods Windows target requires Windows.")
+    message(FATAL_ERROR "Propods Windows target requires Windows.")
 endif()
 
 if(NOT MSVC)
-    message(FATAL_ERROR "LibrePods Windows target requires MSVC (cppwinrt).")
+    message(FATAL_ERROR "Propods Windows target requires MSVC (cppwinrt).")
 endif()
 
 add_compile_definitions(
@@ -41,7 +41,7 @@ set(SRC
     src/SettingsStore.cpp
     src/TeamsCallWatcher.cpp
     src/PeerRegistry.cpp
-    src/librepods.rc
+    src/Propods.rc
 )
 
 set(HDR
@@ -58,14 +58,14 @@ set(HDR
     src/Logger.hpp
 )
 
-add_executable(LibrePods WIN32 ${SRC} ${HDR})
+add_executable(Propods WIN32 ${SRC} ${HDR})
 
-target_include_directories(LibrePods PRIVATE
+target_include_directories(Propods PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/common
 )
 
-target_link_libraries(LibrePods PRIVATE
+target_link_libraries(Propods PRIVATE
     windowsapp.lib
     Shell32.lib
     User32.lib

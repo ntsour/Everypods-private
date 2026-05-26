@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "BluetoothRfcommClient.hpp"
 
@@ -10,7 +10,7 @@
 #include <string>
 #include <vector>
 
-namespace librepods {
+namespace Propods {
 
 // Manages a set of BluetoothRfcommClient connections — one per paired Android peer.
 // Presents the same logical interface as a single BluetoothRfcommClient:
@@ -73,4 +73,4 @@ private:
     bool m_started{false};
 };
 
-} // namespace librepods
+} // namespace Propods

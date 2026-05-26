@@ -1,4 +1,4 @@
-#include "HandoverController.hpp"
+﻿#include "HandoverController.hpp"
 
 #include "Logger.hpp"
 #include "crossdevice_protocol.hpp"
@@ -7,7 +7,7 @@
 #include <thread>
 #include <windows.h>
 
-namespace librepods {
+namespace Propods {
 
 HandoverController::HandoverController(
     PeerRegistry& peers,
@@ -54,7 +54,7 @@ void HandoverController::startAudioWatcher() {
                     bool changed = setState(airpodsHere ? OwnershipState::LocalPc
                                                         : OwnershipState::RemoteAndroid);
                     if (changed) {
-                        log::handover("OUT     {} → peer (periodic sync on Unknown state)",
+                        log::handover("OUT     {} -> peer (periodic sync on Unknown state)",
                             airpodsHere ? "kAirPodsConnected" : "kAirPodsDisconnected");
                         m_peers.sendPacket(airpodsHere
                             ? crossdevice::kAirPodsConnected
@@ -72,7 +72,7 @@ void HandoverController::startAudioWatcher() {
                     // Reset audio state: the classical BT link is up but A2DP hasn't negotiated
                     // yet, so there are no audio sessions. Carrying stale lastActive=true into
                     // this window makes the watcher misread the normal A2DP startup gap as
-                    // "audio was active, now gone → phone stole them" and fire a false RECLAIM.
+                    // "audio was active, now gone -> phone stole them" and fire a false RECLAIM.
                     // Starting fresh means the watcher waits to observe what actually happens.
                     lastActive = false;
                     idleStreak = 0;
@@ -81,7 +81,7 @@ void HandoverController::startAudioWatcher() {
                     if (setState(OwnershipState::LocalPc)) {
                         log::handover("BT      AirPods connected (BT rising edge) — claiming ownership");
                         if (m_peers.isAnyConnected()) {
-                            log::handover("OUT     kAirPodsConnected → all peers (BT edge)");
+                            log::handover("OUT     kAirPodsConnected -> all peers (BT edge)");
                             m_peers.sendPacket(crossdevice::kAirPodsConnected);
                         }
                     }
@@ -89,8 +89,8 @@ void HandoverController::startAudioWatcher() {
                     // Falling edge: AirPods left Windows. Only act when we thought we owned them.
                     if (m_state.load() == OwnershipState::LocalPc) {
                         // Unified pause-and-release. We previously had two branches:
-                        //   - lastActive=true  → RECLAIM (try to grab AirPods back)
-                        //   - lastActive=false → pause local media, release ownership
+                        //   - lastActive=true  -> RECLAIM (try to grab AirPods back)
+                        //   - lastActive=false -> pause local media, release ownership
                         //
                         // Experience showed the RECLAIM was *always* wrong in practice:
                         //   - When the user intentionally moved AirPods to the phone, RECLAIM
@@ -106,7 +106,7 @@ void HandoverController::startAudioWatcher() {
                         // Brief-bounce protection (AirPods drop off Windows for a second and
                         // come back) is now handled at the audio-endpoint layer by the
                         // IMMNotificationClient's persistent-arm mode: while we own the
-                        // AirPods, any UNPLUGGED→ACTIVE re-applies routing automatically.
+                        // AirPods, any UNPLUGGED->ACTIVE re-applies routing automatically.
                         //
                         // So: always pause local media and release ownership on BT falling
                         // edge while we held LocalPc.
@@ -130,7 +130,7 @@ void HandoverController::startAudioWatcher() {
                         if (setState(OwnershipState::RemoteAndroid)) {
                             log::handover("{}", reason);
                             if (m_peers.isAnyConnected()) {
-                                log::handover("OUT     kAirPodsDisconnected → all peers (BT edge)");
+                                log::handover("OUT     kAirPodsDisconnected -> all peers (BT edge)");
                                 m_peers.sendPacket(crossdevice::kAirPodsDisconnected);
                             }
                         }
@@ -204,7 +204,7 @@ bool HandoverController::setState(OwnershipState s) {
         const char* label = (s == OwnershipState::LocalPc)     ? "LocalPc"
                           : (s == OwnershipState::RemoteAndroid) ? "RemoteAndroid"
                           :                                        "Unknown";
-        log::handover("STATE → {}", label);
+        log::handover("STATE -> {}", label);
         if (m_onStateChanged) m_onStateChanged(s);
 
         // Persistent-arm the endpoint notifier whenever we hold ownership. While
@@ -270,7 +270,7 @@ void HandoverController::onMediaPlayingChanged(bool playing) {
     const auto kickoffTime = std::chrono::steady_clock::now();
     const bool peerConnected = m_peers.isAnyConnected();
     if (peerConnected) {
-        log::handover("OUT     kRequestDisconnect → all peers");
+        log::handover("OUT     kRequestDisconnect -> all peers");
         m_peers.sendPacket(crossdevice::kRequestDisconnect);
     } else {
         log::handover("WARN    No peers connected — attempting BT connect without coordination");
@@ -340,7 +340,7 @@ void HandoverController::onMediaPlayingChanged(bool playing) {
             setState(OwnershipState::LocalPc);
             m_lastLocalTakeover.store(tpToNs(std::chrono::steady_clock::now()));
             if (m_peers.isAnyConnected()) {
-                log::handover("OUT     kAirPodsConnected → all peers");
+                log::handover("OUT     kAirPodsConnected -> all peers");
                 m_peers.sendPacket(crossdevice::kAirPodsConnected);
             }
             // Make AirPods the default audio render + capture device (if auto-route is on).
@@ -433,7 +433,7 @@ void HandoverController::onIncomingPacket(std::span<const std::uint8_t> data) {
             m_airpods.disconnect();
             setState(OwnershipState::RemoteAndroid);
             if (m_peers.isAnyConnected()) {
-                log::handover("OUT     kAirPodsDisconnected → all peers");
+                log::handover("OUT     kAirPodsDisconnected -> all peers");
                 m_peers.sendPacket(kAirPodsDisconnected);
             }
             break;
@@ -454,7 +454,7 @@ void HandoverController::onIncomingPacket(std::span<const std::uint8_t> data) {
             m_airpods.disconnect();
             setState(OwnershipState::RemoteAndroid);
             if (m_peers.isAnyConnected()) {
-                log::handover("OUT     kAirPodsDisconnected → all peers");
+                log::handover("OUT     kAirPodsDisconnected -> all peers");
                 m_peers.sendPacket(kAirPodsDisconnected);
             }
             break;
@@ -467,7 +467,7 @@ void HandoverController::onIncomingPacket(std::span<const std::uint8_t> data) {
             // transition so we don't pause on a peer's idempotent re-assertion when we
             // were already Remote.
             const bool wasLocalPc = (m_state.load() == OwnershipState::LocalPc);
-            log::handover("IN      kAirPodsConnected from peer → STATE RemoteAndroid");
+            log::handover("IN      kAirPodsConnected from peer -> STATE RemoteAndroid");
 
             // Record both timestamps NOW, before any potentially-blocking work:
             //   - m_lastPeerOwnershipClaim: tells the BT falling-edge logic the peer
@@ -521,7 +521,7 @@ void HandoverController::onIncomingPacket(std::span<const std::uint8_t> data) {
 
         case Incoming::WindowsAudioActive:
         case Incoming::WindowsAudioIdle:
-            // These packets flow Windows → Android only; ignore if received from Android.
+            // These packets flow Windows -> Android only; ignore if received from Android.
             log::debug("Ignoring audio-state packet from Android (not expected)");
             break;
 
@@ -555,7 +555,7 @@ void HandoverController::onPeerConnectionChanged(bool connected) {
         const bool wasLocalPc  = (m_state.load() == OwnershipState::LocalPc);
 
         setState(airpodsHere ? OwnershipState::LocalPc : OwnershipState::RemoteAndroid);
-        log::handover("OUT     {} → peer (sync on connect)",
+        log::handover("OUT     {} -> peer (sync on connect)",
             airpodsHere ? "kAirPodsConnected" : "kAirPodsDisconnected");
         m_peers.sendPacket(airpodsHere
             ? crossdevice::kAirPodsConnected

@@ -1,20 +1,20 @@
-#include "TrayIcon.hpp"
+﻿#include "TrayIcon.hpp"
 
 #include "Logger.hpp"
 
 #include <strsafe.h>
 #include <winreg.h>
 
-// Icon resource ID (defined in librepods.rc)
+// Icon resource ID (defined in Propods.rc)
 #define IDI_APP 1
 
-namespace librepods {
+namespace Propods {
 
 namespace {
 TrayIcon* g_instance = nullptr;
-constexpr wchar_t kClassName[]   = L"LibrePodsTrayWindow";
+constexpr wchar_t kClassName[]   = L"PropodsTrayWindow";
 constexpr wchar_t kRunKeyPath[]  = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
-constexpr wchar_t kRunValueName[] = L"LibrePods";
+constexpr wchar_t kRunValueName[] = L"Propods";
 constexpr UINT kIconId = 1;
 
 bool isAutoStartEnabled() {
@@ -66,7 +66,7 @@ bool TrayIcon::create(HINSTANCE hInstance) {
     RegisterClassExW(&wc);
 
     m_hwnd = CreateWindowExW(
-        0, kClassName, L"LibrePods",
+        0, kClassName, L"Propods",
         WS_OVERLAPPED,
         0, 0, 0, 0,
         HWND_MESSAGE, nullptr, hInstance, nullptr);

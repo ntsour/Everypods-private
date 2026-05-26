@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <atomic>
 #include <functional>
@@ -10,7 +10,7 @@
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Media.Control.h>
 
-namespace librepods {
+namespace Propods {
 
 class MediaPlaybackWatcher {
 public:

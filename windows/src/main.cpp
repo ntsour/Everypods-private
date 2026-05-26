@@ -1,4 +1,4 @@
-#include <windows.h>
+﻿#include <windows.h>
 
 #include <winrt/base.h>
 #include <winrt/Windows.Devices.Bluetooth.h>
@@ -28,7 +28,7 @@ using namespace winrt::Windows::Devices::Bluetooth;
 using namespace winrt::Windows::Devices::Bluetooth::Rfcomm;
 using namespace winrt::Windows::Devices::Enumeration;
 
-namespace librepods {
+namespace Propods {
 
 namespace {
 
@@ -95,7 +95,7 @@ std::vector<std::uint64_t> discoverAndroidPeers() {
         if (found.empty()) {
             log::warn("No paired device advertises CrossDevice UUID. "
                       "Make sure: (1) the phone is paired with this PC, "
-                      "(2) Handover is ON in the LibrePods Android app.");
+                      "(2) Handover is ON in the Propods Android app.");
         }
     } catch (const hresult_error& e) {
         log::error("Peer discovery failed: 0x{:08X} {}",
@@ -134,7 +134,15 @@ std::optional<std::uint64_t> discoverAirPods() {
 }
 
 int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
-    using namespace librepods;
+    using namespace Propods;
+
+    // Enforce single instance: if another Propods process is already running,
+    // exit silently. The mutex is released automatically when this process exits.
+    HANDLE hMutex = CreateMutexW(nullptr, TRUE, L"Global\\PropodsSingleInstance");
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        CloseHandle(hMutex);
+        return 0;
+    }
 
     winrt::init_apartment(winrt::apartment_type::multi_threaded);
 

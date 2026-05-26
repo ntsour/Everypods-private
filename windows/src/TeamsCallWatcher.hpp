@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <atomic>
 #include <chrono>
@@ -13,7 +13,7 @@
 #include <audiopolicy.h>
 #include <wrl/client.h>
 
-namespace librepods {
+namespace Propods {
 
 // Viability spike: detect Teams calls/meetings via WASAPI session state changes.
 //

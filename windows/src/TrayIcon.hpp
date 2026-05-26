@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <functional>
 #include <string>
@@ -7,7 +7,7 @@
 #include <windows.h>
 #include <shellapi.h>
 
-namespace librepods {
+namespace Propods {
 
 class TrayIcon {
 public:
@@ -57,7 +57,7 @@ private:
 
     HWND m_hwnd{};
     NOTIFYICONDATAW m_nid{};
-    std::wstring m_statusText{L"LibrePods"};
+    std::wstring m_statusText{L"Propods"};
     MenuHandler     m_menuHandler;
     StatusProvider  m_statusProvider;
     static constexpr UINT WM_TRAY = WM_APP + 1;

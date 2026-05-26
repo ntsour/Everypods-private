@@ -1,4 +1,4 @@
-// winsock2.h MUST be included before any other Windows headers.
+﻿// winsock2.h MUST be included before any other Windows headers.
 #include <winsock2.h>
 #include <ws2bth.h>
 
@@ -10,7 +10,7 @@
 #include <cstring>
 #include <thread>
 
-namespace librepods {
+namespace Propods {
 
 namespace {
 
@@ -198,4 +198,4 @@ void AACPClient::readLoop() {
     if (old != kInvalidSocket) closesocket(static_cast<SOCKET>(old));
 }
 
-} // namespace librepods
+} // namespace Propods

@@ -1,11 +1,11 @@
-#pragma once
+﻿#pragma once
 
 #include <atomic>
 #include <cstdint>
 #include <functional>
 #include <thread>
 
-namespace librepods {
+namespace Propods {
 
 enum class StemPressType : uint8_t {
     Single = 0x05,
@@ -61,4 +61,4 @@ private:
     StemPressCallback      m_onStemPress;
 };
 
-} // namespace librepods
+} // namespace Propods

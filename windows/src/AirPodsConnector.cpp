@@ -1,4 +1,4 @@
-#include "AirPodsConnector.hpp"
+﻿#include "AirPodsConnector.hpp"
 
 #include "Logger.hpp"
 
@@ -55,7 +55,7 @@ IPolicyConfigVista : public IUnknown {
 
 }
 
-namespace librepods {
+namespace Propods {
 
 namespace {
 

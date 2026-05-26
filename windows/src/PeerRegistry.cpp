@@ -1,9 +1,9 @@
-#include "PeerRegistry.hpp"
+﻿#include "PeerRegistry.hpp"
 
 #include "Logger.hpp"
 #include "SettingsStore.hpp"
 
-namespace librepods {
+namespace Propods {
 
 void PeerRegistry::setOnPacket(PacketCallback cb) {
     std::scoped_lock lk{m_mutex};
@@ -149,4 +149,4 @@ std::vector<PeerRegistry::PeerInfo> PeerRegistry::peerInfos() const {
     return result;
 }
 
-} // namespace librepods
+} // namespace Propods
