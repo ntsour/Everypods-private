@@ -83,6 +83,9 @@ Settings SettingsStore::load() const {
             s.airpodsAddress = parseBluetoothAddress(val);
             log::debug("  airpods = {} -> {}",
                 val, s.airpodsAddress ? formatBluetoothAddress(*s.airpodsAddress) : "(parse failed)");
+        } else if (key == "autoroute") {
+            s.autoRoute = (val != "0");
+            log::debug("  autoroute = {}", s.autoRoute);
         }
     }
     return s;
@@ -97,6 +100,7 @@ void SettingsStore::save(const Settings& s) const {
     for (auto addr : s.androidAddresses)
         f << "android=" << formatBluetoothAddress(addr) << '\n';
     if (s.airpodsAddress) f << "airpods=" << formatBluetoothAddress(*s.airpodsAddress) << '\n';
+    f << "autoroute=" << (s.autoRoute ? "1" : "0") << '\n';
 }
 
 }

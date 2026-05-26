@@ -13,10 +13,12 @@ class TrayIcon {
 public:
     using MenuHandler = std::function<void(int commandId)>;
 
-    static constexpr int kCmdQuit        = 1001;
-    static constexpr int kCmdPairAndroid = 1002;
-    static constexpr int kCmdPairAirPods = 1003;
-    static constexpr int kCmdAutoStart   = 1004;
+    static constexpr int kCmdQuit            = 1001;
+    static constexpr int kCmdPairAndroid     = 1002;
+    static constexpr int kCmdPairAirPods     = 1003;
+    static constexpr int kCmdAutoStart       = 1004;
+    static constexpr int kCmdConnectAirPods  = 1005;
+    static constexpr int kCmdToggleAutoRoute = 1006;
 
     // Per-peer info shown in the menu.
     struct PeerStatus {
@@ -27,6 +29,7 @@ public:
     // Snapshot of app status, fetched just before the menu opens.
     struct StatusInfo {
         bool                    airpodsConnected{false};
+        bool                    autoRouteEnabled{true};
         std::vector<PeerStatus> peers;
     };
 

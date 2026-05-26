@@ -162,6 +162,8 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     TeamsCallWatcher teamsWatcher;
     TrayIcon tray;
 
+    controller.setAutoRoute(settings.autoRoute);
+
     if (!tray.create(hInstance)) return 1;
     tray.setStatus(stateLabel(controller.state()));
 
@@ -173,6 +175,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     tray.setStatusProvider([&]() -> TrayIcon::StatusInfo {
         TrayIcon::StatusInfo info;
         info.airpodsConnected = airpods.isClassicallyConnected();
+        info.autoRouteEnabled = controller.autoRoute();
         for (auto& p : peers.peerInfos())
             info.peers.push_back({p.name, p.connected});
         return info;
@@ -228,6 +231,26 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
                     airpods.setAddress(*a);
                 }
                 break;
+            case TrayIcon::kCmdConnectAirPods:
+                // Blocking operation — run on a detached thread so the UI stays responsive.
+                std::thread([&airpods]() {
+                    log::info("Manual connect: initiating BT connection to AirPods...");
+                    if (airpods.connect()) {
+                        airpods.setAsDefaultAudioDevice();
+                        log::info("Manual connect: done — AirPods set as default device");
+                    } else {
+                        log::warn("Manual connect: BT connect failed");
+                    }
+                }).detach();
+                break;
+            case TrayIcon::kCmdToggleAutoRoute: {
+                bool nowEnabled = !controller.autoRoute();
+                controller.setAutoRoute(nowEnabled);
+                settings.autoRoute = nowEnabled;
+                store.save(settings);
+                log::info("Auto-route audio: {}", nowEnabled ? "ON" : "OFF");
+                break;
+            }
             case TrayIcon::kCmdAutoStart:
                 tray.toggleAutoStart();
                 break;

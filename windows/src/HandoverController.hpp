@@ -31,6 +31,12 @@ public:
 
     void setOnStateChanged(StateChangedCallback cb) { m_onStateChanged = std::move(cb); }
 
+    // When disabled, the controller will NOT automatically set AirPods as the
+    // default audio device on takeover. The user can still trigger it manually
+    // via the tray menu "Connect AirPods now" item.
+    void setAutoRoute(bool enabled) { m_autoRoute.store(enabled); }
+    bool autoRoute() const          { return m_autoRoute.load(); }
+
     void onMediaPlayingChanged(bool playing);
     void onIncomingPacket(std::span<const std::uint8_t> data);
     void onPeerConnectionChanged(bool connected);
@@ -99,6 +105,7 @@ private:
     std::atomic<bool> m_watcherRunning{false};
     std::thread m_watcherThread;
 
+    std::atomic<bool>    m_autoRoute{true};
     StateChangedCallback m_onStateChanged;
 };
 

@@ -343,8 +343,8 @@ void HandoverController::onMediaPlayingChanged(bool playing) {
                 log::handover("OUT     kAirPodsConnected → all peers");
                 m_peers.sendPacket(crossdevice::kAirPodsConnected);
             }
-            // Make AirPods the default audio render + capture device.
-            m_airpods.setAsDefaultAudioDevice();
+            // Make AirPods the default audio render + capture device (if auto-route is on).
+            if (m_autoRoute.load()) m_airpods.setAsDefaultAudioDevice();
 
             // Resume whatever we paused above, now that AirPods are the active route.
             // Small delay lets the audio stack settle on the new endpoint first.
@@ -359,7 +359,7 @@ void HandoverController::onMediaPlayingChanged(bool playing) {
             // 3 s to win that race. Also re-writes Teams' cmd_settings.json so any
             // call that the user answers in the interim picks up AirPods.
             std::this_thread::sleep_for(std::chrono::milliseconds(3000));
-            if (m_airpods.isClassicallyConnected()) {
+            if (m_autoRoute.load() && m_airpods.isClassicallyConnected()) {
                 log::handover("ACTION  Re-asserting AirPods as default audio (3s retry)");
                 m_airpods.setAsDefaultAudioDevice();
             }

@@ -165,7 +165,14 @@ void TrayIcon::showContextMenu(HWND hwnd) {
         static_cast<UINT_PTR>(kCmdPairAndroid), L"Add Android peer...");
     InsertMenuW(menu, static_cast<UINT>(-1), MF_BYPOSITION | MF_STRING,
         static_cast<UINT_PTR>(kCmdPairAirPods), L"Select AirPods...");
+    InsertMenuW(menu, static_cast<UINT>(-1), MF_BYPOSITION | MF_STRING,
+        static_cast<UINT_PTR>(kCmdConnectAirPods), L"Connect AirPods now");
     InsertMenuW(menu, static_cast<UINT>(-1), MF_BYPOSITION | MF_SEPARATOR, 0u, nullptr);
+
+    UINT autoRouteFlags = MF_BYPOSITION | MF_STRING;
+    if (status.autoRouteEnabled) autoRouteFlags |= MF_CHECKED;
+    InsertMenuW(menu, static_cast<UINT>(-1), autoRouteFlags,
+        static_cast<UINT_PTR>(kCmdToggleAutoRoute), L"Auto-set AirPods as audio device");
 
     UINT autoStartFlags = MF_BYPOSITION | MF_STRING;
     if (isAutoStartEnabled()) autoStartFlags |= MF_CHECKED;
