@@ -8,10 +8,12 @@
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Storage.Streams.h>
 
+#include "AACPClient.hpp"
 #include "AirPodsConnector.hpp"
 #include "HandoverController.hpp"
 #include "Logger.hpp"
 #include "MediaPlaybackWatcher.hpp"
+#include "MicMuter.hpp"
 #include "PeerRegistry.hpp"
 #include "SettingsStore.hpp"
 #include "TeamsCallWatcher.hpp"
@@ -136,16 +138,6 @@ std::optional<std::uint64_t> discoverAirPods() {
 int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     using namespace librepods;
 
-#ifndef NDEBUG
-    // Attach a console so stderr/stdout are visible when debugging.
-    AllocConsole();
-    FILE* dummy;
-    freopen_s(&dummy, "CONOUT$", "w", stderr);
-    freopen_s(&dummy, "CONOUT$", "w", stdout);
-    SetConsoleTitleW(L"LibrePods Debug");
-    log::info("=== LibrePods debug build ===");
-#endif
-
     winrt::init_apartment(winrt::apartment_type::multi_threaded);
 
     SettingsStore store;
@@ -171,13 +163,34 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     HandoverController controller{peers, airpods, media};
     TeamsCallWatcher teamsWatcher;
     TrayIcon tray;
+    AACPClient aacp;
+    MicMuter muter;
 
     if (!tray.create(hInstance)) return 1;
     tray.setStatus(stateLabel(controller.state()));
 
-    controller.setOnStateChanged([&tray](OwnershipState s) {
+    controller.setOnStateChanged([&tray, &aacp, &settings](OwnershipState s) {
         tray.setStatus(stateLabel(s));
+        // Start the AACP client when we own the AirPods (BT link is up).
+        // Stop it when ownership moves to Android (BT link drops).
+        if (s == OwnershipState::LocalPc && settings.airpodsAddress) {
+            aacp.start(*settings.airpodsAddress);
+        } else if (s == OwnershipState::RemoteAndroid) {
+            aacp.stop();
+        }
     });
+
+    // Stem long-press → toggle mic mute on either bud.
+    aacp.setOnStemPress([&muter](StemPressType type, AirPodsBud /*bud*/) {
+        if (type == StemPressType::Long) {
+            muter.toggle();
+        }
+    });
+
+    // Attempt AACP connection at startup if AirPods are already paired.
+    if (settings.airpodsAddress) {
+        aacp.start(*settings.airpodsAddress);
+    }
 
     // Provide live status to the tray menu (queried each time the menu opens).
     tray.setStatusProvider([&]() -> TrayIcon::StatusInfo {
@@ -261,5 +274,6 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     teamsWatcher.stop();
     media.stop();
     peers.stop();
+    aacp.stop();
     return 0;
 }

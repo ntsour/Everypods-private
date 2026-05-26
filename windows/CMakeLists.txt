@@ -32,10 +32,12 @@ add_compile_options(
 
 set(SRC
     src/main.cpp
+    src/AACPClient.cpp
     src/BluetoothRfcommClient.cpp
     src/MediaPlaybackWatcher.cpp
     src/AirPodsConnector.cpp
     src/HandoverController.cpp
+    src/MicMuter.cpp
     src/TrayIcon.cpp
     src/SettingsStore.cpp
     src/TeamsCallWatcher.cpp
@@ -45,10 +47,12 @@ set(SRC
 
 set(HDR
     common/crossdevice_protocol.hpp
+    src/AACPClient.hpp
     src/BluetoothRfcommClient.hpp
     src/MediaPlaybackWatcher.hpp
     src/AirPodsConnector.hpp
     src/HandoverController.hpp
+    src/MicMuter.hpp
     src/TrayIcon.hpp
     src/SettingsStore.hpp
     src/TeamsCallWatcher.hpp
@@ -71,4 +75,5 @@ target_link_libraries(LibrePods PRIVATE
     Ole32.lib
     Shlwapi.lib
     Bthprops.lib
+    ws2_32.lib      # Winsock2 — required for L2CAP AACP socket
 )
