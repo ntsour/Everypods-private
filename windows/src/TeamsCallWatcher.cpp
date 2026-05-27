@@ -5,12 +5,30 @@
 #include <shlwapi.h>
 
 #include <future>
+#include <set>
 #include <string>
 #include <vector>
 
 namespace Propods {
 
 using Microsoft::WRL::ComPtr;
+
+namespace {
+// Thread message posted by IMMNotificationClient callbacks to ask the STA
+// thread to rebuild endpoint subscriptions. Handled in the message loop.
+constexpr UINT WM_PROPODS_REBUILD = WM_APP + 1;
+
+// Roles we keep subscriptions for. eRender so we hear meeting/call audio
+// starting, eCapture so we hear ringtones flowing into the mic side.
+// Multimedia covers media-app triggers (VLC etc.).
+struct WatchedRole { EDataFlow flow; ERole role; };
+constexpr WatchedRole kWatchedRoles[] = {
+    {eRender,  eCommunications},
+    {eCapture, eCommunications},
+    {eRender,  eMultimedia},
+    {eCapture, eMultimedia},
+};
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -149,6 +167,64 @@ private:
     TeamsCallWatcher* m_owner;
     EDataFlow m_flow;
     ERole m_role;
+};
+
+// ---------------------------------------------------------------------------
+// EndpointNotification — IMMNotificationClient on the device enumerator.
+//
+// Fires on background MMDevice threads when audio devices come/go or when
+// the system default for a role changes (e.g. Jabra Connect hijacks comms,
+// AirPods unplug, USB headset arrives). We marshal each event to the STA
+// thread via PostThreadMessage so rebuildSubscriptions() can mutate
+// m_endpointSubs and call WASAPI APIs safely.
+// ---------------------------------------------------------------------------
+
+class TeamsCallWatcher::EndpointNotification : public IMMNotificationClient {
+public:
+    explicit EndpointNotification(DWORD staThreadId) : m_staThreadId(staThreadId) {}
+
+    // Stop posting to the STA thread (used during stop()).
+    void detach() { m_staThreadId.store(0); }
+
+    ULONG STDMETHODCALLTYPE AddRef() override { return ++m_refs; }
+    ULONG STDMETHODCALLTYPE Release() override {
+        ULONG r = --m_refs; if (!r) delete this; return r;
+    }
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
+        if (!out) return E_POINTER;
+        if (iid == __uuidof(IUnknown) || iid == __uuidof(IMMNotificationClient)) {
+            *out = static_cast<IMMNotificationClient*>(this); AddRef(); return S_OK;
+        }
+        *out = nullptr; return E_NOINTERFACE;
+    }
+
+    HRESULT STDMETHODCALLTYPE OnDeviceStateChanged(LPCWSTR /*id*/, DWORD /*state*/) override {
+        // Any device state change (active/unplugged/disabled/etc.) might
+        // change what the comms default resolves to. Coalesce into a rebuild.
+        postRebuild();
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE OnDeviceAdded(LPCWSTR /*id*/) override   { postRebuild(); return S_OK; }
+    HRESULT STDMETHODCALLTYPE OnDeviceRemoved(LPCWSTR /*id*/) override { postRebuild(); return S_OK; }
+    HRESULT STDMETHODCALLTYPE OnDefaultDeviceChanged(EDataFlow /*flow*/, ERole /*role*/, LPCWSTR /*id*/) override {
+        // The most important event for us: third-party utilities (Jabra
+        // Connect, Logitech, etc.) flipping the system default to their own
+        // device while a different one is the user's intent.
+        postRebuild();
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE OnPropertyValueChanged(LPCWSTR /*id*/, const PROPERTYKEY /*key*/) override {
+        return S_OK;
+    }
+
+private:
+    void postRebuild() {
+        DWORD tid = m_staThreadId.load();
+        if (tid) PostThreadMessageW(tid, WM_PROPODS_REBUILD, 0, 0);
+    }
+
+    std::atomic<ULONG> m_refs{1};
+    std::atomic<DWORD> m_staThreadId;
 };
 
 // ---------------------------------------------------------------------------
@@ -300,21 +376,63 @@ bool TeamsCallWatcher::subscribeToEndpoint(EDataFlow flow, ERole role) {
     return true;
 }
 
-void TeamsCallWatcher::unsubscribeAll() {
-    for (auto& ep : m_endpointSubs) {
-        for (auto& ss : ep.sessions) {
-            if (ss.ctrl && ss.events) {
-                ss.ctrl->UnregisterAudioSessionNotification(ss.events.Get());
-                ss.events->clearOwner();
-            }
-        }
-        if (ep.mgr && ep.notification) {
-            ep.mgr->UnregisterSessionNotification(ep.notification.Get());
-            ep.notification->clearOwner();
+void TeamsCallWatcher::unsubscribeEndpoint(EndpointSub& ep) {
+    for (auto& ss : ep.sessions) {
+        if (ss.ctrl && ss.events) {
+            ss.ctrl->UnregisterAudioSessionNotification(ss.events.Get());
+            ss.events->clearOwner();
         }
     }
+    ep.sessions.clear();
+    if (ep.mgr && ep.notification) {
+        ep.mgr->UnregisterSessionNotification(ep.notification.Get());
+        ep.notification->clearOwner();
+    }
+}
+
+void TeamsCallWatcher::unsubscribeAll() {
+    for (auto& ep : m_endpointSubs) unsubscribeEndpoint(ep);
     m_endpointSubs.clear();
+    if (m_endpointNotif && m_enumerator) {
+        m_enumerator->UnregisterEndpointNotificationCallback(m_endpointNotif.Get());
+        m_endpointNotif->detach();
+        m_endpointNotif.Reset();
+    }
     m_enumerator.Reset();
+}
+
+void TeamsCallWatcher::rebuildSubscriptions() {
+    if (!m_enumerator) return;
+
+    // Snapshot the current default device IDs for each (flow, role) we care about.
+    std::set<std::wstring> desiredIds;
+    for (auto wr : kWatchedRoles) {
+        ComPtr<IMMDevice> dev;
+        if (FAILED(m_enumerator->GetDefaultAudioEndpoint(wr.flow, wr.role, &dev)) || !dev)
+            continue;
+        LPWSTR idRaw = nullptr;
+        if (FAILED(dev->GetId(&idRaw)) || !idRaw) continue;
+        desiredIds.emplace(idRaw);
+        CoTaskMemFree(idRaw);
+    }
+
+    // Drop subs whose device is no longer the default for any watched role.
+    // (Includes endpoints that were unplugged or whose role default flipped
+    // to a different physical device.)
+    for (auto it = m_endpointSubs.begin(); it != m_endpointSubs.end();) {
+        if (desiredIds.find(it->deviceId) == desiredIds.end()) {
+            log::info("TeamsCallWatcher: dropping sub for {} (no longer a watched default)",
+                      narrow(it->deviceId));
+            unsubscribeEndpoint(*it);
+            it = m_endpointSubs.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
+    // Re-subscribe to current defaults. subscribeToEndpoint() is a no-op for
+    // (flow, deviceId) pairs we already track, so this is idempotent.
+    for (auto wr : kWatchedRoles) subscribeToEndpoint(wr.flow, wr.role);
 }
 
 void TeamsCallWatcher::staThreadProc(std::promise<bool>& readySignal) {
@@ -335,10 +453,7 @@ void TeamsCallWatcher::staThreadProc(std::promise<bool>& readySignal) {
         return;
     }
 
-    subscribeToEndpoint(eRender,  eCommunications);
-    subscribeToEndpoint(eCapture, eCommunications);
-    subscribeToEndpoint(eRender,  eMultimedia);
-    subscribeToEndpoint(eCapture, eMultimedia);
+    for (auto wr : kWatchedRoles) subscribeToEndpoint(wr.flow, wr.role);
 
     if (m_endpointSubs.empty()) {
         log::error("TeamsCallWatcher: no endpoints registered");
@@ -347,11 +462,32 @@ void TeamsCallWatcher::staThreadProc(std::promise<bool>& readySignal) {
         return;
     }
 
+    // Now that the initial subs are in place, hook the device-enumerator's
+    // change notifications so the next plug/unplug/default-change triggers
+    // a rebuild instead of leaving us listening to a ghost device.
+    m_endpointNotif.Attach(new EndpointNotification(m_staThreadId));
+    HRESULT regHr = m_enumerator->RegisterEndpointNotificationCallback(m_endpointNotif.Get());
+    if (FAILED(regHr)) {
+        log::warn("TeamsCallWatcher: RegisterEndpointNotificationCallback failed: 0x{:08X} - "
+                  "device add/remove and default-change events will be missed",
+                  (unsigned)regHr);
+        m_endpointNotif->detach();
+        m_endpointNotif.Reset();
+    } else {
+        log::info("TeamsCallWatcher: endpoint notifications armed - will rebuild on "
+                  "default-device / state changes");
+    }
+
     readySignal.set_value(true);
 
-    // STA message loop — WASAPI delivers callbacks here.
+    // STA message loop — WASAPI delivers callbacks here. WM_PROPODS_REBUILD
+    // is our own thread message posted from EndpointNotification callbacks.
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
+        if (msg.hwnd == nullptr && msg.message == WM_PROPODS_REBUILD) {
+            rebuildSubscriptions();
+            continue;
+        }
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }

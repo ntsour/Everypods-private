@@ -46,8 +46,9 @@ public:
     void onNewSession(IAudioSessionControl* ctrl, EDataFlow flow, ERole role);
 
 private:
-    class Notification;  // IAudioSessionNotification — watches for new sessions
-    class SessionEvents; // IAudioSessionEvents — watches state on a specific session
+    class Notification;          // IAudioSessionNotification — watches for new sessions
+    class SessionEvents;         // IAudioSessionEvents — watches state on a specific session
+    class EndpointNotification;  // IMMNotificationClient — watches for default-device / state changes
 
     struct SessionSub {
         Microsoft::WRL::ComPtr<IAudioSessionControl> ctrl;
@@ -67,10 +68,18 @@ private:
     void staThreadProc(std::promise<bool>& readySignal);
     bool subscribeToEndpoint(EDataFlow flow, ERole role);
     void watchSession(IAudioSessionControl* ctrl, EDataFlow flow, ERole role);
+    void unsubscribeEndpoint(EndpointSub& ep);
     void unsubscribeAll();
+    // Called on the STA thread (driven by WM_APP messages posted from the
+    // IMMNotificationClient callbacks). Drops subs whose device is no longer
+    // a default for any watched role, and re-subscribes to the current
+    // defaults — picking up newly arrived endpoints (e.g. AirPods reconnect)
+    // and dropping stale ones (e.g. AirPods unplugged).
+    void rebuildSubscriptions();
     bool shouldReport(DWORD pid);
 
     Microsoft::WRL::ComPtr<IMMDeviceEnumerator> m_enumerator;
+    Microsoft::WRL::ComPtr<EndpointNotification> m_endpointNotif;
     std::vector<EndpointSub> m_endpointSubs;
 
     std::thread m_staThread;
