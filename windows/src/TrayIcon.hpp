@@ -33,7 +33,8 @@ public:
         std::vector<PeerStatus> peers;
     };
 
-    using StatusProvider = std::function<StatusInfo()>;
+    using StatusProvider  = std::function<StatusInfo()>;
+    using AppCmdCallback  = std::function<void(int appCommand)>;
 
     TrayIcon();
     ~TrayIcon();
@@ -43,8 +44,12 @@ public:
 
     bool create(HINSTANCE hInstance);
     void setStatus(const std::wstring& text);
-    void setMenuHandler(MenuHandler h)     { m_menuHandler     = std::move(h); }
+    void setMenuHandler(MenuHandler h)       { m_menuHandler    = std::move(h); }
     void setStatusProvider(StatusProvider p) { m_statusProvider = std::move(p); }
+    // Receives APPCOMMAND_* values for every WM_APPCOMMAND on the system
+    // (via RegisterShellHookWindow). Covers AirPods stem press in HFP/call mode,
+    // which goes through WM_APPCOMMAND rather than VK_MEDIA_PLAY_PAUSE.
+    void setAppCmdCallback(AppCmdCallback cb) { m_appCmdCallback = std::move(cb); }
 
     void runMessageLoop();
     void postQuit();
@@ -60,6 +65,8 @@ private:
     std::wstring m_statusText{L"Propods"};
     MenuHandler     m_menuHandler;
     StatusProvider  m_statusProvider;
+    AppCmdCallback  m_appCmdCallback;
+    UINT            m_shellHookMsg{0};   // RegisterWindowMessage("SHELLHOOK")
     static constexpr UINT WM_TRAY = WM_APP + 1;
 };
 
