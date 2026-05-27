@@ -75,19 +75,6 @@ bool TrayIcon::create(HINSTANCE hInstance) {
         return false;
     }
 
-    // Register to receive HSHELL_APPCOMMAND for every WM_APPCOMMAND on the system.
-    // AirPods stem press in HFP/call mode uses WM_APPCOMMAND (not VK_MEDIA_PLAY_PAUSE),
-    // so WH_KEYBOARD_LL misses it. Shell hook catches both paths.
-    m_shellHookMsg = RegisterWindowMessageW(L"SHELLHOOK");
-    if (m_shellHookMsg) {
-        if (RegisterShellHookWindow(m_hwnd)) {
-            log::info("TrayIcon: shell hook registered — HFP stem press will be caught");
-        } else {
-            log::warn("TrayIcon: RegisterShellHookWindow failed ({}) — "
-                      "stem press may not work during calls", GetLastError());
-        }
-    }
-
     m_nid.cbSize = sizeof(m_nid);
     m_nid.hWnd = m_hwnd;
     m_nid.uID = kIconId;
@@ -117,19 +104,6 @@ LRESULT CALLBACK TrayIcon::wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 }
 
 LRESULT TrayIcon::handleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
-    // Shell hook: fired for every WM_APPCOMMAND on the system via
-    // RegisterShellHookWindow. HSHELL_APPCOMMAND = 12. We intercept
-    // APPCOMMAND_MEDIA_PLAY_PAUSE (14) which is what AirPods stem single-press
-    // generates in HFP/call mode (different from VK_MEDIA_PLAY_PAUSE in A2DP mode).
-    if (m_shellHookMsg && msg == m_shellHookMsg) {
-        if (LOWORD(wp) == HSHELL_APPCOMMAND) {
-            int cmd = GET_APPCOMMAND_LPARAM(lp);
-            log::debug("TrayIcon: HSHELL_APPCOMMAND cmd={}", cmd);
-            if (m_appCmdCallback) m_appCmdCallback(cmd);
-        }
-        return TRUE;
-    }
-
     switch (msg) {
         case WM_TRAY:
             if (LOWORD(lp) == WM_RBUTTONUP || LOWORD(lp) == WM_CONTEXTMENU) {

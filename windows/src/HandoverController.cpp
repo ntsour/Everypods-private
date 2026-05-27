@@ -525,22 +525,6 @@ void HandoverController::onIncomingPacket(std::span<const std::uint8_t> data) {
             log::debug("Ignoring audio-state packet from Android (not expected)");
             break;
 
-        case Incoming::StemPress: {
-            // Android detected AirPods stem long-press and forwarded the event.
-            // Payload: [press_type: 1 byte] [bud: 1 byte]
-            if (data.size() >= 6) {  // 4-byte header + type + bud
-                uint8_t pressType = data[4];
-                uint8_t bud = data[5];
-                const char* budName = (bud == 0x01) ? "left" : "right";
-                log::info("Stem press: type=0x{:02X} bud={}", pressType, budName);
-                // Only toggle mic mute on long-press (0x08).
-                if (pressType == 0x08 && m_micMuter) {
-                    m_micMuter->toggle();
-                }
-            }
-            break;
-        }
-
         case Incoming::Unknown:
             log::debug("Unknown packet ({} bytes)", data.size());
             break;

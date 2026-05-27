@@ -12,10 +12,8 @@
 #include "HandoverController.hpp"
 #include "Logger.hpp"
 #include "MediaPlaybackWatcher.hpp"
-#include "MicMuter.hpp"
 #include "PeerRegistry.hpp"
 #include "SettingsStore.hpp"
-#include "StemPressWatcher.hpp"
 #include "TeamsCallWatcher.hpp"
 #include "TrayIcon.hpp"
 #include "crossdevice_protocol.hpp"
@@ -170,8 +168,6 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     MediaPlaybackWatcher media;
     HandoverController controller{peers, airpods, media};
     TeamsCallWatcher teamsWatcher;
-    MicMuter muter;
-    StemPressWatcher stemWatcher;
     TrayIcon tray;
 
     controller.setAutoRoute(settings.autoRoute);
@@ -281,25 +277,8 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     media.start();
     teamsWatcher.start();
 
-    // WH_KEYBOARD_LL hook: catches VK_MEDIA_PLAY_PAUSE when AirPods are in
-    // A2DP-only mode (outside calls). Must be installed before runMessageLoop().
-    stemWatcher.start([&muter]() { muter.toggle(); });
-
-    // Shell hook (RegisterShellHookWindow): catches APPCOMMAND_MEDIA_PLAY_PAUSE
-    // when AirPods are in HFP/call mode. In that mode the stem press goes via
-    // HFP call-control protocol and Windows converts it to WM_APPCOMMAND sent
-    // to the foreground window — WH_KEYBOARD_LL never sees it, but HSHELL_APPCOMMAND
-    // fires on our message window. Both hooks call the same muter.toggle().
-    tray.setAppCmdCallback([&muter](int cmd) {
-        if (cmd == APPCOMMAND_MEDIA_PLAY_PAUSE) {
-            log::info("TrayIcon: stem press via APPCOMMAND — toggling mic mute");
-            muter.toggle();
-        }
-    });
-
     tray.runMessageLoop();
 
-    stemWatcher.stop();
     teamsWatcher.stop();
     media.stop();
     peers.stop();
