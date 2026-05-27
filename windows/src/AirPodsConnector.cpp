@@ -476,17 +476,15 @@ std::vector<Endpoint> findAirPodsEndpoints(IMMDeviceEnumerator* enumerator, EDat
 
         const bool isAirPods = foldLower(friendly).find(L"airpods") != std::wstring::npos;
         if (isAirPods) {
-            log::info("    [match] endpoint flow={} state={} name='{}'",
+            log::debug("    [match] endpoint flow={} state={} name='{}'",
                 flow == eRender ? "render" : "capture",
                 stateName(state),
                 winrt::to_string(friendly));
             hits.push_back({idStr, state});
-        } else {
-            log::debug("    endpoint flow={} state={} name='{}'",
-                flow == eRender ? "render" : "capture",
-                stateName(state),
-                winrt::to_string(friendly));
         }
+        // Non-AirPods endpoint debug lines omitted — they flood the log on
+        // every IMMNotificationClient callback (dozens of devices × every
+        // device-state-change event). Re-enable if debugging routing issues.
     }
     return hits;
 }

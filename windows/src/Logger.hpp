@@ -27,14 +27,14 @@ inline std::filesystem::path logDir() {
 
 inline std::ofstream& logFile() {
     static std::ofstream f = []() {
-        return std::ofstream{logDir() / "Propods.log", std::ios::app};
+        return std::ofstream{logDir() / "Propods.log", std::ios::trunc};
     }();
     return f;
 }
 
 inline std::ofstream& handoverLogFile() {
     static std::ofstream f = []() {
-        return std::ofstream{logDir() / "handover.log", std::ios::app};
+        return std::ofstream{logDir() / "handover.log", std::ios::trunc};
     }();
     return f;
 }
