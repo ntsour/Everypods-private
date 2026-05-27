@@ -370,6 +370,18 @@ void HandoverController::onMediaPlayingChanged(bool playing) {
                 // the user with paused media for no reason.
                 m_media.tryPlayActive();
             }
+            // Arm the endpoint notifier even on failure.  If AirPods become
+            // available within the next 120 s (user takes them out of case,
+            // disconnects from phone, etc.), the IMMNotificationClient fires
+            // and routes audio to AirPods automatically — no second Teams
+            // trigger needed.  setState(LocalPc) is intentionally NOT called
+            // here; the audio watcher's BT-rising-edge poll will do that
+            // within 500 ms once the link actually comes up.
+            if (m_autoRoute.load()) {
+                log::handover("INFO    Arming endpoint notifier (120s window) — "
+                              "routing will fire if AirPods appear while Teams call is active");
+                m_airpods.setAsDefaultAudioDevice();
+            }
         }
     }).detach();
 }

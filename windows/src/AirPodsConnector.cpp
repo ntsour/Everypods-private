@@ -322,7 +322,12 @@ bool AirPodsConnector::connect() {
     // up to 3 times across retry backoffs. Only one nudger runs at a time per process.
     auto spawnNudgerIfNeeded = [](std::uint64_t addr, bool kicked) {
         static std::atomic<bool> s_nudgerRunning{false};
-        if (!kicked || s_nudgerRunning.exchange(true)) return;
+        // Do not gate on kicked: spawn even when the RFCOMM probe and
+        // BluetoothSetServiceState both failed.  The BT stack may still be
+        // negotiating the ACL link in the background; the nudger's quiet
+        // retries every 3 s will catch the moment it responds.
+        (void)kicked;
+        if (s_nudgerRunning.exchange(true)) return;
         std::thread([addr]() {
             // Wrap the whole loop in a try/catch so the static guard always resets:
             // log::debug() does std::format + file I/O and can throw std::bad_alloc
