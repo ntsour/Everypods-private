@@ -37,6 +37,7 @@ set(SRC
     src/AirPodsConnector.cpp
     src/HandoverController.cpp
     src/MicMuter.cpp
+    src/StemPressWatcher.cpp
     src/TrayIcon.cpp
     src/SettingsStore.cpp
     src/TeamsCallWatcher.cpp
@@ -51,6 +52,7 @@ set(HDR
     src/AirPodsConnector.hpp
     src/HandoverController.hpp
     src/MicMuter.hpp
+    src/StemPressWatcher.hpp
     src/TrayIcon.hpp
     src/SettingsStore.hpp
     src/TeamsCallWatcher.hpp

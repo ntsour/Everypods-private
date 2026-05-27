@@ -12,8 +12,10 @@
 #include "HandoverController.hpp"
 #include "Logger.hpp"
 #include "MediaPlaybackWatcher.hpp"
+#include "MicMuter.hpp"
 #include "PeerRegistry.hpp"
 #include "SettingsStore.hpp"
+#include "StemPressWatcher.hpp"
 #include "TeamsCallWatcher.hpp"
 #include "TrayIcon.hpp"
 #include "crossdevice_protocol.hpp"
@@ -168,6 +170,8 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     MediaPlaybackWatcher media;
     HandoverController controller{peers, airpods, media};
     TeamsCallWatcher teamsWatcher;
+    MicMuter muter;
+    StemPressWatcher stemWatcher;
     TrayIcon tray;
 
     controller.setAutoRoute(settings.autoRoute);
@@ -277,8 +281,13 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     media.start();
     teamsWatcher.start();
 
+    // Install the keyboard hook BEFORE entering the message loop so it fires
+    // on this thread. AirPods single press -> VK_MEDIA_PLAY_PAUSE -> mic mute.
+    stemWatcher.start([&muter]() { muter.toggle(); });
+
     tray.runMessageLoop();
 
+    stemWatcher.stop();
     teamsWatcher.stop();
     media.stop();
     peers.stop();
