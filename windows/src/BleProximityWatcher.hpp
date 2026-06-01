@@ -35,10 +35,14 @@ public:
     void start();
     void stop();
 
-    // True if the AirPods appear to be out of the case / nearby — i.e. it is
-    // reasonable to attempt a takeover. Fail-open: returns true if the watcher
-    // never started or is still within its warm-up window, so a BLE problem can
-    // never silently disable handover.
+    // True if it is reasonable to attempt a takeover. The gate is deliberately
+    // conservative: it returns false ONLY when we have positive, fresh evidence
+    // the AirPods are physically in the case (lid closed AND neither pod in an
+    // ear). Anything else — out-of-case beacons, no beacons at all, BLE
+    // unavailable, warm-up — returns true so a legitimate handover is never
+    // blocked. (A connect() to truly-cased pods just fails harmlessly; audio is
+    // only hijacked when the pods are actually reachable, which is exactly when
+    // we DO want the handover.)
     bool airpodsAvailable() const;
 
 private:
@@ -47,8 +51,9 @@ private:
         winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementReceivedEventArgs const& args);
 
     // Apple proximity-pairing advertisement: company id 0x004C, payload begins
-    // 0x07 0x19 (type, length). Returns true and sets outOfCase if parsed.
-    static bool parseProximity(const uint8_t* data, uint32_t len, bool& outOfCase);
+    // 0x07 0x19 (type, length). Returns true if parsed; sets inCase = lid closed
+    // AND neither pod in an ear (i.e. both pods stowed in a closed case).
+    static bool parseProximity(const uint8_t* data, uint32_t len, bool& inCase);
 
     // 15 s mirrors Android's STALE_DEVICE_TIMEOUT_MS. AirPods advertise roughly
     // every 1-2 s while a lid is open / pods are in use, so 15 s comfortably
@@ -72,7 +77,10 @@ private:
     winrt::event_token m_receivedToken{};
 
     std::atomic<bool> m_running{false};
-    // steady_clock milliseconds; 0 = never.
+    // steady_clock milliseconds; 0 = never. We track the latest in-case and
+    // out-of-case observations separately; the gate blocks only when the most
+    // recent fresh reading is in-case.
+    std::atomic<std::int64_t> m_lastInCaseMs{0};
     std::atomic<std::int64_t> m_lastOutOfCaseMs{0};
     std::atomic<std::int64_t> m_startedAtMs{0};
 };

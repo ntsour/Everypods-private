@@ -74,12 +74,19 @@ bool BleProximityWatcher::airpodsAvailable() const {
     const std::int64_t startedAt = m_startedAtMs.load();
     if (startedAt != 0 && now - startedAt < kWarmupMs) return true;
 
-    const std::int64_t last = m_lastOutOfCaseMs.load();
-    if (last == 0) return false;  // running, past warm-up, never seen out of case
-    return (now - last) < kStaleWindowMs;
+    const std::int64_t inCase  = m_lastInCaseMs.load();
+    const std::int64_t outCase = m_lastOutOfCaseMs.load();
+
+    // Block ONLY when the most recent fresh observation is positively in-case.
+    // Otherwise (out-of-case latest, or no beacons, or stale) allow — a connect()
+    // to cased pods fails harmlessly, while a missing beacon must never block a
+    // legitimate handover of pods that are actually in use on a peer.
+    if (inCase > outCase && (now - inCase) < kStaleWindowMs)
+        return false;
+    return true;
 }
 
-bool BleProximityWatcher::parseProximity(const uint8_t* data, uint32_t len, bool& outOfCase) {
+bool BleProximityWatcher::parseProximity(const uint8_t* data, uint32_t len, bool& inCase) {
     // Apple proximity-pairing message layout (manufacturer data after company id):
     //   data[0]   = 0x07 (type: proximity pairing / "nearby")
     //   data[1]   = 0x19 (length, 25)
@@ -100,10 +107,11 @@ bool BleProximityWatcher::parseProximity(const uint8_t* data, uint32_t len, bool
 
     const bool lidOpen = ((lid >> 3) & 0x01) == 0;
 
-    // "Out of case" = lid open OR at least one pod in an ear. This stays true in
-    // the key handover scenario (pods in ears, case closed in a pocket) and goes
-    // false only when both pods are stowed with the lid closed.
-    outOfCase = lidOpen || leftInEar || rightInEar;
+    // "In case" = lid closed AND neither pod in an ear, i.e. both pods stowed in
+    // a closed case. This is the only state in which we suppress a takeover.
+    // Pods in ears (case closed in a pocket) report in-ear → NOT in-case → we
+    // still allow the handover. Anything ambiguous defaults to NOT in-case.
+    inCase = !lidOpen && !leftInEar && !rightInEar;
     return true;
 }
 
@@ -128,12 +136,15 @@ void BleProximityWatcher::onReceived(
             auto reader = DataReader::FromBuffer(buffer);
             reader.ReadBytes(bytes);
 
-            bool outOfCase = false;
-            if (!parseProximity(bytes.data(), len, outOfCase)) continue;
+            bool inCase = false;
+            if (!parseProximity(bytes.data(), len, inCase)) continue;
 
-            if (outOfCase) {
+            // Logged at debug to avoid flooding (beacons arrive ~1/s).
+            if (inCase) {
+                m_lastInCaseMs.store(nowMs());
+                log::debug("BleProximityWatcher: AirPods proximity beacon — IN CASE (RSSI {} dBm)", rssi);
+            } else {
                 m_lastOutOfCaseMs.store(nowMs());
-                // Logged at debug to avoid flooding (beacons arrive ~1/s).
                 log::debug("BleProximityWatcher: AirPods proximity beacon — out of case (RSSI {} dBm)", rssi);
             }
             return;  // handled the Apple entry

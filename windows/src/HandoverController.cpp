@@ -626,7 +626,7 @@ void HandoverController::onPeerConnectionChanged(bool connected) {
         } else {
             // Newly-connected peer will learn our state from the next
             // RequestConnectionStatus keep-alive it sends within 20 s.
-            log::handover("SKIP    State unchanged on peer connect (%s) — no broadcast",
+            log::handover("SKIP    State unchanged on peer connect ({}) — no broadcast",
                 airpodsHere ? "LocalPc" : "RemoteAndroid");
         }
 
