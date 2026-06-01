@@ -40,6 +40,7 @@ set(SRC
     src/SettingsStore.cpp
     src/TeamsCallWatcher.cpp
     src/PeerRegistry.cpp
+    src/BleProximityWatcher.cpp
     src/Propods.rc
 )
 
@@ -53,6 +54,7 @@ set(HDR
     src/SettingsStore.hpp
     src/TeamsCallWatcher.hpp
     src/PeerRegistry.hpp
+    src/BleProximityWatcher.hpp
     src/Logger.hpp
 )
 

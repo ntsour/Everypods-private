@@ -112,6 +112,8 @@ public:
     HRESULT STDMETHODCALLTYPE OnStateChanged(AudioSessionState state) override {
         if (state == AudioSessionStateActive && m_owner)
             m_owner->onTeamsSessionActive(m_pid, m_exe, m_flow, m_role);
+        else if (state == AudioSessionStateExpired && m_owner)
+            m_owner->onTeamsSessionEnded(m_pid, m_exe);
         return S_OK;
     }
 
@@ -247,6 +249,23 @@ void TeamsCallWatcher::onTeamsSessionActive(DWORD pid, const std::wstring& exe,
                   narrow(exe), (unsigned)pid, flowLabel(flow), roleLabel(role));
     // Feed into the handover state machine — same effect as GSMTC media-start.
     if (m_onTriggered) m_onTriggered();
+}
+
+void TeamsCallWatcher::onTeamsSessionEnded(DWORD pid, const std::wstring& exe) {
+    // Dedup: render and capture sessions both fire Expired when a call ends.
+    // Suppress duplicate notifications within a 20 s window.
+    {
+        using namespace std::chrono;
+        std::scoped_lock lk{m_dedupeMutex};
+        auto now = steady_clock::now();
+        if (pid == m_lastEndedPid && now - m_lastEndedAt < seconds(20))
+            return;
+        m_lastEndedPid = pid;
+        m_lastEndedAt  = now;
+    }
+    log::info("TeamsCallWatcher: session expired for {} (pid {}) — call ended",
+              narrow(exe), (unsigned)pid);
+    if (m_onSessionEnded) m_onSessionEnded();
 }
 
 void TeamsCallWatcher::onNewSession(IAudioSessionControl* ctrl,

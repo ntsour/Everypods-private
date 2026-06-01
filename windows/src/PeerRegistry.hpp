@@ -39,6 +39,9 @@ public:
     // Duplicate addresses are silently ignored.
     void addPeer(std::uint64_t address);
 
+    // Stop and remove a peer by address. No-op if the address is not registered.
+    void removePeer(std::uint64_t address);
+
     // Launch connection loops for all registered peers.
     void start();
 

@@ -19,11 +19,14 @@ public:
     static constexpr int kCmdAutoStart       = 1004;
     static constexpr int kCmdConnectAirPods  = 1005;
     static constexpr int kCmdToggleAutoRoute = 1006;
+    // kCmdRemovePeer+i removes the peer at index i in the StatusInfo::peers list.
+    static constexpr int kCmdRemovePeer      = 2000;
 
     // Per-peer info shown in the menu.
     struct PeerStatus {
-        std::wstring name;
-        bool         connected{false};
+        std::uint64_t address{};
+        std::wstring  name;
+        bool          connected{false};
     };
 
     // Snapshot of app status, fetched just before the menu opens.

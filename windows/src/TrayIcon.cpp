@@ -152,10 +152,14 @@ void TrayIcon::showContextMenu(HWND hwnd) {
         InsertMenuW(menu, static_cast<UINT>(-1),
             MF_BYPOSITION | MF_STRING | MF_DISABLED | MF_GRAYED,
             0u, L"Android peers:");
-        for (auto& peer : status.peers) {
+        for (int i = 0; i < (int)status.peers.size(); ++i) {
+            auto& peer = status.peers[i];
             UINT peerFlags = MF_BYPOSITION | MF_STRING | MF_DISABLED | MF_GRAYED;
             if (peer.connected) peerFlags |= MF_CHECKED;
             InsertMenuW(menu, static_cast<UINT>(-1), peerFlags, 0u, peer.name.c_str());
+            std::wstring removeLabel = L"Remove " + peer.name;
+            InsertMenuW(menu, static_cast<UINT>(-1), MF_BYPOSITION | MF_STRING,
+                static_cast<UINT_PTR>(kCmdRemovePeer + i), removeLabel.c_str());
         }
         InsertMenuW(menu, static_cast<UINT>(-1), MF_BYPOSITION | MF_SEPARATOR, 0u, nullptr);
     }

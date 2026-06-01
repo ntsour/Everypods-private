@@ -33,16 +33,23 @@ public:
     TeamsCallWatcher& operator=(const TeamsCallWatcher&) = delete;
 
     // Called when a watched app (Teams, VLC, …) audio session becomes active.
-    // Wire this to HandoverController::onMediaPlayingChanged(true) so the
-    // WASAPI-based trigger feeds into the same handover state machine as GSMTC.
+    // Wire this to HandoverController::onCallActive() so the WASAPI-based
+    // trigger feeds into the handover state machine with voluntary-release gating.
     using TriggerCallback = std::function<void()>;
     void setOnTriggered(TriggerCallback cb) { m_onTriggered = std::move(cb); }
+
+    // Called when the active Teams session expires (call definitively ended).
+    // Wire this to HandoverController::onTeamsCallEnded() to clear the
+    // voluntary-release gate so the next new call can claim AirPods.
+    using SessionEndedCallback = std::function<void()>;
+    void setOnSessionEnded(SessionEndedCallback cb) { m_onSessionEnded = std::move(cb); }
 
     bool start();
     void stop();
 
     // Called by nested COM objects — not part of the user API.
     void onTeamsSessionActive(DWORD pid, const std::wstring& exe, EDataFlow flow, ERole role);
+    void onTeamsSessionEnded(DWORD pid, const std::wstring& exe);
     void onNewSession(IAudioSessionControl* ctrl, EDataFlow flow, ERole role);
 
 private:
@@ -86,11 +93,16 @@ private:
     DWORD m_staThreadId{0};
     std::atomic<bool> m_started{false};
 
-    TriggerCallback m_onTriggered;
+    TriggerCallback       m_onTriggered;
+    SessionEndedCallback  m_onSessionEnded;
 
     std::mutex m_dedupeMutex;
     DWORD m_lastReportedPid{0};
     std::chrono::steady_clock::time_point m_lastReportedAt{};
+    // Dedup for session-ended: suppress repeated Expired events (render + capture
+    // both fire) within the same 20 s window used by shouldReport.
+    DWORD m_lastEndedPid{0};
+    std::chrono::steady_clock::time_point m_lastEndedAt{};
 };
 
 }
