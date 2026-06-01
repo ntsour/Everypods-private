@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <atomic>
 #include <chrono>
@@ -11,7 +11,7 @@
 #include "MediaPlaybackWatcher.hpp"
 #include "PeerRegistry.hpp"
 
-namespace librepods {
+namespace Propods {
 
 enum class OwnershipState {
     Unknown,
@@ -30,7 +30,26 @@ public:
 
     void setOnStateChanged(StateChangedCallback cb) { m_onStateChanged = std::move(cb); }
 
+    // Optional probe that returns true if the AirPods appear to be out of the
+    // case / nearby (BLE proximity). When set and it returns false, a media/call
+    // trigger will NOT initiate a BT takeover — this avoids poking the BT stack
+    // and hijacking audio from another device (Jabra/Dell) when the AirPods are
+    // simply stowed. Does not affect the manual "Connect AirPods now" path.
+    void setAvailabilityProbe(std::function<bool()> probe) { m_availabilityProbe = std::move(probe); }
+
+    // When disabled, the controller will NOT automatically set AirPods as the
+    // default audio device on takeover. The user can still trigger it manually
+    // via the tray menu "Connect AirPods now" item.
+    void setAutoRoute(bool enabled) { m_autoRoute.store(enabled); }
+    bool autoRoute() const          { return m_autoRoute.load(); }
+
     void onMediaPlayingChanged(bool playing);
+    // Teams/WASAPI-specific trigger — goes through the voluntary-release gate.
+    // Wire TeamsCallWatcher::setOnTriggered to this instead of onMediaPlayingChanged.
+    void onCallActive();
+    // Called when the Teams audio session expires (call truly ended).
+    // Clears the voluntary-release gate so the next new call can trigger a claim.
+    void onTeamsCallEnded();
     void onIncomingPacket(std::span<const std::uint8_t> data);
     void onPeerConnectionChanged(bool connected);
 
@@ -97,7 +116,27 @@ private:
     std::atomic<bool> m_watcherRunning{false};
     std::thread m_watcherThread;
 
+    // Voluntary-release gate. Set when Windows accepts a peer's kRequestDisconnect
+    // or kRequestHandover — i.e. Windows deliberately handed AirPods to another device.
+    // While set, onCallActive() (Teams/WASAPI trigger) is suppressed so an ongoing
+    // Teams call that is now routing through the peer's AirPods doesn't cause Windows
+    // to immediately reclaim them. Cleared when:
+    //   - setState(LocalPc): Windows claimed AirPods back by any means
+    //   - onTeamsCallEnded(): Teams session expired, a new call should be claimable
+    //   - onMediaPlayingChanged(false): media stopped, next user play is genuine intent
+    std::atomic<bool> m_voluntarilyReleased{false};
+
+    // Set to true while a BT connect thread is running; cleared when it exits
+    // (success or failure). Prevents a second kRequestDisconnect from being sent
+    // while a takeover attempt is already in flight. Without this, the connect
+    // thread's tryPlayActive() on failure resumes media, GSMTC fires playing=true,
+    // and onMediaPlayingChanged immediately spawns another thread — creating a
+    // loop that floods peers with REQUEST_DISCONNECT at the connect-backoff cadence.
+    std::atomic<bool> m_takeoverInFlight{false};
+
+    std::atomic<bool>    m_autoRoute{true};
     StateChangedCallback m_onStateChanged;
+    std::function<bool()> m_availabilityProbe;
 };
 
 }

@@ -1,4 +1,4 @@
-#include "BluetoothRfcommClient.hpp"
+﻿#include "BluetoothRfcommClient.hpp"
 
 #include "Logger.hpp"
 #include "crossdevice_protocol.hpp"
@@ -17,7 +17,7 @@ using namespace winrt::Windows::Networking::Sockets;
 using namespace winrt::Windows::Storage::Streams;
 using namespace winrt::Windows::Foundation;
 
-namespace librepods {
+namespace Propods {
 
 namespace {
 

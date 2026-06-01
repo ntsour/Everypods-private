@@ -1,4 +1,4 @@
-#include "SettingsStore.hpp"
+﻿#include "SettingsStore.hpp"
 
 #include "Logger.hpp"
 
@@ -10,7 +10,7 @@
 #include <sstream>
 #include <string>
 
-namespace librepods {
+namespace Propods {
 
 namespace {
 
@@ -19,7 +19,7 @@ std::filesystem::path resolveConfigPath() {
     if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &roaming))) {
         std::filesystem::path p = roaming;
         CoTaskMemFree(roaming);
-        p /= L"LibrePods";
+        p /= L"Propods";
         std::error_code ec;
         std::filesystem::create_directories(p, ec);
         return p / L"config.txt";
@@ -83,6 +83,9 @@ Settings SettingsStore::load() const {
             s.airpodsAddress = parseBluetoothAddress(val);
             log::debug("  airpods = {} -> {}",
                 val, s.airpodsAddress ? formatBluetoothAddress(*s.airpodsAddress) : "(parse failed)");
+        } else if (key == "autoroute") {
+            s.autoRoute = (val != "0");
+            log::debug("  autoroute = {}", s.autoRoute);
         }
     }
     return s;
@@ -97,6 +100,7 @@ void SettingsStore::save(const Settings& s) const {
     for (auto addr : s.androidAddresses)
         f << "android=" << formatBluetoothAddress(addr) << '\n';
     if (s.airpodsAddress) f << "airpods=" << formatBluetoothAddress(*s.airpodsAddress) << '\n';
+    f << "autoroute=" << (s.autoRoute ? "1" : "0") << '\n';
 }
 
 }

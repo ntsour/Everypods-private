@@ -1,4 +1,4 @@
-#include "AirPodsConnector.hpp"
+﻿#include "AirPodsConnector.hpp"
 
 #include "Logger.hpp"
 
@@ -55,7 +55,7 @@ IPolicyConfigVista : public IUnknown {
 
 }
 
-namespace librepods {
+namespace Propods {
 
 namespace {
 
@@ -322,7 +322,12 @@ bool AirPodsConnector::connect() {
     // up to 3 times across retry backoffs. Only one nudger runs at a time per process.
     auto spawnNudgerIfNeeded = [](std::uint64_t addr, bool kicked) {
         static std::atomic<bool> s_nudgerRunning{false};
-        if (!kicked || s_nudgerRunning.exchange(true)) return;
+        // Do not gate on kicked: spawn even when the RFCOMM probe and
+        // BluetoothSetServiceState both failed.  The BT stack may still be
+        // negotiating the ACL link in the background; the nudger's quiet
+        // retries every 3 s will catch the moment it responds.
+        (void)kicked;
+        if (s_nudgerRunning.exchange(true)) return;
         std::thread([addr]() {
             // Wrap the whole loop in a try/catch so the static guard always resets:
             // log::debug() does std::format + file I/O and can throw std::bad_alloc
@@ -336,8 +341,10 @@ bool AirPodsConnector::connect() {
                 for (int i = 0; i < 6; ++i) {
                     std::this_thread::sleep_for(std::chrono::seconds(3));
                     log::debug("Profile nudge attempt {}/6 (quiet)", i + 1);
-                    toggleProfile(addr, kA2dpSink, BLUETOOTH_SERVICE_ENABLE,
+                    toggleProfile(addr, kA2dpSink,  BLUETOOTH_SERVICE_ENABLE,
                                   "A2DP-nudge", /*quiet=*/true);
+                    toggleProfile(addr, kHandsFree, BLUETOOTH_SERVICE_ENABLE,
+                                  "HFP-nudge",  /*quiet=*/true);
                 }
             } catch (const std::exception& e) {
                 log::warn("Profile nudge thread terminated by exception: {}", e.what());
@@ -365,8 +372,16 @@ bool AirPodsConnector::connect() {
             DWORD err = BluetoothGetDeviceInfo(hRadio, &info);
             CloseHandle(hRadio);
             if (err == ERROR_SUCCESS && info.fConnected) {
-                log::info("BT classical link already up (connected=yes) — skipping "
-                          "BluetoothSetServiceState(ENABLE) (would block ~5s for error 87)");
+                log::info("BT classical link already up - re-enabling HFP profile "
+                          "(a previous handover may have disabled it, which blocks "
+                          "the AirPods mic from appearing in Teams/Zoom)");
+                // Re-enable HFP unconditionally. disconnect() calls
+                // BluetoothSetServiceState(kHandsFree, DISABLE) which Windows
+                // persists in the BT registry — if we skip this, the user's next
+                // manual reconnect restores only A2DP and Teams finds no mic.
+                // A2DP BluetoothSetServiceState(ENABLE) is deliberately skipped
+                // (it blocks ~5 s and returns error 87 when the link is already up).
+                toggleProfile(m_address, kHandsFree, BLUETOOTH_SERVICE_ENABLE, "HFP");
                 spawnNudgerIfNeeded(m_address, /*kicked=*/true);
                 return true;
             }
@@ -461,17 +476,15 @@ std::vector<Endpoint> findAirPodsEndpoints(IMMDeviceEnumerator* enumerator, EDat
 
         const bool isAirPods = foldLower(friendly).find(L"airpods") != std::wstring::npos;
         if (isAirPods) {
-            log::info("    [match] endpoint flow={} state={} name='{}'",
+            log::debug("    [match] endpoint flow={} state={} name='{}'",
                 flow == eRender ? "render" : "capture",
                 stateName(state),
                 winrt::to_string(friendly));
             hits.push_back({idStr, state});
-        } else {
-            log::debug("    endpoint flow={} state={} name='{}'",
-                flow == eRender ? "render" : "capture",
-                stateName(state),
-                winrt::to_string(friendly));
         }
+        // Non-AirPods endpoint debug lines omitted — they flood the log on
+        // every IMMNotificationClient callback (dozens of devices × every
+        // device-state-change event). Re-enable if debugging routing issues.
     }
     return hits;
 }
@@ -945,6 +958,16 @@ bool AirPodsConnector::setAsDefaultAudioDevice() {
 }
 
 void AirPodsConnector::setPersistentArm(bool persistent) {
+    // Re-enable HFP whenever we take ownership (persistent=true). This covers
+    // both the BT-rising-edge path (HandoverController watcher detects AirPods
+    // appearing) and the explicit connect() path. disconnect() calls
+    // BluetoothSetServiceState(kHandsFree, DISABLE) which Windows persists —
+    // without this re-enable, the AirPods mic never appears in Teams/Zoom on
+    // the next manual reconnect. Failures are non-fatal (logged internally).
+    if (persistent && m_address != 0) {
+        toggleProfile(m_address, kHandsFree, BLUETOOTH_SERVICE_ENABLE, "HFP-ownership-claim");
+    }
+
     // We need an enumerator to register the notifier (lazy init in ensureNotifier).
     // If the notifier is already registered, ensureNotifier will just refresh the
     // enumerator pointer. If it isn't, this is the first-ever call — make sure we

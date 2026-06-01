@@ -1,4 +1,4 @@
-#include "HandoverController.hpp"
+﻿#include "HandoverController.hpp"
 
 #include "Logger.hpp"
 #include "crossdevice_protocol.hpp"
@@ -7,7 +7,7 @@
 #include <thread>
 #include <windows.h>
 
-namespace librepods {
+namespace Propods {
 
 HandoverController::HandoverController(
     PeerRegistry& peers,
@@ -54,7 +54,7 @@ void HandoverController::startAudioWatcher() {
                     bool changed = setState(airpodsHere ? OwnershipState::LocalPc
                                                         : OwnershipState::RemoteAndroid);
                     if (changed) {
-                        log::handover("OUT     {} → peer (periodic sync on Unknown state)",
+                        log::handover("OUT     {} -> peer (periodic sync on Unknown state)",
                             airpodsHere ? "kAirPodsConnected" : "kAirPodsDisconnected");
                         m_peers.sendPacket(airpodsHere
                             ? crossdevice::kAirPodsConnected
@@ -72,7 +72,7 @@ void HandoverController::startAudioWatcher() {
                     // Reset audio state: the classical BT link is up but A2DP hasn't negotiated
                     // yet, so there are no audio sessions. Carrying stale lastActive=true into
                     // this window makes the watcher misread the normal A2DP startup gap as
-                    // "audio was active, now gone → phone stole them" and fire a false RECLAIM.
+                    // "audio was active, now gone -> phone stole them" and fire a false RECLAIM.
                     // Starting fresh means the watcher waits to observe what actually happens.
                     lastActive = false;
                     idleStreak = 0;
@@ -81,7 +81,7 @@ void HandoverController::startAudioWatcher() {
                     if (setState(OwnershipState::LocalPc)) {
                         log::handover("BT      AirPods connected (BT rising edge) — claiming ownership");
                         if (m_peers.isAnyConnected()) {
-                            log::handover("OUT     kAirPodsConnected → all peers (BT edge)");
+                            log::handover("OUT     kAirPodsConnected -> all peers (BT edge)");
                             m_peers.sendPacket(crossdevice::kAirPodsConnected);
                         }
                     }
@@ -89,8 +89,8 @@ void HandoverController::startAudioWatcher() {
                     // Falling edge: AirPods left Windows. Only act when we thought we owned them.
                     if (m_state.load() == OwnershipState::LocalPc) {
                         // Unified pause-and-release. We previously had two branches:
-                        //   - lastActive=true  → RECLAIM (try to grab AirPods back)
-                        //   - lastActive=false → pause local media, release ownership
+                        //   - lastActive=true  -> RECLAIM (try to grab AirPods back)
+                        //   - lastActive=false -> pause local media, release ownership
                         //
                         // Experience showed the RECLAIM was *always* wrong in practice:
                         //   - When the user intentionally moved AirPods to the phone, RECLAIM
@@ -106,7 +106,7 @@ void HandoverController::startAudioWatcher() {
                         // Brief-bounce protection (AirPods drop off Windows for a second and
                         // come back) is now handled at the audio-endpoint layer by the
                         // IMMNotificationClient's persistent-arm mode: while we own the
-                        // AirPods, any UNPLUGGED→ACTIVE re-applies routing automatically.
+                        // AirPods, any UNPLUGGED->ACTIVE re-applies routing automatically.
                         //
                         // So: always pause local media and release ownership on BT falling
                         // edge while we held LocalPc.
@@ -130,7 +130,7 @@ void HandoverController::startAudioWatcher() {
                         if (setState(OwnershipState::RemoteAndroid)) {
                             log::handover("{}", reason);
                             if (m_peers.isAnyConnected()) {
-                                log::handover("OUT     kAirPodsDisconnected → all peers (BT edge)");
+                                log::handover("OUT     kAirPodsDisconnected -> all peers (BT edge)");
                                 m_peers.sendPacket(crossdevice::kAirPodsDisconnected);
                             }
                         }
@@ -204,7 +204,7 @@ bool HandoverController::setState(OwnershipState s) {
         const char* label = (s == OwnershipState::LocalPc)     ? "LocalPc"
                           : (s == OwnershipState::RemoteAndroid) ? "RemoteAndroid"
                           :                                        "Unknown";
-        log::handover("STATE → {}", label);
+        log::handover("STATE -> {}", label);
         if (m_onStateChanged) m_onStateChanged(s);
 
         // Persistent-arm the endpoint notifier whenever we hold ownership. While
@@ -214,6 +214,12 @@ bool HandoverController::setState(OwnershipState s) {
         // the persistent flag so we don't fight a peer that is intentionally
         // taking the AirPods.
         m_airpods.setPersistentArm(s == OwnershipState::LocalPc);
+
+        // Claiming AirPods (by any means: BT rising edge, connect-thread success,
+        // manual tray "Connect AirPods now") resets the voluntary-release gate so
+        // future call/media triggers are not suppressed.
+        if (s == OwnershipState::LocalPc)
+            m_voluntarilyReleased.store(false);
 
         return true;
     }
@@ -231,6 +237,11 @@ bool HandoverController::withinDebounceWindow() {
 void HandoverController::onMediaPlayingChanged(bool playing) {
     if (!playing) {
         log::debug("Media stopped — keeping current ownership");
+        // Media went idle: user may explicitly restart. Clear the voluntary-release
+        // gate so a subsequent play-press (GSMTC idle→active) is treated as genuine
+        // user intent and can re-trigger a claim if needed.
+        if (m_voluntarilyReleased.exchange(false))
+            log::handover("STATE   m_voluntarilyReleased cleared (media stopped)");
         return;
     }
     if (withinDebounceWindow()) {
@@ -244,16 +255,59 @@ void HandoverController::onMediaPlayingChanged(bool playing) {
         stateLocal ? "LocalPc" : "remote/unknown",
         actuallyConnected);
 
-    if (stateLocal && actuallyConnected) {
-        log::handover("SKIP    AirPods already on this PC — no action needed");
+    if (actuallyConnected) {
+        if (stateLocal) {
+            log::handover("SKIP    AirPods already on this PC — no action needed");
+            return;
+        }
+        // AirPods are at the BT layer but state is remote/unknown — this happens on
+        // startup when AirPods are already connected (Apple auto-reconnect, previous
+        // session) before the RFCOMM peer channel comes up, or when AirPods
+        // auto-switched to Windows without a protocol handover. Running connect()
+        // here would call BluetoothSetServiceState(A2DP, ENABLE) on an already-live
+        // link, which tears down and re-establishes A2DP and causes a ~15s UNPLUGGED
+        // window during which resumed audio goes to PC speakers with no sound.
+        // Instead: claim ownership directly and re-route without touching the link.
+        log::handover("CLAIM   AirPods already BT-connected (state was remote/unknown) — "
+                      "claiming ownership, skipping connect()");
+        setState(OwnershipState::LocalPc);
+        m_lastLocalTakeover.store(tpToNs(std::chrono::steady_clock::now()));
+        if (m_peers.isAnyConnected()) {
+            log::handover("OUT     kAirPodsConnected -> all peers");
+            m_peers.sendPacket(crossdevice::kAirPodsConnected);
+        }
+        if (m_autoRoute.load()) m_airpods.setAsDefaultAudioDevice();
         return;
     }
 
-    // Anti-pingpong: if we just lost ownership to Android, don't immediately take back.
+    // AirPods are NOT classically connected to this PC. Before attempting a BT
+    // takeover, consult the BLE proximity probe: if the AirPods appear to be in
+    // their case / not nearby, do nothing. Attempting connect() here would poke
+    // the BT stack and, on success, hijack audio away from whatever device the
+    // user is currently on (Jabra/Dell headset, speakers). The probe fails open
+    // (returns true) if BLE is unavailable, so handover is never silently broken.
+    // The manual "Connect AirPods now" tray command bypasses this entirely.
+    if (m_availabilityProbe && !m_availabilityProbe()) {
+        log::handover("SKIP    AirPods appear to be in the case / not nearby — "
+                      "not initiating takeover (avoids interfering with current audio device)");
+        return;
+    }
+
+    // Anti-pingpong: if we just lost ownership to Android (or a prior takeover
+    // attempt just failed), don't immediately take back.
     auto sinceLost = std::chrono::steady_clock::now() - tpFromNs(m_lastLostOwnership.load());
     if (sinceLost < std::chrono::milliseconds(3000)) {
         auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(sinceLost).count();
         log::handover("SKIP    Anti-pingpong: lost ownership {}ms ago — not reclaiming", ms);
+        return;
+    }
+
+    // In-flight guard: one takeover attempt at a time. Without this, the connect
+    // thread's tryPlayActive() on failure resumes media, GSMTC fires playing=true,
+    // and onMediaPlayingChanged immediately spawns another thread — flooding peers
+    // with REQUEST_DISCONNECT at the connect-backoff cadence (~1/s with 3 peers).
+    if (m_takeoverInFlight.exchange(true)) {
+        log::handover("SKIP    Takeover already in flight — dropping trigger");
         return;
     }
 
@@ -270,7 +324,7 @@ void HandoverController::onMediaPlayingChanged(bool playing) {
     const auto kickoffTime = std::chrono::steady_clock::now();
     const bool peerConnected = m_peers.isAnyConnected();
     if (peerConnected) {
-        log::handover("OUT     kRequestDisconnect → all peers");
+        log::handover("OUT     kRequestDisconnect -> all peers");
         m_peers.sendPacket(crossdevice::kRequestDisconnect);
     } else {
         log::handover("WARN    No peers connected — attempting BT connect without coordination");
@@ -337,14 +391,15 @@ void HandoverController::onMediaPlayingChanged(bool playing) {
             }
         }
         if (connected) {
+            m_takeoverInFlight.store(false);
             setState(OwnershipState::LocalPc);
             m_lastLocalTakeover.store(tpToNs(std::chrono::steady_clock::now()));
             if (m_peers.isAnyConnected()) {
-                log::handover("OUT     kAirPodsConnected → all peers");
+                log::handover("OUT     kAirPodsConnected -> all peers");
                 m_peers.sendPacket(crossdevice::kAirPodsConnected);
             }
-            // Make AirPods the default audio render + capture device.
-            m_airpods.setAsDefaultAudioDevice();
+            // Make AirPods the default audio render + capture device (if auto-route is on).
+            if (m_autoRoute.load()) m_airpods.setAsDefaultAudioDevice();
 
             // Resume whatever we paused above, now that AirPods are the active route.
             // Small delay lets the audio stack settle on the new endpoint first.
@@ -359,16 +414,34 @@ void HandoverController::onMediaPlayingChanged(bool playing) {
             // 3 s to win that race. Also re-writes Teams' cmd_settings.json so any
             // call that the user answers in the interim picks up AirPods.
             std::this_thread::sleep_for(std::chrono::milliseconds(3000));
-            if (m_airpods.isClassicallyConnected()) {
+            if (m_autoRoute.load() && m_airpods.isClassicallyConnected()) {
                 log::handover("ACTION  Re-asserting AirPods as default audio (3s retry)");
                 m_airpods.setAsDefaultAudioDevice();
             }
         } else {
             log::handover("FAIL    BT connect failed after 3 attempts — AirPods not acquired");
+            // Set m_lastLostOwnership BEFORE tryPlayActive so the media-resume
+            // event (GSMTC playing=true fired by tryPlayActive) hits the 3s
+            // anti-pingpong window and doesn't immediately re-trigger a new
+            // takeover attempt — which would flood peers with REQUEST_DISCONNECT.
+            m_lastLostOwnership.store(tpToNs(std::chrono::steady_clock::now()));
+            m_takeoverInFlight.store(false);
             if (paused) {
                 // Takeover failed — resume on whatever route we have so we don't leave
                 // the user with paused media for no reason.
                 m_media.tryPlayActive();
+            }
+            // Arm the endpoint notifier even on failure.  If AirPods become
+            // available within the next 120 s (user takes them out of case,
+            // disconnects from phone, etc.), the IMMNotificationClient fires
+            // and routes audio to AirPods automatically — no second Teams
+            // trigger needed.  setState(LocalPc) is intentionally NOT called
+            // here; the audio watcher's BT-rising-edge poll will do that
+            // within 500 ms once the link actually comes up.
+            if (m_autoRoute.load()) {
+                log::handover("INFO    Arming endpoint notifier (120s window) — "
+                              "routing will fire if AirPods appear while Teams call is active");
+                m_airpods.setAsDefaultAudioDevice();
             }
         }
     }).detach();
@@ -391,23 +464,19 @@ void HandoverController::onIncomingPacket(std::span<const std::uint8_t> data) {
                 }
                 break;
             }
-            // Protect active calls (Teams meeting, Zoom call, etc.) from being snatched
-            // away by a peer. The check is intentionally narrow: only reject when a real
-            // *communications* app has an active session on the AirPods. Passive media
-            // (YouTube, Spotify, browser audio) is NOT protected — the user is happy to
-            // let go of the AirPods if they're intentionally moving to their phone.
-            //
-            // The audio watcher already sent kWindowsAudioActive so Android should have
-            // gated on takeoverWhenCall, but guard here too for races and for peers
-            // (e.g. Xiaomi) that don't yet honor the audio-active signal.
-            if (m_airpods.isClassicallyConnected() && m_airpods.hasActiveCallSessions()) {
-                log::handover("IN      kRequestDisconnect — REJECTED (call/meeting active on Windows)");
-                if (m_peers.isAnyConnected()) {
-                    m_peers.sendPacket(kAirPodsConnected);  // re-assert
-                }
-                break;
-            }
+            // Requester always wins: every peer takeover is an explicit user action on
+            // the requesting device (media start / call answered), so the holder yields
+            // unconditionally. The prior holder-side call veto was removed for symmetry
+            // with Android's Phase 3 design (see docs/handover.md "Requester Always Wins"
+            // and docs/windows-multipeer.md). The anti-pingpong reject above is kept —
+            // it guards against our own just-completed takeover bouncing back, not a
+            // holder veto.
             log::handover("IN      kRequestDisconnect — ACCEPTED, releasing AirPods to Android");
+
+            // Mark voluntary release so onCallActive() suppresses Teams/WASAPI re-triggers
+            // for the duration of the current call (until session expires or media stops).
+            m_voluntarilyReleased.store(true);
+            log::handover("STATE   m_voluntarilyReleased = true (voluntary release)");
 
             // Record "lost ownership" NOW, before any potentially-blocking operation.
             // Chrome and other apps auto-resume playback within ~30-50ms when the
@@ -433,7 +502,7 @@ void HandoverController::onIncomingPacket(std::span<const std::uint8_t> data) {
             m_airpods.disconnect();
             setState(OwnershipState::RemoteAndroid);
             if (m_peers.isAnyConnected()) {
-                log::handover("OUT     kAirPodsDisconnected → all peers");
+                log::handover("OUT     kAirPodsDisconnected -> all peers");
                 m_peers.sendPacket(kAirPodsDisconnected);
             }
             break;
@@ -445,6 +514,9 @@ void HandoverController::onIncomingPacket(std::span<const std::uint8_t> data) {
             // is peak user attention. Even mid-Teams-meeting on Windows, we yield.
             // The user's principle: calls always win, on whichever device they're on.
             log::handover("IN      kRequestHandover — ACCEPTED unconditionally (call priority)");
+            // Mark voluntary release (same reasoning as RequestDisconnect above).
+            m_voluntarilyReleased.store(true);
+            log::handover("STATE   m_voluntarilyReleased = true (voluntary handover)");
             // Set the anti-pingpong timestamp first (see comment in ACCEPTED above).
             m_lastLostOwnership.store(tpToNs(std::chrono::steady_clock::now()));
             m_media.tryPauseActive();
@@ -454,7 +526,7 @@ void HandoverController::onIncomingPacket(std::span<const std::uint8_t> data) {
             m_airpods.disconnect();
             setState(OwnershipState::RemoteAndroid);
             if (m_peers.isAnyConnected()) {
-                log::handover("OUT     kAirPodsDisconnected → all peers");
+                log::handover("OUT     kAirPodsDisconnected -> all peers");
                 m_peers.sendPacket(kAirPodsDisconnected);
             }
             break;
@@ -467,7 +539,7 @@ void HandoverController::onIncomingPacket(std::span<const std::uint8_t> data) {
             // transition so we don't pause on a peer's idempotent re-assertion when we
             // were already Remote.
             const bool wasLocalPc = (m_state.load() == OwnershipState::LocalPc);
-            log::handover("IN      kAirPodsConnected from peer → STATE RemoteAndroid");
+            log::handover("IN      kAirPodsConnected from peer -> STATE RemoteAndroid");
 
             // Record both timestamps NOW, before any potentially-blocking work:
             //   - m_lastPeerOwnershipClaim: tells the BT falling-edge logic the peer
@@ -521,7 +593,7 @@ void HandoverController::onIncomingPacket(std::span<const std::uint8_t> data) {
 
         case Incoming::WindowsAudioActive:
         case Incoming::WindowsAudioIdle:
-            // These packets flow Windows → Android only; ignore if received from Android.
+            // These packets flow Windows -> Android only; ignore if received from Android.
             log::debug("Ignoring audio-state packet from Android (not expected)");
             break;
 
@@ -538,12 +610,25 @@ void HandoverController::onPeerConnectionChanged(bool connected) {
         const bool airpodsHere = m_airpods.isClassicallyConnected();
         const bool wasLocalPc  = (m_state.load() == OwnershipState::LocalPc);
 
-        setState(airpodsHere ? OwnershipState::LocalPc : OwnershipState::RemoteAndroid);
-        log::handover("OUT     {} → peer (sync on connect)",
-            airpodsHere ? "kAirPodsConnected" : "kAirPodsDisconnected");
-        m_peers.sendPacket(airpodsHere
-            ? crossdevice::kAirPodsConnected
-            : crossdevice::kAirPodsDisconnected);
+        // Gate the sync broadcast on setState's return value. If state didn't
+        // change (e.g. already RemoteAndroid before this peer reconnected) don't
+        // broadcast — the other already-connected peers already know. Without this
+        // gate, every RFCOMM reconnect of any one peer floods the whole mesh with
+        // kAirPodsDisconnected at the reconnect-backoff cadence (~2 s).
+        const bool stateChanged = setState(airpodsHere ? OwnershipState::LocalPc
+                                                       : OwnershipState::RemoteAndroid);
+        if (stateChanged) {
+            log::handover("OUT     {} -> all peers (sync on connect, state changed)",
+                airpodsHere ? "kAirPodsConnected" : "kAirPodsDisconnected");
+            m_peers.sendPacket(airpodsHere
+                ? crossdevice::kAirPodsConnected
+                : crossdevice::kAirPodsDisconnected);
+        } else {
+            // Newly-connected peer will learn our state from the next
+            // RequestConnectionStatus keep-alive it sends within 20 s.
+            log::handover("SKIP    State unchanged on peer connect ({}) — no broadcast",
+                airpodsHere ? "LocalPc" : "RemoteAndroid");
+        }
 
         // If we held ownership (LocalPc) but the AirPods are gone, the peer grabbed them
         // via Bluetooth before the RFCOMM coordination channel was established (bypassing
@@ -555,6 +640,26 @@ void HandoverController::onPeerConnectionChanged(bool connected) {
     } else {
         log::handover("PEER    Android disconnected");
     }
+}
+
+void HandoverController::onCallActive() {
+    // Teams/WASAPI-specific entry point. Suppressed after a voluntary release so an
+    // ongoing Teams call that is now routing through the peer's AirPods doesn't
+    // cause Windows to fight back. GSMTC-triggered media (YouTube etc.) goes through
+    // onMediaPlayingChanged directly and is not gated here — GSMTC is edge-triggered
+    // so a session that stays "playing" never re-fires anyway.
+    if (m_voluntarilyReleased.load()) {
+        log::handover("SKIP    Voluntarily released — suppressing call re-trigger until session ends");
+        return;
+    }
+    onMediaPlayingChanged(true);
+}
+
+void HandoverController::onTeamsCallEnded() {
+    // Teams session expired (call definitively ended). Clear the voluntary-release
+    // gate so the next new call can trigger a claim.
+    if (m_voluntarilyReleased.exchange(false))
+        log::handover("STATE   m_voluntarilyReleased cleared (Teams session expired)");
 }
 
 }

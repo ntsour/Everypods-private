@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "BluetoothRfcommClient.hpp"
 
@@ -10,7 +10,7 @@
 #include <string>
 #include <vector>
 
-namespace librepods {
+namespace Propods {
 
 // Manages a set of BluetoothRfcommClient connections — one per paired Android peer.
 // Presents the same logical interface as a single BluetoothRfcommClient:
@@ -38,6 +38,9 @@ public:
     // loop is launched immediately; otherwise it starts on the next start() call.
     // Duplicate addresses are silently ignored.
     void addPeer(std::uint64_t address);
+
+    // Stop and remove a peer by address. No-op if the address is not registered.
+    void removePeer(std::uint64_t address);
 
     // Launch connection loops for all registered peers.
     void start();
@@ -73,4 +76,4 @@ private:
     bool m_started{false};
 };
 
-} // namespace librepods
+} // namespace Propods

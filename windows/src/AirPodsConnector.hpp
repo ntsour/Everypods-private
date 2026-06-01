@@ -1,9 +1,9 @@
-#pragma once
+﻿#pragma once
 
 #include <cstdint>
 #include <mutex>
 
-namespace librepods {
+namespace Propods {
 
 class AirPodsConnector {
 public:

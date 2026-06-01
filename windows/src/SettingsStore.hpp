@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <cstdint>
 #include <filesystem>
@@ -6,11 +6,12 @@
 #include <string>
 #include <vector>
 
-namespace librepods {
+namespace Propods {
 
 struct Settings {
     std::vector<std::uint64_t>   androidAddresses;  // one entry per paired Android peer
     std::optional<std::uint64_t> airpodsAddress;
+    bool                         autoRoute{true};   // auto-set AirPods as default audio device
 };
 
 class SettingsStore {

@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <atomic>
 #include <cstdint>
@@ -13,7 +13,7 @@
 #include <winrt/Windows.Networking.Sockets.h>
 #include <winrt/Windows.Storage.Streams.h>
 
-namespace librepods {
+namespace Propods {
 
 class BluetoothRfcommClient {
 public:

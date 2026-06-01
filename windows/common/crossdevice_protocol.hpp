@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <array>
 #include <cstdint>
@@ -6,7 +6,7 @@
 #include <span>
 #include <string_view>
 
-namespace librepods::crossdevice {
+namespace Propods::crossdevice {
 
 inline constexpr std::string_view kServiceUuid =
     "1abbb9a4-10e4-4000-a75c-8953c5471342";

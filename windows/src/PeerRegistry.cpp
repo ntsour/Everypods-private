@@ -1,9 +1,9 @@
-#include "PeerRegistry.hpp"
+﻿#include "PeerRegistry.hpp"
 
 #include "Logger.hpp"
 #include "SettingsStore.hpp"
 
-namespace librepods {
+namespace Propods {
 
 void PeerRegistry::setOnPacket(PacketCallback cb) {
     std::scoped_lock lk{m_mutex};
@@ -70,6 +70,28 @@ void PeerRegistry::addPeer(std::uint64_t address) {
         }
     } else {
         log::info("PeerRegistry: registered peer {} (not yet started)",
+            SettingsStore::formatBluetoothAddress(address));
+    }
+}
+
+void PeerRegistry::removePeer(std::uint64_t address) {
+    std::unique_ptr<BluetoothRfcommClient> toStop;
+    {
+        std::scoped_lock lk{m_mutex};
+        for (auto it = m_entries.begin(); it != m_entries.end(); ++it) {
+            if (it->address == address) {
+                toStop = std::move(it->client);
+                m_entries.erase(it);
+                break;
+            }
+        }
+    }
+    if (toStop) {
+        toStop->stop();
+        log::info("PeerRegistry: removed peer {}",
+            SettingsStore::formatBluetoothAddress(address));
+    } else {
+        log::warn("PeerRegistry: removePeer({}) — not found",
             SettingsStore::formatBluetoothAddress(address));
     }
 }
@@ -149,4 +171,4 @@ std::vector<PeerRegistry::PeerInfo> PeerRegistry::peerInfos() const {
     return result;
 }
 
-} // namespace librepods
+} // namespace Propods

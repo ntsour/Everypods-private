@@ -1,4 +1,4 @@
-#include <windows.h>
+﻿#include <windows.h>
 
 #include <winrt/base.h>
 #include <winrt/Windows.Devices.Bluetooth.h>
@@ -9,6 +9,7 @@
 #include <winrt/Windows.Storage.Streams.h>
 
 #include "AirPodsConnector.hpp"
+#include "BleProximityWatcher.hpp"
 #include "HandoverController.hpp"
 #include "Logger.hpp"
 #include "MediaPlaybackWatcher.hpp"
@@ -28,7 +29,7 @@ using namespace winrt::Windows::Devices::Bluetooth;
 using namespace winrt::Windows::Devices::Bluetooth::Rfcomm;
 using namespace winrt::Windows::Devices::Enumeration;
 
-namespace librepods {
+namespace Propods {
 
 namespace {
 
@@ -40,9 +41,14 @@ std::wstring stateLabel(OwnershipState s) {
     }
 }
 
+struct DiscoveredPeer {
+    std::uint64_t address{};
+    std::wstring  name;
+};
+
 // Returns ALL paired devices that advertise the CrossDevice RFCOMM UUID.
-std::vector<std::uint64_t> discoverAndroidPeers() {
-    std::vector<std::uint64_t> found;
+std::vector<DiscoveredPeer> discoverAndroidPeers() {
+    std::vector<DiscoveredPeer> found;
     try {
         winrt::guid rfcommGuid {
             0x1abbb9a4u, 0x10e4u, 0x4000u,
@@ -61,7 +67,7 @@ std::vector<std::uint64_t> discoverAndroidPeers() {
                 log::info("Discovered Android peer (cached SDP): {} ({})",
                     to_string(bdev.Name()),
                     SettingsStore::formatBluetoothAddress(bdev.BluetoothAddress()));
-                found.push_back(bdev.BluetoothAddress());
+                found.push_back({bdev.BluetoothAddress(), std::wstring(bdev.Name())});
             } catch (...) {}
         }
 
@@ -74,18 +80,20 @@ std::vector<std::uint64_t> discoverAndroidPeers() {
             try {
                 auto bdev = BluetoothDevice::FromIdAsync(info.Id()).get();
                 if (!bdev) continue;
+                auto addr = bdev.BluetoothAddress();
                 // Skip addresses already collected from the cache.
-                if (std::find(found.begin(), found.end(), bdev.BluetoothAddress()) != found.end())
-                    continue;
+                bool alreadyFound = false;
+                for (auto& p : found) if (p.address == addr) { alreadyFound = true; break; }
+                if (alreadyFound) continue;
                 log::debug("  Probing {} ({})...",
                     to_string(bdev.Name()),
-                    SettingsStore::formatBluetoothAddress(bdev.BluetoothAddress()));
+                    SettingsStore::formatBluetoothAddress(addr));
                 auto services = bdev.GetRfcommServicesForIdAsync(rfcommId, BluetoothCacheMode::Uncached).get();
                 if (services.Services().Size() > 0) {
                     log::info("Discovered Android peer (uncached SDP): {} ({})",
                         to_string(bdev.Name()),
-                        SettingsStore::formatBluetoothAddress(bdev.BluetoothAddress()));
-                    found.push_back(bdev.BluetoothAddress());
+                        SettingsStore::formatBluetoothAddress(addr));
+                    found.push_back({addr, std::wstring(bdev.Name())});
                 }
             } catch (const hresult_error& e) {
                 log::debug("    skipped (probe failed: {})", to_string(e.message()));
@@ -95,7 +103,7 @@ std::vector<std::uint64_t> discoverAndroidPeers() {
         if (found.empty()) {
             log::warn("No paired device advertises CrossDevice UUID. "
                       "Make sure: (1) the phone is paired with this PC, "
-                      "(2) Handover is ON in the LibrePods Android app.");
+                      "(2) Handover is ON in the Propods Android app.");
         }
     } catch (const hresult_error& e) {
         log::error("Peer discovery failed: 0x{:08X} {}",
@@ -134,17 +142,15 @@ std::optional<std::uint64_t> discoverAirPods() {
 }
 
 int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
-    using namespace librepods;
+    using namespace Propods;
 
-#ifndef NDEBUG
-    // Attach a console so stderr/stdout are visible when debugging.
-    AllocConsole();
-    FILE* dummy;
-    freopen_s(&dummy, "CONOUT$", "w", stderr);
-    freopen_s(&dummy, "CONOUT$", "w", stdout);
-    SetConsoleTitleW(L"LibrePods Debug");
-    log::info("=== LibrePods debug build ===");
-#endif
+    // Enforce single instance: if another Propods process is already running,
+    // exit silently. The mutex is released automatically when this process exits.
+    HANDLE hMutex = CreateMutexW(nullptr, TRUE, L"Global\\PropodsSingleInstance");
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        CloseHandle(hMutex);
+        return 0;
+    }
 
     winrt::init_apartment(winrt::apartment_type::multi_threaded);
 
@@ -154,7 +160,8 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     if (settings.androidAddresses.empty()) {
         auto discovered = discoverAndroidPeers();
         if (!discovered.empty()) {
-            settings.androidAddresses = std::move(discovered);
+            for (auto& p : discovered)
+                settings.androidAddresses.push_back(p.address);
             store.save(settings);
         }
     }
@@ -170,7 +177,18 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     MediaPlaybackWatcher media;
     HandoverController controller{peers, airpods, media};
     TeamsCallWatcher teamsWatcher;
+    BleProximityWatcher bleWatcher;
     TrayIcon tray;
+
+    controller.setAutoRoute(settings.autoRoute);
+
+    // BLE proximity gate: don't initiate a takeover when the AirPods are stowed
+    // in their case (would otherwise hijack audio from a Jabra/Dell headset the
+    // user is actively on). Fails open if BLE is unavailable.
+    bleWatcher.start();
+    controller.setAvailabilityProbe([&bleWatcher]() {
+        return bleWatcher.airpodsAvailable();
+    });
 
     if (!tray.create(hInstance)) return 1;
     tray.setStatus(stateLabel(controller.state()));
@@ -183,8 +201,9 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     tray.setStatusProvider([&]() -> TrayIcon::StatusInfo {
         TrayIcon::StatusInfo info;
         info.airpodsConnected = airpods.isClassicallyConnected();
+        info.autoRouteEnabled = controller.autoRoute();
         for (auto& p : peers.peerInfos())
-            info.peers.push_back({p.name, p.connected});
+            info.peers.push_back({p.address, p.name, p.connected});
         return info;
     });
 
@@ -199,11 +218,19 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
         controller.onMediaPlayingChanged(playing);
     });
 
-    // WASAPI-based trigger (Teams calls, VLC, …) feeds the same handover path
-    // as the GSMTC media callback. The HandoverController's debounce and
-    // anti-pingpong guards apply equally to both paths.
+    // WASAPI-based trigger (Teams calls, VLC, …) feeds the handover path via
+    // onCallActive(), which applies the voluntary-release gate in addition to
+    // the standard debounce and anti-pingpong guards. This prevents an ongoing
+    // Teams call from re-triggering a claim after Windows voluntarily released
+    // AirPods to a peer.
     teamsWatcher.setOnTriggered([&controller]() {
-        controller.onMediaPlayingChanged(true);
+        controller.onCallActive();
+    });
+
+    // When the Teams audio session expires (call ended), clear the voluntary-release
+    // gate so the next new call can trigger a fresh claim.
+    teamsWatcher.setOnSessionEnded([&controller]() {
+        controller.onTeamsCallEnded();
     });
 
     tray.setMenuHandler([&](int cmd) {
@@ -212,20 +239,50 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
                 tray.postQuit();
                 break;
             case TrayIcon::kCmdPairAndroid: {
-                // Discover ALL devices advertising the CrossDevice UUID and add any new ones.
                 auto discovered = discoverAndroidPeers();
                 auto& addrs = settings.androidAddresses;
-                bool anyAdded = false;
-                for (auto a : discovered) {
-                    if (std::find(addrs.begin(), addrs.end(), a) == addrs.end()) {
-                        addrs.push_back(a);
-                        peers.addPeer(a);  // starts immediately (registry is running)
-                        log::info("Added new Android peer: {}",
-                            SettingsStore::formatBluetoothAddress(a));
-                        anyAdded = true;
-                    } else {
+
+                // Filter to devices not yet configured.
+                std::vector<DiscoveredPeer> newPeers;
+                for (auto& p : discovered) {
+                    if (std::find(addrs.begin(), addrs.end(), p.address) == addrs.end())
+                        newPeers.push_back(p);
+                    else
                         log::info("Android peer {} already registered",
-                            SettingsStore::formatBluetoothAddress(a));
+                            SettingsStore::formatBluetoothAddress(p.address));
+                }
+
+                if (newPeers.empty()) {
+                    if (discovered.empty()) {
+                        MessageBoxW(nullptr,
+                            L"No paired Android devices found running Propods.\n\n"
+                            L"Make sure:\n"
+                            L"  \x2022 The phone is paired in Windows Bluetooth settings\n"
+                            L"  \x2022 Cross-Device Handover is ON in the Propods Android app",
+                            L"Propods \x2014 Add peer", MB_OK | MB_ICONINFORMATION);
+                    } else {
+                        MessageBoxW(nullptr,
+                            L"All discovered devices are already added as peers.",
+                            L"Propods \x2014 Add peer", MB_OK | MB_ICONINFORMATION);
+                    }
+                    break;
+                }
+
+                // Ask the user to confirm each new device.
+                bool anyAdded = false;
+                for (auto& p : newPeers) {
+                    auto addrStr = SettingsStore::formatBluetoothAddress(p.address);
+                    std::wstring msg = L"Add as Android peer?\n\n" + p.name
+                        + L"\n" + std::wstring(addrStr.begin(), addrStr.end());
+                    int res = MessageBoxW(nullptr, msg.c_str(),
+                        L"Propods \x2014 Add peer", MB_YESNO | MB_ICONQUESTION);
+                    if (res == IDYES) {
+                        addrs.push_back(p.address);
+                        peers.addPeer(p.address);
+                        log::info("Added new Android peer: {} ({})",
+                            to_string(p.name),
+                            SettingsStore::formatBluetoothAddress(p.address));
+                        anyAdded = true;
                     }
                 }
                 if (anyAdded) store.save(settings);
@@ -236,6 +293,43 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
                     settings.airpodsAddress = a;
                     store.save(settings);
                     airpods.setAddress(*a);
+                }
+                break;
+            case TrayIcon::kCmdConnectAirPods:
+                // Blocking operation — run on a detached thread so the UI stays responsive.
+                std::thread([&airpods]() {
+                    log::info("Manual connect: initiating BT connection to AirPods...");
+                    if (airpods.connect()) {
+                        airpods.setAsDefaultAudioDevice();
+                        log::info("Manual connect: done — AirPods set as default device");
+                    } else {
+                        log::warn("Manual connect: BT connect failed");
+                    }
+                }).detach();
+                break;
+            case TrayIcon::kCmdToggleAutoRoute: {
+                bool nowEnabled = !controller.autoRoute();
+                controller.setAutoRoute(nowEnabled);
+                settings.autoRoute = nowEnabled;
+                store.save(settings);
+                log::info("Auto-route audio: {}", nowEnabled ? "ON" : "OFF");
+                break;
+            }
+            case TrayIcon::kCmdAutoStart:
+                tray.toggleAutoStart();
+                break;
+            default:
+                if (cmd >= TrayIcon::kCmdRemovePeer) {
+                    int idx = cmd - TrayIcon::kCmdRemovePeer;
+                    auto& addrs = settings.androidAddresses;
+                    if (idx >= 0 && idx < (int)addrs.size()) {
+                        std::uint64_t addr = addrs[idx];
+                        peers.removePeer(addr);
+                        addrs.erase(addrs.begin() + idx);
+                        store.save(settings);
+                        log::info("Removed Android peer: {}",
+                            SettingsStore::formatBluetoothAddress(addr));
+                    }
                 }
                 break;
         }
@@ -256,6 +350,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     tray.runMessageLoop();
 
     teamsWatcher.stop();
+    bleWatcher.stop();
     media.stop();
     peers.stop();
     return 0;

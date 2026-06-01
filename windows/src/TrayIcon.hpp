@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <functional>
 #include <string>
@@ -7,29 +7,36 @@
 #include <windows.h>
 #include <shellapi.h>
 
-namespace librepods {
+namespace Propods {
 
 class TrayIcon {
 public:
     using MenuHandler = std::function<void(int commandId)>;
 
-    static constexpr int kCmdQuit        = 1001;
-    static constexpr int kCmdPairAndroid = 1002;
-    static constexpr int kCmdPairAirPods = 1003;
+    static constexpr int kCmdQuit            = 1001;
+    static constexpr int kCmdPairAndroid     = 1002;
+    static constexpr int kCmdPairAirPods     = 1003;
+    static constexpr int kCmdAutoStart       = 1004;
+    static constexpr int kCmdConnectAirPods  = 1005;
+    static constexpr int kCmdToggleAutoRoute = 1006;
+    // kCmdRemovePeer+i removes the peer at index i in the StatusInfo::peers list.
+    static constexpr int kCmdRemovePeer      = 2000;
 
     // Per-peer info shown in the menu.
     struct PeerStatus {
-        std::wstring name;
-        bool         connected{false};
+        std::uint64_t address{};
+        std::wstring  name;
+        bool          connected{false};
     };
 
     // Snapshot of app status, fetched just before the menu opens.
     struct StatusInfo {
         bool                    airpodsConnected{false};
+        bool                    autoRouteEnabled{true};
         std::vector<PeerStatus> peers;
     };
 
-    using StatusProvider = std::function<StatusInfo()>;
+    using StatusProvider  = std::function<StatusInfo()>;
 
     TrayIcon();
     ~TrayIcon();
@@ -39,11 +46,12 @@ public:
 
     bool create(HINSTANCE hInstance);
     void setStatus(const std::wstring& text);
-    void setMenuHandler(MenuHandler h)     { m_menuHandler     = std::move(h); }
+    void setMenuHandler(MenuHandler h)       { m_menuHandler    = std::move(h); }
     void setStatusProvider(StatusProvider p) { m_statusProvider = std::move(p); }
 
     void runMessageLoop();
     void postQuit();
+    void toggleAutoStart();
 
 private:
     static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
@@ -52,7 +60,7 @@ private:
 
     HWND m_hwnd{};
     NOTIFYICONDATAW m_nid{};
-    std::wstring m_statusText{L"LibrePods"};
+    std::wstring m_statusText{L"Propods"};
     MenuHandler     m_menuHandler;
     StatusProvider  m_statusProvider;
     static constexpr UINT WM_TRAY = WM_APP + 1;

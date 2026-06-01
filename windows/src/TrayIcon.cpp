@@ -1,15 +1,47 @@
-#include "TrayIcon.hpp"
+﻿#include "TrayIcon.hpp"
 
 #include "Logger.hpp"
 
 #include <strsafe.h>
+#include <winreg.h>
 
-namespace librepods {
+// Icon resource ID (defined in Propods.rc)
+#define IDI_APP 1
+
+namespace Propods {
 
 namespace {
 TrayIcon* g_instance = nullptr;
-constexpr wchar_t kClassName[] = L"LibrePodsTrayWindow";
+constexpr wchar_t kClassName[]   = L"PropodsTrayWindow";
+constexpr wchar_t kRunKeyPath[]  = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+constexpr wchar_t kRunValueName[] = L"Propods";
 constexpr UINT kIconId = 1;
+
+bool isAutoStartEnabled() {
+    HKEY hk = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, kRunKeyPath, 0, KEY_QUERY_VALUE, &hk) != ERROR_SUCCESS)
+        return false;
+    DWORD type = 0, size = 0;
+    bool exists = (RegQueryValueExW(hk, kRunValueName, nullptr, &type, nullptr, &size) == ERROR_SUCCESS);
+    RegCloseKey(hk);
+    return exists;
+}
+
+void setAutoStart(bool enable) {
+    HKEY hk = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, kRunKeyPath, 0, KEY_SET_VALUE, &hk) != ERROR_SUCCESS)
+        return;
+    if (enable) {
+        wchar_t exePath[MAX_PATH] = {};
+        GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+        RegSetValueExW(hk, kRunValueName, 0, REG_SZ,
+            reinterpret_cast<const BYTE*>(exePath),
+            static_cast<DWORD>((wcslen(exePath) + 1) * sizeof(wchar_t)));
+    } else {
+        RegDeleteValueW(hk, kRunValueName);
+    }
+    RegCloseKey(hk);
+}
 }
 
 TrayIcon::TrayIcon() {
@@ -34,7 +66,7 @@ bool TrayIcon::create(HINSTANCE hInstance) {
     RegisterClassExW(&wc);
 
     m_hwnd = CreateWindowExW(
-        0, kClassName, L"LibrePods",
+        0, kClassName, L"Propods",
         WS_OVERLAPPED,
         0, 0, 0, 0,
         HWND_MESSAGE, nullptr, hInstance, nullptr);
@@ -48,7 +80,8 @@ bool TrayIcon::create(HINSTANCE hInstance) {
     m_nid.uID = kIconId;
     m_nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     m_nid.uCallbackMessage = WM_TRAY;
-    m_nid.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    m_nid.hIcon = static_cast<HICON>(LoadImageW(hInstance, MAKEINTRESOURCEW(IDI_APP),
+        IMAGE_ICON, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR));
     StringCchCopyW(m_nid.szTip, ARRAYSIZE(m_nid.szTip), m_statusText.c_str());
     if (!Shell_NotifyIconW(NIM_ADD, &m_nid)) {
         log::error("Shell_NotifyIconW(NIM_ADD) failed");
@@ -119,10 +152,14 @@ void TrayIcon::showContextMenu(HWND hwnd) {
         InsertMenuW(menu, static_cast<UINT>(-1),
             MF_BYPOSITION | MF_STRING | MF_DISABLED | MF_GRAYED,
             0u, L"Android peers:");
-        for (auto& peer : status.peers) {
+        for (int i = 0; i < (int)status.peers.size(); ++i) {
+            auto& peer = status.peers[i];
             UINT peerFlags = MF_BYPOSITION | MF_STRING | MF_DISABLED | MF_GRAYED;
             if (peer.connected) peerFlags |= MF_CHECKED;
             InsertMenuW(menu, static_cast<UINT>(-1), peerFlags, 0u, peer.name.c_str());
+            std::wstring removeLabel = L"Remove " + peer.name;
+            InsertMenuW(menu, static_cast<UINT>(-1), MF_BYPOSITION | MF_STRING,
+                static_cast<UINT_PTR>(kCmdRemovePeer + i), removeLabel.c_str());
         }
         InsertMenuW(menu, static_cast<UINT>(-1), MF_BYPOSITION | MF_SEPARATOR, 0u, nullptr);
     }
@@ -132,6 +169,20 @@ void TrayIcon::showContextMenu(HWND hwnd) {
         static_cast<UINT_PTR>(kCmdPairAndroid), L"Add Android peer...");
     InsertMenuW(menu, static_cast<UINT>(-1), MF_BYPOSITION | MF_STRING,
         static_cast<UINT_PTR>(kCmdPairAirPods), L"Select AirPods...");
+    InsertMenuW(menu, static_cast<UINT>(-1), MF_BYPOSITION | MF_STRING,
+        static_cast<UINT_PTR>(kCmdConnectAirPods), L"Connect AirPods now");
+    InsertMenuW(menu, static_cast<UINT>(-1), MF_BYPOSITION | MF_SEPARATOR, 0u, nullptr);
+
+    UINT autoRouteFlags = MF_BYPOSITION | MF_STRING;
+    if (status.autoRouteEnabled) autoRouteFlags |= MF_CHECKED;
+    InsertMenuW(menu, static_cast<UINT>(-1), autoRouteFlags,
+        static_cast<UINT_PTR>(kCmdToggleAutoRoute), L"Auto-set AirPods as audio device");
+
+    UINT autoStartFlags = MF_BYPOSITION | MF_STRING;
+    if (isAutoStartEnabled()) autoStartFlags |= MF_CHECKED;
+    InsertMenuW(menu, static_cast<UINT>(-1), autoStartFlags,
+        static_cast<UINT_PTR>(kCmdAutoStart), L"Start with Windows");
+
     InsertMenuW(menu, static_cast<UINT>(-1), MF_BYPOSITION | MF_SEPARATOR, 0u, nullptr);
     InsertMenuW(menu, static_cast<UINT>(-1), MF_BYPOSITION | MF_STRING,
         static_cast<UINT_PTR>(kCmdQuit), L"Quit");
@@ -151,6 +202,12 @@ void TrayIcon::runMessageLoop() {
 
 void TrayIcon::postQuit() {
     PostQuitMessage(0);
+}
+
+void TrayIcon::toggleAutoStart() {
+    bool nowEnabled = !isAutoStartEnabled();
+    setAutoStart(nowEnabled);
+    log::info("Auto-start on login: {}", nowEnabled ? "enabled" : "disabled");
 }
 
 }
