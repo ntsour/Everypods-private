@@ -3304,10 +3304,14 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                         ?.getString("mac_address", null)
                     if (savedMac != null && bluetoothDevice.address == savedMac) {
                         val now = System.currentTimeMillis()
-                        val peerTookOver = expectingPeerTakeover
+                        // A1 fix: confirmPeerOwnership() clears expectingPeerTakeover early
+                        // (when the peer's kAirPodsConnected arrives) and arms the cooldown.
+                        // Check the cooldown as a fallback so ACL_DISCONNECTED still recognises
+                        // the drop as peer-initiated even after the flag was cleared.
+                        val peerTookOver = expectingPeerTakeover || now < peerDropCooldownUntilMs
                         Log.d(
                             TAG,
-                            "<LogCollector:Conn> ACL_DISCONNECTED for AirPods (${bluetoothDevice.address}) — peerTookOver=$peerTookOver (expectingPeerTakeover=$expectingPeerTakeover)"
+                            "<LogCollector:Conn> ACL_DISCONNECTED for AirPods (${bluetoothDevice.address}) — peerTookOver=$peerTookOver (expectingPeerTakeover=$expectingPeerTakeover, cooldownActive=${now < peerDropCooldownUntilMs})"
                         )
                         if (peerTookOver) {
                             peerDropCooldownUntilMs = now + PEER_DROP_COOLDOWN_MS
@@ -4112,7 +4116,11 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 val recentTakeover =
                     (nowMs - AirPodsService.lastCrossDeviceTakeoverMs < AirPodsService.CROSS_DEVICE_TAKEOVER_WINDOW_MS) ||
                     (nowMs - AirPodsService.lastMusicTakeoverMs < AirPodsService.MUSIC_TAKEOVER_WINDOW_MS)
-                if (recentTakeover) {
+                // A2 fix: if we just yielded AirPods to a peer (cooldown active), do not
+                // re-assert AACP ownership — the socket reconnecting briefly after release
+                // must not be misread as us still owning the AirPods.
+                val yieldingToPeer = nowMs < AirPodsService.peerDropCooldownUntilMs
+                if (recentTakeover && !yieldingToPeer) {
                     Log.d(TAG, "Asserting AACP ownership after takeover (cold-connect / CrossDevice)")
                     aacpManager.sendControlCommand(
                         AACPManager.Companion.ControlCommandIdentifiers.OWNS_CONNECTION.value, 1
