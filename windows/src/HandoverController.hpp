@@ -5,6 +5,7 @@
 #include <condition_variable>
 #include <functional>
 #include <mutex>
+#include <string>
 #include <thread>
 
 #include "AirPodsConnector.hpp"
@@ -133,6 +134,14 @@ private:
     // and onMediaPlayingChanged immediately spawns another thread — creating a
     // loop that floods peers with REQUEST_DISCONNECT at the connect-backoff cadence.
     std::atomic<bool> m_takeoverInFlight{false};
+
+    // W4 fix: after voluntarily releasing to a peer, suppress GSMTC re-triggers from
+    // the same app for 30 s. Prevents YouTube ads and Chrome auto-resume from
+    // stealing the AirPods back after the user explicitly moved them to a phone.
+    std::atomic<std::int64_t> m_lastVoluntaryReleaseAt{0};
+    mutable std::mutex m_voluntaryReleaseAppMutex;
+    std::string m_voluntaryReleaseAppId;
+    static constexpr std::chrono::seconds kVoluntaryReleaseSuppressWindow{30};
 
     std::atomic<bool>    m_autoRoute{true};
     StateChangedCallback m_onStateChanged;
