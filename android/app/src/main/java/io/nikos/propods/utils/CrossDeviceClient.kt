@@ -61,6 +61,11 @@ object CrossDeviceClient {
     // (unlike a data sync). Capped at 10 s (was 60 s) so a transient drop doesn't leave
     // the mesh blind for up to a minute. retryNow() still short-circuits on ACL_CONNECTED.
     private const val MAX_BACKOFF_MS = 10_000L
+    // When SDP lookup fails immediately (peer has no RFCOMM server, e.g. Windows before
+    // it starts), back off for 5 min instead of the normal 10s. The answer won't change
+    // until the peer starts its service; paging every 10s wastes radio. Once Windows
+    // connects to our server, pauseLink / self-renewal takes over completely.
+    private const val SDP_BACKOFF_MS = 5 * 60 * 1000L
 
     /** One per peer we client to. All mutable fields are touched only from the
      *  link's own coroutine except [isConnected]/[socket] (read by send paths) and
@@ -100,6 +105,10 @@ object CrossDeviceClient {
         links[peerMac] = link
         link.job = CoroutineScope(Dispatchers.IO).launch {
             var backoff = INITIAL_BACKOFF_MS
+            // Set when the most recent connect failed almost instantly (SDP lookup returned
+            // no RFCOMM service channel) — means this peer has no server listening. Drives
+            // a long backoff so we stop paging a peer that can't accept us.
+            var fastFail = false
             while (isActive) {
                 // Don't page the peer while we hold the AirPods — the failed
                 // RFCOMM connect attempts jam the radio and drop the headset.
@@ -129,7 +138,17 @@ object CrossDeviceClient {
                     // a per-connect auth step that races with other BT activity
                     // on the same ACL and intermittently fails with "read ret: -1".
                     val s = device.createInsecureRfcommSocketToServiceRecord(RFCOMM_UUID)
-                    s.connect()
+                    val connectStartMs = System.currentTimeMillis()
+                    try {
+                        s.connect()
+                    } catch (e: Exception) {
+                        // Tag the elapsed time so the catch below can distinguish an SDP
+                        // failure (peer has no server — fails in <2s) from a real connect
+                        // that paged the radio and timed out.
+                        fastFail = System.currentTimeMillis() - connectStartMs < 2_000L
+                        throw e
+                    }
+                    fastFail = false
                     link.socket = s
                     link.isConnected = true
                     backoff = INITIAL_BACKOFF_MS
@@ -192,11 +211,14 @@ object CrossDeviceClient {
                             else -> "?"
                         }
                     } catch (_: Exception) { "unknown" }
+                    val nextBackoff = if (fastFail) SDP_BACKOFF_MS else backoff
                     Log.d(
                         TAG,
                         "[$peerMac] connect failed [${e.javaClass.simpleName}: ${e.message}] " +
                             "bond=$bondState adapterEnabled=${adapter.isEnabled} " +
-                            "discovering=${adapter.isDiscovering}, retrying in ${backoff}ms"
+                            "discovering=${adapter.isDiscovering}, " +
+                            (if (fastFail) "no RFCOMM server (SDP fast-fail) — backing off ${SDP_BACKOFF_MS / 60_000}min"
+                             else "retrying in ${nextBackoff}ms")
                     )
                     link.socket?.runCatching { close() }
                     link.socket = null
@@ -205,11 +227,16 @@ object CrossDeviceClient {
                 if (isActive) {
                     // Sleep with a cancellable child job so retryNow() can short-circuit
                     // the wait when the peer's ACL comes back up.
-                    val bj = launch { delay(backoff) }
+                    val sleepMs = if (fastFail) SDP_BACKOFF_MS else backoff
+                    val bj = launch { delay(sleepMs) }
                     link.backoffJob = bj
                     bj.join()
                     link.backoffJob = null
-                    backoff = (backoff * 1.5).toLong().coerceAtMost(MAX_BACKOFF_MS)
+                    // After an SDP fast-fail we reset to INITIAL so that if the peer comes
+                    // up on the next attempt we connect promptly; if it's still down we'll
+                    // fast-fail again and re-apply the 5-min backoff.
+                    backoff = if (fastFail) INITIAL_BACKOFF_MS
+                              else (backoff * 1.5).toLong().coerceAtMost(MAX_BACKOFF_MS)
                 }
             }
         }
