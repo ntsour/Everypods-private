@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import io.nikos.propods.billing.BillingManager
 import io.nikos.propods.data.XposedRemotePrefProvider
+import io.nikos.propods.services.ServiceManager
 import kotlin.math.roundToInt
 
 data class AppSettingsUiState(
@@ -25,6 +26,7 @@ data class AppSettingsUiState(
     val takeoverWhenCall: Boolean = false,
     val takeoverWhenRingingCall: Boolean = false,
     val takeoverWhenMediaStart: Boolean = false,
+    val headTrackingEnabled: Boolean = false,
     val useAlternateHeadTrackingPackets: Boolean = true,
     val conversationalAwarenessVolume: Float = 43f,
     val showCameraDialog: Boolean = false,
@@ -84,6 +86,7 @@ class AppSettingsViewModel(application: Application) : AndroidViewModel(applicat
                 takeoverWhenCall = sharedPreferences.getBoolean("takeover_when_call", true),
                 takeoverWhenRingingCall = sharedPreferences.getBoolean("takeover_when_ringing_call", false),
                 takeoverWhenMediaStart = sharedPreferences.getBoolean("takeover_when_media_start", false),
+                headTrackingEnabled = sharedPreferences.getBoolean("head_tracking_enabled", false),
                 useAlternateHeadTrackingPackets = sharedPreferences.getBoolean("use_alternate_head_tracking_packets", true),
                 conversationalAwarenessVolume = sharedPreferences.getInt("conversational_awareness_volume", 43).toFloat(),
                 cameraPackageValue = sharedPreferences.getString("custom_camera_package", "") ?: "",
@@ -143,6 +146,12 @@ class AppSettingsViewModel(application: Application) : AndroidViewModel(applicat
     fun setTakeoverWhenMediaStart(enabled: Boolean) {
         sharedPreferences.edit { putBoolean("takeover_when_media_start", enabled) }
         _uiState.update { it.copy(takeoverWhenMediaStart = enabled) }
+    }
+
+    fun setHeadTrackingEnabled(enabled: Boolean) {
+        sharedPreferences.edit { putBoolean("head_tracking_enabled", enabled) }
+        _uiState.update { it.copy(headTrackingEnabled = enabled) }
+        if (!enabled) ServiceManager.getService()?.stopHeadTracking()
     }
 
     fun setUseAlternateHeadTrackingPackets(enabled: Boolean) {

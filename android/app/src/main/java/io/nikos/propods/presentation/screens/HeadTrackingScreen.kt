@@ -251,8 +251,19 @@ fun HeadTrackingScreen(
                 )
                 AccelerationPlot()
 
-                // ── Advanced Option: Alternate head-tracking packets ───────
+                // ── Enable / disable head tracking ────────────────────────
                 val appState by appSettingsViewModel.uiState.collectAsState()
+                Spacer(modifier = Modifier.height(8.dp))
+                StyledToggle(
+                    label           = "Enable Head Tracking",
+                    description     = "Send head-tracking data to the AirPods on connect. Off by default — enable only if you use head-gesture controls.",
+                    checked         = appState.headTrackingEnabled,
+                    onCheckedChange = appSettingsViewModel::setHeadTrackingEnabled,
+                    independent     = true,
+                    enabled         = true
+                )
+
+                // ── Advanced Option: Alternate head-tracking packets ───────
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
                     text = stringResource(R.string.advanced_options),

@@ -887,7 +887,14 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                             bleManager.getMostRecentStatus()?.isLeftInEar == true || bleManager.getMostRecentStatus()?.isRightInEar == true
 //                        if ((CrossDevice.isAvailable && !isConnectedLocally && earDetectionNotification.status.contains(0x00)) || leAvailableForAudio) CoroutineScope(Dispatchers.IO).launch {
                         if (leAvailableForAudio) runBlocking {
-                            takeOver("call")
+                            // Suppress if a peer (Windows) already has an active call session on
+                            // the AirPods — prevents the simultaneous-ring race where we'd steal
+                            // the pods from the device the user is actually answering on.
+                            if (CrossDevice.peerAudioActive) {
+                                Log.d(TAG, "takeOver(call/RINGING) suppressed: peer has active call session")
+                            } else {
+                                takeOver("call")
+                            }
                         }
                         if (config.headGesturesEnabled && config.headGesturesAnswerCall) {
                             handleIncomingCall()
@@ -903,7 +910,11 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                         if (leAvailableForAudio) CoroutineScope(
                             Dispatchers.IO
                         ).launch {
-                            takeOver("call")
+                            if (CrossDevice.peerAudioActive) {
+                                Log.d(TAG, "takeOver(call/OFFHOOK) suppressed: peer has active call session")
+                            } else {
+                                takeOver("call")
+                            }
                         }
                         isInCall = true
                         setupStemActions()
@@ -4186,13 +4197,16 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     aacpManager.sendSmartRoutingShowUI(localMac)
                     aacpManager.sendHijackRequest(localMac)
                 }
-                if (!handleIncomingCallOnceConnected) startHeadTracking() else handleIncomingCall()
+                val headTrackingEnabled = sharedPreferences.getBoolean("head_tracking_enabled", false)
+                if (!handleIncomingCallOnceConnected && headTrackingEnabled) startHeadTracking()
+                else if (!handleIncomingCallOnceConnected) stopHeadTracking()
+                else handleIncomingCall()
                 Handler(Looper.getMainLooper()).postDelayed({
                     aacpManager.sendPacket(aacpManager.createHandshakePacket())
                     aacpManager.sendSetFeatureFlagsPacket()
                     aacpManager.sendNotificationRequest()
                     aacpManager.sendRequestProximityKeys(AACPManager.Companion.ProximityKeyType.IRK.value)
-                    if (!handleIncomingCallOnceConnected) stopHeadTracking()
+                    if (!handleIncomingCallOnceConnected && headTrackingEnabled) stopHeadTracking()
                 }, 5000)
 
                 sendBroadcast(
@@ -4285,6 +4299,17 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     }
 
     fun disconnectForCD() {
+        // Call-hold veto: if this device is currently ringing or in a call, do not yield
+        // the AirPods. All devices receive the same Teams/VoIP ring simultaneously and each
+        // issues kRequestDisconnect — without this veto the first requester blindly wins
+        // even when this device is the one actually handling the call. Music-only requests
+        // are unaffected (they never call disconnectForCD while isInCall/isCallRinging).
+        if (isCallRinging || isInCall) {
+            Log.d(TAG, "Call-hold veto: ignoring REQUEST_DISCONNECT (isCallRinging=$isCallRinging, isInCall=$isInCall)")
+            CrossDevice.notifyConnected()   // re-assert ownership so requester doesn't hang
+            return
+        }
+
         // Anti-pingpong: when ownership moves to a CrossDevice peer (Android/Windows),
         // suppress local takeover attempts for 30 s. AirPods frequently bounce back to
         // the releasing device's BT stack (autonomous BT reconnect), which can briefly
