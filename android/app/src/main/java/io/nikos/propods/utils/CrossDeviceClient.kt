@@ -108,6 +108,17 @@ object CrossDeviceClient {
                     delay(HEADSET_HELD_RECHECK_MS)
                     continue
                 }
+                // W5-C1: if this peer is already reachable via an inbound server socket
+                // (e.g. Windows connected to our server), opening a redundant outbound
+                // client link would just page their radio for no benefit. Sleep and
+                // re-check. This makes the pause self-renewing: Windows stays connected
+                // inbound → every 5 min we check → defer again → no radio waste.
+                // If the inbound link drops, isConnectedTo returns false and we proceed.
+                if (CrossDevice.isConnectedTo(peerMac)) {
+                    Log.d(TAG, "[$peerMac] already reachable via inbound socket — deferring outbound client (5 min)")
+                    delay(5 * 60 * 1000L)
+                    continue
+                }
                 try {
                     val device = adapter.getRemoteDevice(peerMac)
                     // W5 instrumentation: resolve the peer's display name so logs make
