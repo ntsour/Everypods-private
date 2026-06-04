@@ -374,7 +374,15 @@ void HandoverController::onMediaPlayingChanged(bool playing) {
 
         // Phase 1: event-driven kickoff for the first attempt.
         constexpr auto kMaxAckWait     = std::chrono::milliseconds(1500);
-        constexpr auto kPostAckGrace   = std::chrono::milliseconds(300);
+        // Post-ack grace: the RFCOMM ack (kAirPodsDisconnected) only means the peer
+        // RECEIVED our request — it has NOT necessarily torn down A2DP yet. If we fire
+        // connect() before the source fully releases, the first attempt races the
+        // release and frequently eats the full ~10-15 s uncached-SDP enumeration in
+        // AirPodsConnector::connect() before failing, then succeeds only on the retry.
+        // 700 ms gives the source time to drop A2DP so attempt 1 lands fast on warm
+        // pods. NOTE: a genuinely cold connect (pods idle/in case) is still inherently
+        // slow because the BT stack must page asleep AirPods — this grace cannot fix that.
+        constexpr auto kPostAckGrace   = std::chrono::milliseconds(700);
         const auto ackDeadline = kickoffTime + kMaxAckWait;
 
         bool gotPeerAck = false;
@@ -417,9 +425,17 @@ void HandoverController::onMediaPlayingChanged(bool playing) {
         }
         if (connected) {
             m_takeoverInFlight.store(false);
-            setState(OwnershipState::LocalPc);
+            // W2 fix: gate the ownership broadcast on a real state transition. The
+            // 500 ms BT rising-edge watcher may have already observed the classical
+            // link come up and claimed LocalPc (broadcasting kAirPodsConnected) a
+            // moment before connect() returned here. Broadcasting unconditionally
+            // then floods every peer with a duplicate kAirPodsConnected ~3-4 s after
+            // the first. setState() returns true only for the thread that actually
+            // performed the RemoteAndroid->LocalPc transition, so exactly one of the
+            // two paths broadcasts.
+            const bool claimed = setState(OwnershipState::LocalPc);
             m_lastLocalTakeover.store(tpToNs(std::chrono::steady_clock::now()));
-            if (m_peers.isAnyConnected()) {
+            if (claimed && m_peers.isAnyConnected()) {
                 log::handover("OUT     kAirPodsConnected -> all peers");
                 m_peers.sendPacket(crossdevice::kAirPodsConnected);
             }
