@@ -520,6 +520,20 @@ void HandoverController::onIncomingPacket(std::span<const std::uint8_t> data) {
                 }
                 break;
             }
+            // Call-hold veto: do not yield AirPods when we are currently in an active
+            // call session (Teams / Zoom / WebEx / etc.). All devices receive the same
+            // VoIP ring simultaneously and each sends kRequestDisconnect — without this
+            // veto the first requester blindly wins even when Windows is the one the
+            // user is actually answering on. Music-only requests are unaffected (the
+            // hasActiveCallSessions() check returns false for music-only audio). The
+            // "requester always wins" rule still applies for non-call scenarios.
+            if (m_airpods.hasActiveCallSessions()) {
+                log::handover("IN      kRequestDisconnect — REJECTED (call-hold veto: active call/meeting session)");
+                if (m_peers.isAnyConnected())
+                    m_peers.sendPacket(crossdevice::kAirPodsConnected);   // re-assert to caller
+                break;
+            }
+
             // Requester always wins: every peer takeover is an explicit user action on
             // the requesting device (media start / call answered), so the holder yields
             // unconditionally. The prior holder-side call veto was removed for symmetry
