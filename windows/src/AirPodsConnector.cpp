@@ -340,6 +340,22 @@ bool AirPodsConnector::connect() {
             try {
                 for (int i = 0; i < 6; ++i) {
                     std::this_thread::sleep_for(std::chrono::seconds(3));
+                    // Stop nudging the moment the link is up. The nudger only exists
+                    // to prod a COLD link toward ACTIVE; once the AirPods are connected,
+                    // further BluetoothSetServiceState(ENABLE) toggles disrupt the live
+                    // A2DP negotiation and leave the endpoint stuck UNPLUGGED (no sound).
+                    bool connected = false;
+                    if (HANDLE hR = openFirstRadio()) {
+                        BLUETOOTH_DEVICE_INFO bi = {};
+                        bi.dwSize = sizeof(bi);
+                        bi.Address.ullLong = addr;
+                        if (BluetoothGetDeviceInfo(hR, &bi) == ERROR_SUCCESS) connected = bi.fConnected;
+                        CloseHandle(hR);
+                    }
+                    if (connected) {
+                        log::debug("Profile nudge: link is up — stopping nudger (avoid disrupting A2DP)");
+                        break;
+                    }
                     log::debug("Profile nudge attempt {}/6 (quiet)", i + 1);
                     toggleProfile(addr, kA2dpSink,  BLUETOOTH_SERVICE_ENABLE,
                                   "A2DP-nudge", /*quiet=*/true);
@@ -372,17 +388,15 @@ bool AirPodsConnector::connect() {
             DWORD err = BluetoothGetDeviceInfo(hRadio, &info);
             CloseHandle(hRadio);
             if (err == ERROR_SUCCESS && info.fConnected) {
-                log::info("BT classical link already up - re-enabling HFP profile "
-                          "(a previous handover may have disabled it, which blocks "
-                          "the AirPods mic from appearing in Teams/Zoom)");
-                // Re-enable HFP unconditionally. disconnect() calls
-                // BluetoothSetServiceState(kHandsFree, DISABLE) which Windows
-                // persists in the BT registry — if we skip this, the user's next
-                // manual reconnect restores only A2DP and Teams finds no mic.
-                // A2DP BluetoothSetServiceState(ENABLE) is deliberately skipped
-                // (it blocks ~5 s and returns error 87 when the link is already up).
-                toggleProfile(m_address, kHandsFree, BLUETOOTH_SERVICE_ENABLE, "HFP");
-                spawnNudgerIfNeeded(m_address, /*kicked=*/true);
+                // Link is already up — do NOT toggle any BT profile service state.
+                // BluetoothSetServiceState(ENABLE) on a live link disrupts the
+                // in-progress A2DP negotiation and leaves the AirPods render endpoint
+                // stuck UNPLUGGED (no sound). We previously re-enabled HFP here for the
+                // Teams/Zoom mic, but that toggle is what broke audio; let Windows
+                // settle the link on its own. (HFP for a genuine cold connect is still
+                // enabled by the link-not-yet-up path below.)
+                log::info("BT classical link already up - leaving profiles untouched "
+                          "(toggling them on a live link disrupts A2DP)");
                 return true;
             }
         }
@@ -958,13 +972,15 @@ bool AirPodsConnector::setAsDefaultAudioDevice() {
 }
 
 void AirPodsConnector::setPersistentArm(bool persistent) {
-    // Re-enable HFP whenever we take ownership (persistent=true). This covers
-    // both the BT-rising-edge path (HandoverController watcher detects AirPods
-    // appearing) and the explicit connect() path. disconnect() calls
-    // BluetoothSetServiceState(kHandsFree, DISABLE) which Windows persists —
-    // without this re-enable, the AirPods mic never appears in Teams/Zoom on
-    // the next manual reconnect. Failures are non-fatal (logged internally).
-    if (persistent && m_address != 0) {
+    // Re-enable HFP when we take ownership — BUT NEVER on an already-connected
+    // link. Toggling BluetoothSetServiceState on a live AirPods link disrupts the
+    // in-progress A2DP negotiation: the audio engine leaves the AirPods render
+    // endpoint UNPLUGGED and no sound ever plays (confirmed — quitting the app,
+    // which stops these toggles, makes audio work). setState(LocalPc) fires this on
+    // the BT rising edge, i.e. exactly when the link just came up and A2DP is still
+    // settling, so the guard skips it there. A genuine cold connect re-enables HFP
+    // via connect()'s link-not-yet-up path instead.
+    if (persistent && m_address != 0 && !isClassicallyConnected()) {
         toggleProfile(m_address, kHandsFree, BLUETOOTH_SERVICE_ENABLE, "HFP-ownership-claim");
     }
 
@@ -1188,15 +1204,23 @@ bool AirPodsConnector::disconnect() {
         }
     }
 
-    bool a2dpOk = toggleProfile(m_address, kA2dpSink,  BLUETOOTH_SERVICE_DISABLE, "A2DP");
-    bool hfpOk  = toggleProfile(m_address, kHandsFree, BLUETOOTH_SERVICE_DISABLE, "HFP");
-
-    if (a2dpOk || hfpOk) {
-        log::info("AirPods disconnect requested for {:012X} (A2DP={} HFP={})",
-            m_address, a2dpOk ? "ok" : "fail", hfpOk ? "ok" : "fail");
-        return true;
-    }
-    return false;
+    // DO NOT disable the A2DP/HFP profiles here. BluetoothSetServiceState(DISABLE)
+    // is persisted by Windows in the BT registry — so a release leaves the AirPods'
+    // A2DP service DISABLED, and the next time they connect the audio endpoint is
+    // NOTPRESENT (no sound) until something re-enables it. Re-enabling, in turn, can
+    // only be done on a cold link (doing it on a live link disrupts A2DP). That
+    // disable/enable cycle was the root cause of "AirPods connect to Windows but no
+    // audio" — and is exactly why quitting the app (which stops touching profile
+    // state) made audio work.
+    //
+    // Releasing to a phone does not require us to forcibly disable A2DP: A2DP sink is
+    // single-holder, so when the phone grabs the AirPods (its takeOver connects A2DP)
+    // the link moves off Windows on its own. We simply stop holding it and let the
+    // peer take over. Ownership/state is tracked separately by HandoverController.
+    log::info("AirPods release for {:012X} — leaving BT profile state untouched "
+              "(peer's A2DP grab moves the link; avoids persistent A2DP disable)",
+        m_address);
+    return true;
 }
 
 }
