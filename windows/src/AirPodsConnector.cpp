@@ -311,116 +311,31 @@ bool AirPodsConnector::connect() {
         log::debug("  status mid-connect: connection={}", (int)device.ConnectionStatus());
     } catch (...) {}
 
-    // Profile-nudge spawn: even after a successful RFCOMM/SDP trigger, Windows can
-    // take 20-40 seconds to finally promote the audio endpoint to DEVICE_STATE_ACTIVE
-    // (BT link up, but A2DP negotiation still bouncing). A background retry of
-    // BluetoothSetServiceState every 3 s sometimes nudges the stack. Failures are
-    // silenced (quiet=true). Routing application happens via the IMMNotificationClient
-    // when the endpoint hits ACTIVE, independently of these nudges.
+    // The link-wake above (uncached SDP + opportunistic socket open) is sufficient on
+    // its own. Once the ACL link is up, Windows auto-connects the AirPods' already-
+    // enabled A2DP + HFP profiles, activates the audio endpoints, and manages all
+    // A2DP<->HFP switching (including the switch back to A2DP when a call ends) natively
+    // from then on — exactly as it does for any other Bluetooth headset.
     //
-    // Guard against multiple concurrent nudgers: HandoverController calls connect()
-    // up to 3 times across retry backoffs. Only one nudger runs at a time per process.
-    auto spawnNudgerIfNeeded = [](std::uint64_t addr, bool kicked) {
-        static std::atomic<bool> s_nudgerRunning{false};
-        // Do not gate on kicked: spawn even when the RFCOMM probe and
-        // BluetoothSetServiceState both failed.  The BT stack may still be
-        // negotiating the ACL link in the background; the nudger's quiet
-        // retries every 3 s will catch the moment it responds.
-        (void)kicked;
-        if (s_nudgerRunning.exchange(true)) return;
-        std::thread([addr]() {
-            // Wrap the whole loop in a try/catch so the static guard always resets:
-            // log::debug() does std::format + file I/O and can throw std::bad_alloc
-            // under memory pressure; WinRT calls in toggleProfile's failure path
-            // (logDeviceInfo) can throw winrt::hresult_error. Without this catch,
-            // any thrown-and-unhandled exception in a detached thread terminates
-            // it before the s_nudgerRunning reset runs, leaving the flag stuck
-            // `true` for the rest of the process lifetime — every future connect()
-            // would silently skip spawning a nudger.
-            try {
-                for (int i = 0; i < 6; ++i) {
-                    std::this_thread::sleep_for(std::chrono::seconds(3));
-                    // Stop nudging the moment the link is up. The nudger only exists
-                    // to prod a COLD link toward ACTIVE; once the AirPods are connected,
-                    // further BluetoothSetServiceState(ENABLE) toggles disrupt the live
-                    // A2DP negotiation and leave the endpoint stuck UNPLUGGED (no sound).
-                    bool connected = false;
-                    if (HANDLE hR = openFirstRadio()) {
-                        BLUETOOTH_DEVICE_INFO bi = {};
-                        bi.dwSize = sizeof(bi);
-                        bi.Address.ullLong = addr;
-                        if (BluetoothGetDeviceInfo(hR, &bi) == ERROR_SUCCESS) connected = bi.fConnected;
-                        CloseHandle(hR);
-                    }
-                    if (connected) {
-                        log::debug("Profile nudge: link is up — stopping nudger (avoid disrupting A2DP)");
-                        break;
-                    }
-                    log::debug("Profile nudge attempt {}/6 (quiet)", i + 1);
-                    toggleProfile(addr, kA2dpSink,  BLUETOOTH_SERVICE_ENABLE,
-                                  "A2DP-nudge", /*quiet=*/true);
-                    toggleProfile(addr, kHandsFree, BLUETOOTH_SERVICE_ENABLE,
-                                  "HFP-nudge",  /*quiet=*/true);
-                }
-            } catch (const std::exception& e) {
-                log::warn("Profile nudge thread terminated by exception: {}", e.what());
-            } catch (...) {
-                log::warn("Profile nudge thread terminated by unknown exception");
-            }
-            s_nudgerRunning = false;
-        }).detach();
-    };
-
-    // Step 2 EARLY-OUT: if the RFCOMM probe already brought the BT classical link up,
-    // the subsequent BluetoothSetServiceState(ENABLE) calls are redundant. Worse,
-    // when the link is up Windows often returns error 87 from those calls AND blocks
-    // for ~2.5 s per call while waiting for an ACK that will never come — total ~5 s
-    // wasted, which then triggers the retry backoff in HandoverController even though
-    // the first attempt actually succeeded. Skip and report success directly; the
-    // Profile-nudge thread spawned here handles the rare case where A2DP needs an
-    // extra prod to finalise. Mirrors the disconnect()-side early-out.
-    {
-        HANDLE hRadio = openFirstRadio();
-        if (hRadio) {
-            BLUETOOTH_DEVICE_INFO info = {};
-            info.dwSize = sizeof(info);
-            info.Address.ullLong = m_address;
-            DWORD err = BluetoothGetDeviceInfo(hRadio, &info);
-            CloseHandle(hRadio);
-            if (err == ERROR_SUCCESS && info.fConnected) {
-                // Link is already up — do NOT toggle any BT profile service state.
-                // BluetoothSetServiceState(ENABLE) on a live link disrupts the
-                // in-progress A2DP negotiation and leaves the AirPods render endpoint
-                // stuck UNPLUGGED (no sound). We previously re-enabled HFP here for the
-                // Teams/Zoom mic, but that toggle is what broke audio; let Windows
-                // settle the link on its own. (HFP for a genuine cold connect is still
-                // enabled by the link-not-yet-up path below.)
-                log::info("BT classical link already up - leaving profiles untouched "
-                          "(toggling them on a live link disrupts A2DP)");
-                return true;
-            }
-        }
-    }
-
-    // Step 2: link is NOT yet up — try the documented profile-activation path. If
-    // this also fails, the Profile-nudge thread will continue retrying in the
-    // background.
-    bool a2dpKicked = toggleProfile(m_address, kA2dpSink,  BLUETOOTH_SERVICE_ENABLE, "A2DP");
-    bool hfpKicked  = toggleProfile(m_address, kHandsFree, BLUETOOTH_SERVICE_ENABLE, "HFP");
-    if (!a2dpKicked && !hfpKicked) {
-        log::warn("Both BluetoothSetServiceState calls failed after RFCOMM probe — "
-                  "see [BT-diag] lines above; if connected=no, the link never came up");
-    }
-
+    // We deliberately do NOT call BluetoothSetServiceState here. ENABLE on a live link
+    // re-runs driver activation and tears down the in-progress A2DP stream (endpoint
+    // stuck UNPLUGGED, no sound); and it is unnecessary because the profiles are already
+    // enabled from pairing. Verified with a standalone test (windows/tools/bt_wake_test):
+    // the link-wake alone drives the stereo render AND HFP capture endpoints to ACTIVE
+    // with zero service toggling. Routing audio onto the AirPods is the
+    // IMMNotificationClient's job once the endpoint reaches DEVICE_STATE_ACTIVE.
+    bool linkUp = false;
     try {
-        log::debug("  status after: connection={}", (int)device.ConnectionStatus());
+        linkUp = (device.ConnectionStatus() == BluetoothConnectionStatus::Connected);
     } catch (...) {}
 
-    const bool kicked = a2dpKicked || hfpKicked || socketOpened;
-    spawnNudgerIfNeeded(m_address, kicked);
-
-    // The connect attempt succeeded if *any* trigger fired. The audio endpoint
-    // transition (and the routing) is now the IMMNotificationClient's job.
+    // Success = we opened a socket or the link is (now) up. Even if neither is
+    // observable yet (AirPods can take a few seconds to settle), the SDP/connection
+    // attempt has been issued and the endpoint watcher finishes the job. If
+    // HandoverController retries, it simply re-issues the harmless link-wake.
+    const bool kicked = socketOpened || linkUp;
+    log::info("AirPods connect: link-wake issued (socketOpened={}, linkUp={}) — "
+              "letting Windows activate the audio endpoint natively", socketOpened, linkUp);
     return kicked;
 }
 
@@ -914,6 +829,18 @@ EndpointNotifier* ensureNotifier(IMMDeviceEnumerator* enumerator) {
 // register an IMMNotificationClient and wait for OnDeviceStateChanged on an
 // AirPods endpoint to fire with DEVICE_STATE_ACTIVE.
 bool AirPodsConnector::setAsDefaultAudioDevice() {
+    // PURE TEST-REPLICA (2026-06-04): Propods does ZERO audio routing. We only wake the
+    // AirPods BT link and let Windows do exactly what it does for any other headset —
+    // auto-promote the freshly-connected device to default and route the audio. This
+    // mirrors the standalone bt_wake_test (wake only) which drove both endpoints ACTIVE
+    // with sound and no SetDefaultEndpoint. Forcing the default endpoint here (and the
+    // IMMNotificationClient it armed) was part of the interference we are removing.
+    // Kept as a no-op so callers compile unchanged and this is trivially reversible:
+    // if Windows turns out not to move an already-playing stream, re-enable a single
+    // SetDefaultEndpoint-on-ACTIVE here.
+    return true;
+
+#if 0  // routing intentionally disabled — see comment above
     HRESULT coInitHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     // S_FALSE means already initialized on this thread — that's fine.
     const bool weInited = (coInitHr == S_OK);
@@ -969,44 +896,16 @@ bool AirPodsConnector::setAsDefaultAudioDevice() {
     // routing. The caller (HandoverController) doesn't distinguish — either way
     // the system is making best effort to route.
     return appliedNow || (notifier != nullptr);
+#endif  // routing intentionally disabled
 }
 
 void AirPodsConnector::setPersistentArm(bool persistent) {
-    // Re-enable HFP when we take ownership — BUT NEVER on an already-connected
-    // link. Toggling BluetoothSetServiceState on a live AirPods link disrupts the
-    // in-progress A2DP negotiation: the audio engine leaves the AirPods render
-    // endpoint UNPLUGGED and no sound ever plays (confirmed — quitting the app,
-    // which stops these toggles, makes audio work). setState(LocalPc) fires this on
-    // the BT rising edge, i.e. exactly when the link just came up and A2DP is still
-    // settling, so the guard skips it there. A genuine cold connect re-enables HFP
-    // via connect()'s link-not-yet-up path instead.
-    if (persistent && m_address != 0 && !isClassicallyConnected()) {
-        toggleProfile(m_address, kHandsFree, BLUETOOTH_SERVICE_ENABLE, "HFP-ownership-claim");
-    }
-
-    // We need an enumerator to register the notifier (lazy init in ensureNotifier).
-    // If the notifier is already registered, ensureNotifier will just refresh the
-    // enumerator pointer. If it isn't, this is the first-ever call — make sure we
-    // can register it now so persistent mode takes effect immediately.
-    HRESULT coInitHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-    const bool weInited = (coInitHr == S_OK);
-
-    ComPtr<IMMDeviceEnumerator> enumerator;
-    HRESULT hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
-                                  __uuidof(IMMDeviceEnumerator), (void**)enumerator.GetAddressOf());
-    if (SUCCEEDED(hr)) {
-        if (EndpointNotifier* notifier = ensureNotifier(enumerator.Get())) {
-            notifier->setPersistent(persistent);
-        } else {
-            log::warn("setPersistentArm: notifier registration failed; persistent={} ignored",
-                persistent);
-        }
-    } else {
-        log::warn("setPersistentArm: CoCreateInstance(MMDeviceEnumerator) failed: 0x{:08X}",
-            (std::uint32_t)hr);
-    }
-
-    if (weInited) CoUninitialize();
+    // PURE TEST-REPLICA (2026-06-04): no-op. This used to arm the IMMNotificationClient
+    // that re-applies SetDefaultEndpoint routing. With Propods doing ZERO audio routing
+    // (Windows auto-promotes/routes natively, like bt_wake_test), there is nothing to
+    // arm. Kept as a no-op so callers compile unchanged; trivially reversible.
+    (void)persistent;
+    return;
 }
 
 bool AirPodsConnector::hasActiveAudioSessions() {

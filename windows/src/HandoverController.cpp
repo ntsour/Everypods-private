@@ -123,10 +123,10 @@ void HandoverController::startAudioWatcher() {
                         // and anti-pingpong fails to suppress the counter-takeover.
                         m_lastLostOwnership.store(tpToNs(std::chrono::steady_clock::now()));
 
-                        m_media.tryPauseActive();
-                        m_media.tryPauseAllSessions();
-                        m_media.tryPauseViaMediaKey();
-                        m_media.tryPauseAllBrowserWindows();
+                        // Do NOT pause the user's media. Propods must never touch playback
+                        // (let Windows/the user manage it). Audio may briefly continue on PC
+                        // speakers after the AirPods leave — acceptable, and far better than
+                        // freezing the user's video as the pause sequence did.
                         if (setState(OwnershipState::RemoteAndroid)) {
                             log::handover("{}", reason);
                             if (m_peers.isAnyConnected()) {
@@ -339,75 +339,28 @@ void HandoverController::onMediaPlayingChanged(bool playing) {
     const std::string appId = m_media.currentAppId();
     log::handover("TRIGGER Media/call active (app={}) — requesting handover from Android",
                   appId.empty() ? "unknown" : appId);
-    // Pause local media so audio doesn't leak through PC speakers during the
-    // ~1-2s while AirPods are migrating. We'll resume it once we've claimed them.
-    const bool paused = m_media.tryPauseActive();
+    // PURE TEST-REPLICA: do NOT pause the user's media. Pausing here (then resuming after
+    // claiming the AirPods) is what froze YouTube when connect() was slow or the resume
+    // misfired. We just wake the link and let Windows route the already-playing audio onto
+    // the AirPods once it activates them — like selecting the device in the sound flyout.
 
-    // Capture the kickoff time BEFORE sending kRequestDisconnect so the takeover
-    // thread can distinguish a "kAirPodsDisconnected from peer" arriving in response
-    // to *this* request from earlier stale ones.
-    const auto kickoffTime = std::chrono::steady_clock::now();
-    const bool peerConnected = m_peers.isAnyConnected();
-    if (peerConnected) {
-        log::handover("OUT     kRequestDisconnect -> all peers");
-        m_peers.sendPacket(crossdevice::kRequestDisconnect);
-    } else {
-        log::handover("WARN    No peers connected — attempting BT connect without coordination");
-    }
+    // CONNECT-FIRST (replicates bt_wake_test): do NOT send kRequestDisconnect and do NOT
+    // wait for the phone to release. Releasing the phone first leaves the AirPods idle, and
+    // Windows then only brings up the ACL link — the A2DP endpoint stays UNPLUGGED with no
+    // sound, and the pods idle-drop. Instead we wake/connect WHILE the phone still actively
+    // holds the pods; that is exactly the condition under which the AirPods switch their A2DP
+    // to Windows (the standalone test proved it). After we have them, we broadcast
+    // kAirPodsConnected so the phone updates its ownership to RemoteAndroid. Windows then
+    // routes the already-playing audio onto the AirPods natively.
 
-    // Dispatch all blocking work (sleep + BT connect + audio endpoint poll) to a
-    // detached thread. The WinRT media-callback thread must not be blocked: the
-    // runtime will terminate a callback thread that doesn't return promptly, causing
-    // a crash.
-    //
-    // Kickoff: instead of a fixed 1500 ms wait, listen on m_peerAckCv for the peer
-    // to confirm kAirPodsDisconnected. The Pixel app typically acks within ~100 ms.
-    // We connect ~300 ms after ack to give the AirPods time to actually release at
-    // the BT layer (acking the RFCOMM packet ≠ A2DP fully released). If no peer ack
-    // arrives within 1500 ms, fall through to the timer-based path.
-    //
-    // Subsequent retries use a backoff (1500ms, 3000ms) — kept short because Xiaomi
-    // MIUI and similar slow vendors can take 2-5 s to actually release A2DP after
-    // the RFCOMM ack. The first attempt is the fast path; retries cover stragglers.
-    std::thread([this, paused, kickoffTime, peerConnected]() {
+    // Dispatch the blocking BT connect to a detached thread (the WinRT media-callback thread
+    // must not block or the runtime terminates it).
+    std::thread([this]() {
         winrt::init_apartment(winrt::apartment_type::multi_threaded);
 
-        // Phase 1: event-driven kickoff for the first attempt.
-        constexpr auto kMaxAckWait     = std::chrono::milliseconds(1500);
-        // Post-ack grace: the RFCOMM ack (kAirPodsDisconnected) only means the peer
-        // RECEIVED our request — it has NOT necessarily torn down A2DP yet. If we fire
-        // connect() before the source fully releases, the first attempt races the
-        // release and frequently eats the full ~10-15 s uncached-SDP enumeration in
-        // AirPodsConnector::connect() before failing, then succeeds only on the retry.
-        // 700 ms gives the source time to drop A2DP so attempt 1 lands fast on warm
-        // pods. NOTE: a genuinely cold connect (pods idle/in case) is still inherently
-        // slow because the BT stack must page asleep AirPods — this grace cannot fix that.
-        constexpr auto kPostAckGrace   = std::chrono::milliseconds(700);
-        const auto ackDeadline = kickoffTime + kMaxAckWait;
-
-        bool gotPeerAck = false;
-        if (peerConnected) {
-            std::unique_lock<std::mutex> lk(m_peerAckMtx);
-            gotPeerAck = m_peerAckCv.wait_until(lk, ackDeadline, [this, &kickoffTime]() {
-                return tpFromNs(m_lastPeerAckAt.load()) >= kickoffTime;
-            });
-        }
-
-        if (gotPeerAck) {
-            auto ackedAfter = std::chrono::duration_cast<std::chrono::milliseconds>(
-                tpFromNs(m_lastPeerAckAt.load()) - kickoffTime).count();
-            log::handover("ACTION  Peer acked kAirPodsDisconnected after {}ms — grace {}ms then BT connect",
-                ackedAfter, kPostAckGrace.count());
-            std::this_thread::sleep_for(kPostAckGrace);
-        } else {
-            auto waited = std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::steady_clock::now() - kickoffTime).count();
-            log::handover("ACTION  No peer ack within {}ms — proceeding with BT connect anyway",
-                waited);
-        }
-
-        // First attempt
-        log::handover("ACTION  BT connect attempt 1/3");
+        // Connect immediately — phone still holds the pods → waking the link makes them
+        // switch to Windows. Retries (1.5s, 3s) cover a straggling first attempt.
+        log::handover("ACTION  BT connect attempt 1/3 (connect-first; phone still holds pods)");
         bool connected = m_airpods.connect();
         if (!connected) {
             log::handover("RETRY   BT connect attempt 1 failed — backing off");
@@ -439,53 +392,18 @@ void HandoverController::onMediaPlayingChanged(bool playing) {
                 log::handover("OUT     kAirPodsConnected -> all peers");
                 m_peers.sendPacket(crossdevice::kAirPodsConnected);
             }
-            // Make AirPods the default audio render + capture device (if auto-route is on).
-            if (m_autoRoute.load()) m_airpods.setAsDefaultAudioDevice();
-
-            // Resume media now that AirPods are the active route. Always attempt this —
-            // not conditional on `paused` — because tryPauseActive() can return false when
-            // GSMTC hasn't registered the session yet (e.g. YouTube first play), in which
-            // case the browser pause commands still silenced playback but paused=false and
-            // tryPlayActive() would be skipped, leaving AirPods connected but silent.
-            // Small delay lets the audio stack settle on the new endpoint first.
-            std::this_thread::sleep_for(std::chrono::milliseconds(250));
-            m_media.tryPlayActive();
-
-            // Deferred retry: device-management software (Jabra Direct, Poly Lens,
-            // enterprise audio policies) often reasserts a managed headset as the
-            // audio default a few seconds after a change. Re-assert AirPods after
-            // 3 s to win that race. Also re-writes Teams' cmd_settings.json so any
-            // call that the user answers in the interim picks up AirPods.
-            std::this_thread::sleep_for(std::chrono::milliseconds(3000));
-            if (m_autoRoute.load() && m_airpods.isClassicallyConnected()) {
-                log::handover("ACTION  Re-asserting AirPods as default audio (3s retry)");
-                m_airpods.setAsDefaultAudioDevice();
-            }
+            // PURE TEST-REPLICA: nothing else. We woke the link and claimed ownership;
+            // Windows now auto-promotes the freshly-connected AirPods to default and routes
+            // the audio (and A2DP<->HFP call switching) natively. No pause/resume, no
+            // SetDefaultEndpoint, no re-assert — exactly what bt_wake_test did.
         } else {
             log::handover("FAIL    BT connect failed after 3 attempts — AirPods not acquired");
-            // Set m_lastLostOwnership BEFORE tryPlayActive so the media-resume
-            // event (GSMTC playing=true fired by tryPlayActive) hits the 3s
-            // anti-pingpong window and doesn't immediately re-trigger a new
-            // takeover attempt — which would flood peers with REQUEST_DISCONNECT.
+            // Anti-pingpong window so a GSMTC re-trigger doesn't immediately re-attempt.
             m_lastLostOwnership.store(tpToNs(std::chrono::steady_clock::now()));
             m_takeoverInFlight.store(false);
-            if (paused) {
-                // Takeover failed — resume on whatever route we have so we don't leave
-                // the user with paused media for no reason.
-                m_media.tryPlayActive();
-            }
-            // Arm the endpoint notifier even on failure.  If AirPods become
-            // available within the next 120 s (user takes them out of case,
-            // disconnects from phone, etc.), the IMMNotificationClient fires
-            // and routes audio to AirPods automatically — no second Teams
-            // trigger needed.  setState(LocalPc) is intentionally NOT called
-            // here; the audio watcher's BT-rising-edge poll will do that
-            // within 500 ms once the link actually comes up.
-            if (m_autoRoute.load()) {
-                log::handover("INFO    Arming endpoint notifier (120s window) — "
-                              "routing will fire if AirPods appear while Teams call is active");
-                m_airpods.setAsDefaultAudioDevice();
-            }
+            // PURE TEST-REPLICA: nothing else. We never paused the user's media (nothing to
+            // resume) and we do no routing. If the AirPods come up later, the BT rising-edge
+            // watcher claims ownership and Windows routes to them natively.
         }
     }).detach();
 }
@@ -548,47 +466,22 @@ void HandoverController::onIncomingPacket(std::span<const std::uint8_t> data) {
             m_voluntarilyReleased.store(true);
             log::handover("STATE   m_voluntarilyReleased = true (voluntary release)");
 
-            // W4 fix: record which app was playing so we can suppress its re-trigger for 30 s.
-            // Deferred pause retry fires 2 s later to catch YouTube ads that start playing
-            // after the initial pause sequence (which only runs at the moment of release).
+            // W4 bookkeeping: record which app was playing so we can suppress its
+            // re-trigger for the voluntary-release window (coordination, not playback).
             {
                 std::scoped_lock lk{m_voluntaryReleaseAppMutex};
                 m_voluntaryReleaseAppId = m_media.currentAppId();
             }
             m_lastVoluntaryReleaseAt.store(tpToNs(std::chrono::steady_clock::now()));
-            std::thread([this]() {
-                winrt::init_apartment(winrt::apartment_type::multi_threaded);
-                std::this_thread::sleep_for(std::chrono::milliseconds(2000));
-                if (m_state.load() != OwnershipState::LocalPc) {
-                    log::handover("ACTION  Deferred pause retry (2s) — suppressing app resume after release");
-                    m_media.tryPauseActive();
-                    m_media.tryPauseAllSessions();
-                    m_media.tryPauseViaMediaKey();
-                    m_media.tryPauseAllBrowserWindows();
-                }
-            }).detach();
 
-            // Record "lost ownership" NOW, before any potentially-blocking operation.
-            // Chrome and other apps auto-resume playback within ~30-50ms when the
-            // default audio device changes (which our disconnect triggers). If we
-            // delay this store until after disconnect()/setState() (~50-150ms later),
-            // the media-start callback that fires during those ~50ms sees a stale
-            // m_lastLostOwnership, skips the anti-pingpong check, and triggers a
-            // counter-takeover that fights the peer that just legitimately claimed
-            // the AirPods. Setting it first makes the anti-pingpong window cover
-            // the entire release sequence.
+            // Record "lost ownership" NOW, before any potentially-blocking operation, so the
+            // anti-pingpong window covers the whole release sequence (a media-start callback
+            // firing during the disconnect must see a fresh timestamp).
             m_lastLostOwnership.store(tpToNs(std::chrono::steady_clock::now()));
 
-            // Pause all Windows media before the AirPods leave so audio doesn't route
-            // to PC speakers, and so the media-start callback doesn't fire and
-            // immediately try to reclaim the AirPods.
-            // Fire all three methods regardless of earlier successes: a GSMTC pause
-            // of Spotify does not stop VLC (non-GSMTC), and the media key catches
-            // anything else (browsers, etc.).
-            m_media.tryPauseActive();        // GSMTC: pause the focused session
-            m_media.tryPauseAllSessions();   // GSMTC: pause any background sessions
-            m_media.tryPauseViaMediaKey();   // Media key: VLC, browsers, non-GSMTC apps
-            m_media.tryPauseAllBrowserWindows();  // multi-window Chrome/Edge/Firefox
+            // Do NOT pause the user's media. Propods never touches playback — we just release
+            // ownership and let the peer take the AirPods; Windows audio keeps playing on the
+            // PC speakers (acceptable) rather than freezing the user's video.
             m_airpods.disconnect();
             setState(OwnershipState::RemoteAndroid);
             if (m_peers.isAnyConnected()) {
@@ -616,30 +509,16 @@ void HandoverController::onIncomingPacket(std::span<const std::uint8_t> data) {
             m_voluntarilyReleased.store(true);
             log::handover("STATE   m_voluntarilyReleased = true (voluntary handover)");
 
-            // W4 fix: record app + deferred pause retry (same as RequestDisconnect path).
+            // W4 bookkeeping: record which app was playing (coordination, not playback).
             {
                 std::scoped_lock lk{m_voluntaryReleaseAppMutex};
                 m_voluntaryReleaseAppId = m_media.currentAppId();
             }
             m_lastVoluntaryReleaseAt.store(tpToNs(std::chrono::steady_clock::now()));
-            std::thread([this]() {
-                winrt::init_apartment(winrt::apartment_type::multi_threaded);
-                std::this_thread::sleep_for(std::chrono::milliseconds(2000));
-                if (m_state.load() != OwnershipState::LocalPc) {
-                    log::handover("ACTION  Deferred pause retry (2s) — suppressing app resume after release");
-                    m_media.tryPauseActive();
-                    m_media.tryPauseAllSessions();
-                    m_media.tryPauseViaMediaKey();
-                    m_media.tryPauseAllBrowserWindows();
-                }
-            }).detach();
 
             // Set the anti-pingpong timestamp first (see comment in ACCEPTED above).
             m_lastLostOwnership.store(tpToNs(std::chrono::steady_clock::now()));
-            m_media.tryPauseActive();
-            m_media.tryPauseAllSessions();
-            m_media.tryPauseViaMediaKey();
-            m_media.tryPauseAllBrowserWindows();
+            // Do NOT pause the user's media — Propods never touches playback.
             m_airpods.disconnect();
             setState(OwnershipState::RemoteAndroid);
             if (m_peers.isAnyConnected()) {
@@ -669,12 +548,10 @@ void HandoverController::onIncomingPacket(std::span<const std::uint8_t> data) {
             m_lastPeerOwnershipClaim.store(nowNs);
             m_lastLostOwnership.store(nowNs);
 
-            if (wasLocalPc) {
-                m_media.tryPauseActive();
-                m_media.tryPauseAllSessions();
-                m_media.tryPauseViaMediaKey();
-                m_media.tryPauseAllBrowserWindows();
-            }
+            // Do NOT pause the user's media — Propods never touches playback. The peer
+            // now holds the AirPods; Windows audio (if any) keeps playing on the PC
+            // speakers rather than freezing.
+            (void)wasLocalPc;
             setState(OwnershipState::RemoteAndroid);
             break;
         }
