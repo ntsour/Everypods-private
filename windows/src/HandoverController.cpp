@@ -310,11 +310,9 @@ void HandoverController::onMediaPlayingChanged(bool playing) {
         return;
     }
 
-    // W4 fix: suppress re-triggers from the same app within ~6 s of a voluntary release.
-    // Catches the immediate YouTube-ad / Chrome auto-resume blip that would otherwise
-    // steal the AirPods back right after the user handed them to a phone. Kept short so
-    // an intentional play-to-reclaim a few seconds later is allowed through (the two are
-    // indistinguishable at the GSMTC layer, so we only guard the immediate blip).
+    // W4 fix: suppress re-triggers from the same app within 30 s of a voluntary release.
+    // Prevents YouTube ads and Chrome auto-resume from stealing AirPods back after the
+    // user explicitly handed them to a phone.
     {
         std::scoped_lock lk{m_voluntaryReleaseAppMutex};
         auto sinceRelease = std::chrono::steady_clock::now() - tpFromNs(m_lastVoluntaryReleaseAt.load());
@@ -462,15 +460,6 @@ void HandoverController::onMediaPlayingChanged(bool playing) {
             if (m_autoRoute.load() && m_airpods.isClassicallyConnected()) {
                 log::handover("ACTION  Re-asserting AirPods as default audio (3s retry)");
                 m_airpods.setAsDefaultAudioDevice();
-
-                // Last resort: if a managed competitor (Jabra Direct etc.) still holds
-                // the live stream — AirPods are connected and we own them, but no audio
-                // session has migrated onto them — briefly disable the competing endpoint
-                // so Windows force-migrates the stream to the AirPods, then re-enable it.
-                if (m_state.load() == OwnershipState::LocalPc && !m_airpods.hasActiveAudioSessions()) {
-                    log::handover("ACTION  No audio session on AirPods after retry — evicting competing device");
-                    m_airpods.evictCompetitorsToClaimRoute();
-                }
             }
         } else {
             log::handover("FAIL    BT connect failed after 3 attempts — AirPods not acquired");

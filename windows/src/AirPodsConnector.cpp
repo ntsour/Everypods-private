@@ -53,33 +53,6 @@ IPolicyConfigVista : public IUnknown {
     virtual HRESULT STDMETHODCALLTYPE SetEndpointVisibility(PCWSTR, INT) = 0;
 };
 
-// Non-Vista IPolicyConfig (Win7+). Differs from the Vista interface by an extra
-// ResetDeviceFormat method (3rd slot), so the vtable layout is different — they
-// are NOT interchangeable. We use this one specifically for SetEndpointVisibility
-// (disabling/enabling endpoints): the Vista interface stubs that method out on
-// Win11 (returns ERROR_NOT_SUPPORTED 0x32), whereas this one implements it — it's
-// the same interface EarTrumpet / SoundSwitch use to enable/disable devices.
-const CLSID CLSID_CPolicyConfigClient = {
-    0x870AF99Cu, 0x171D, 0x4F9E,
-    { 0xAF, 0x0D, 0xE6, 0x3D, 0xF4, 0x0C, 0x2B, 0xC9 }
-};
-
-struct DECLSPEC_UUID("f8679f50-850a-41cf-9c72-430f290290c8")
-IPolicyConfig : public IUnknown {
-    virtual HRESULT STDMETHODCALLTYPE GetMixFormat(PCWSTR, WAVEFORMATEX**) = 0;
-    virtual HRESULT STDMETHODCALLTYPE GetDeviceFormat(PCWSTR, INT, WAVEFORMATEX**) = 0;
-    virtual HRESULT STDMETHODCALLTYPE ResetDeviceFormat(PCWSTR) = 0;
-    virtual HRESULT STDMETHODCALLTYPE SetDeviceFormat(PCWSTR, WAVEFORMATEX*, WAVEFORMATEX*) = 0;
-    virtual HRESULT STDMETHODCALLTYPE GetProcessingPeriod(PCWSTR, INT, PINT64, PINT64) = 0;
-    virtual HRESULT STDMETHODCALLTYPE SetProcessingPeriod(PCWSTR, PINT64) = 0;
-    virtual HRESULT STDMETHODCALLTYPE GetShareMode(PCWSTR, void*) = 0;
-    virtual HRESULT STDMETHODCALLTYPE SetShareMode(PCWSTR, void*) = 0;
-    virtual HRESULT STDMETHODCALLTYPE GetPropertyValue(PCWSTR, const PROPERTYKEY&, PROPVARIANT*) = 0;
-    virtual HRESULT STDMETHODCALLTYPE SetPropertyValue(PCWSTR, const PROPERTYKEY&, PROPVARIANT*) = 0;
-    virtual HRESULT STDMETHODCALLTYPE SetDefaultEndpoint(PCWSTR wszDeviceId, ERole eRole) = 0;
-    virtual HRESULT STDMETHODCALLTYPE SetEndpointVisibility(PCWSTR, INT) = 0;
-};
-
 }
 
 namespace Propods {
@@ -465,7 +438,6 @@ const char* stateName(DWORD s) {
 struct Endpoint {
     std::wstring id;
     DWORD state;
-    std::wstring name;   // friendly name, for stereo-vs-HFP endpoint preference
 };
 
 // Enumerate endpoints in ALL states (active+disabled+notpresent+unplugged) and
@@ -508,93 +480,13 @@ std::vector<Endpoint> findAirPodsEndpoints(IMMDeviceEnumerator* enumerator, EDat
                 flow == eRender ? "render" : "capture",
                 stateName(state),
                 winrt::to_string(friendly));
-            hits.push_back({idStr, state, friendly});
+            hits.push_back({idStr, state});
         }
         // Non-AirPods endpoint debug lines omitted — they flood the log on
         // every IMMNotificationClient callback (dozens of devices × every
         // device-state-change event). Re-enable if debugging routing issues.
     }
     return hits;
-}
-
-// DIAGNOSTIC: write a full snapshot of every ACTIVE render endpoint to the
-// handover log — friendly name, which default roles it currently owns
-// (C=Console, M=Multimedia, K=Communications), and whether it has an active
-// audio session right now. Used to debug routing collisions with a competing
-// BT audio device (e.g. a Jabra headset that holds the live stream when an
-// AirPods handover lands). [tag] distinguishes the call site (before/after a
-// route apply). Best-effort: never throws, logs nothing on enumeration failure.
-void logRenderEndpointSnapshot(IMMDeviceEnumerator* enumerator, const char* tag) {
-    auto defaultIdForRole = [&](ERole role) -> std::wstring {
-        ComPtr<IMMDevice> cur;
-        if (FAILED(enumerator->GetDefaultAudioEndpoint(eRender, role, &cur)) || !cur) return L"";
-        LPWSTR raw = nullptr;
-        if (FAILED(cur->GetId(&raw)) || !raw) return L"";
-        std::wstring id(raw);
-        CoTaskMemFree(raw);
-        return id;
-    };
-    const std::wstring defConsole    = defaultIdForRole(eConsole);
-    const std::wstring defMultimedia = defaultIdForRole(eMultimedia);
-    const std::wstring defComms      = defaultIdForRole(eCommunications);
-
-    ComPtr<IMMDeviceCollection> col;
-    if (FAILED(enumerator->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &col))) return;
-    UINT count = 0;
-    col->GetCount(&count);
-    log::handover("AUDIO-DIAG [{}] {} active render endpoint(s):", tag, count);
-
-    for (UINT i = 0; i < count; ++i) {
-        ComPtr<IMMDevice> dev;
-        if (FAILED(col->Item(i, &dev))) continue;
-
-        LPWSTR rawId = nullptr;
-        if (FAILED(dev->GetId(&rawId)) || !rawId) continue;
-        std::wstring idStr = rawId;
-        CoTaskMemFree(rawId);
-
-        std::wstring friendly;
-        ComPtr<IPropertyStore> props;
-        if (SUCCEEDED(dev->OpenPropertyStore(STGM_READ, &props))) {
-            PROPVARIANT name;
-            PropVariantInit(&name);
-            if (SUCCEEDED(props->GetValue(PKEY_Device_FriendlyName, &name)) && name.vt == VT_LPWSTR && name.pwszVal)
-                friendly = name.pwszVal;
-            PropVariantClear(&name);
-        }
-
-        std::string roles;
-        if (idStr == defConsole)    roles += "C";
-        if (idStr == defMultimedia) roles += "M";
-        if (idStr == defComms)      roles += "K";
-        if (roles.empty())          roles = "-";
-
-        // Does this endpoint have an active audio session (i.e. is audio
-        // actually flowing here right now)?
-        bool hasActive = false;
-        ComPtr<IAudioSessionManager2> mgr;
-        if (SUCCEEDED(dev->Activate(__uuidof(IAudioSessionManager2), CLSCTX_ALL, nullptr,
-                                    (void**)mgr.GetAddressOf()))) {
-            ComPtr<IAudioSessionEnumerator> sessions;
-            if (SUCCEEDED(mgr->GetSessionEnumerator(&sessions))) {
-                int sc = 0;
-                sessions->GetCount(&sc);
-                for (int s = 0; s < sc && !hasActive; ++s) {
-                    ComPtr<IAudioSessionControl> ctrl;
-                    if (FAILED(sessions->GetSession(s, &ctrl))) continue;
-                    AudioSessionState st{};
-                    if (SUCCEEDED(ctrl->GetState(&st)) && st == AudioSessionStateActive) hasActive = true;
-                }
-            }
-        }
-
-        const bool isAirPods = foldLower(friendly).find(L"airpods") != std::wstring::npos;
-        log::handover("AUDIO-DIAG   {}default=[{}] activeSession={} '{}'",
-            isAirPods ? "*AIRPODS* " : "",
-            roles,
-            hasActive ? "YES" : "no",
-            winrt::to_string(friendly));
-    }
 }
 
 // Update Teams' cmd_settings.json so it uses the specified audio endpoints.
@@ -767,55 +659,6 @@ bool tryApplyAirPodsRouting(IMMDeviceEnumerator* enumerator,
         }
     }
 
-    // Fallback for the "stuck UNPLUGGED" case: when AirPods are classically
-    // connected but a competing managed device (e.g. Jabra via Jabra Direct)
-    // holds the default, Windows leaves our A2DP render endpoint in UNPLUGGED
-    // state — the audio channel is never opened, so the endpoint never goes
-    // ACTIVE and the ACTIVE-only pass above applies nothing. Forcing the
-    // UNPLUGGED endpoint to default (SetEndpointVisibility + SetDefaultEndpoint,
-    // both handled by applyEndpointAsDefault) opens the A2DP stream and
-    // activates it — without touching the competitor.
-    //
-    // Crucially we target ONLY UNPLUGGED (device present, stream not yet open),
-    // never NOTPRESENT/DISABLED — setting a truly dead endpoint as default makes
-    // apps mute rather than fall back to speakers (the reason non-ACTIVE
-    // endpoints are skipped above). Only runs when nothing ACTIVE was applied,
-    // so normal operation is unchanged.
-    if (!anyApplied) {
-        // AirPods expose two render endpoints: "AirPods Pro - Find My" (A2DP stereo,
-        // for media) and "...Hands-Free" (HFP mono, for calls). For media we must
-        // prefer the stereo endpoint — making the Hands-Free one the default routes
-        // music to a mono call channel. Pass 1: non-Hands-Free (stereo). Pass 2:
-        // Hands-Free as a last resort (better than nothing if stereo isn't present).
-        auto isHandsFree = [](const Endpoint& e) {
-            return foldLower(e.name).find(L"hands-free") != std::wstring::npos
-                || foldLower(e.name).find(L"hands free") != std::wstring::npos;
-        };
-        for (bool wantHandsFree : { false, true }) {
-            if (anyApplied) break;
-            for (auto& ep : renderHits) {
-                if (ep.state != DEVICE_STATE_UNPLUGGED) continue;
-                if (isHandsFree(ep) != wantHandsFree) continue;
-                const char* label = wantHandsFree
-                    ? "render (output, force-unplugged HFP fallback)"
-                    : "render (output, force-unplugged stereo)";
-                if (applyEndpointAsDefault(enumerator, policy, eRender, ep, label)) {
-                    anyApplied = true;
-                    if (activeRenderId.empty()) activeRenderId = ep.id;
-                    break;  // one render endpoint is enough
-                }
-            }
-        }
-        for (auto& ep : captureHits) {
-            if (ep.state != DEVICE_STATE_UNPLUGGED) continue;
-            if (applyEndpointAsDefault(enumerator, policy, eCapture, ep, "capture (input, force-unplugged)")) {
-                anyApplied = true;
-                if (activeCaptureId.empty()) activeCaptureId = ep.id;
-                break;
-            }
-        }
-    }
-
     if (anyApplied) {
         broadcastDefaultDeviceChange();
         if (!activeRenderId.empty() || !activeCaptureId.empty()) {
@@ -823,115 +666,6 @@ bool tryApplyAirPodsRouting(IMMDeviceEnumerator* enumerator,
         }
     }
     return anyApplied;
-}
-
-// ---- Competitor eviction (last-resort routing) -------------------------------
-// File holding endpoint IDs we have DISABLED and not yet re-enabled. A clean
-// eviction re-enables and clears it; if the process crashes mid-eviction,
-// startup restores from it so a managed device is never left permanently
-// disabled. IDs are ASCII (e.g. "{0.0.0.00000000}.{guid}"), stored one per line.
-std::filesystem::path disabledEndpointsFile() {
-    return log::logDir() / "disabled_endpoints.txt";
-}
-
-void persistDisabledEndpoint(const std::wstring& id) {
-    std::ofstream out(disabledEndpointsFile(), std::ios::app);
-    if (out.is_open()) out << winrt::to_string(id) << "\n";
-}
-
-std::vector<std::wstring> readDisabledEndpoints() {
-    std::vector<std::wstring> ids;
-    std::ifstream in(disabledEndpointsFile());
-    std::string line;
-    while (std::getline(in, line)) {
-        if (!line.empty()) ids.push_back(winrt::to_hstring(line).c_str());
-    }
-    return ids;
-}
-
-void clearDisabledEndpointsFile() {
-    std::error_code ec;
-    std::filesystem::remove(disabledEndpointsFile(), ec);
-}
-
-// True if [dev] currently has at least one audio session in the Active state.
-bool endpointHasActiveSession(IMMDevice* dev) {
-    ComPtr<IAudioSessionManager2> mgr;
-    if (FAILED(dev->Activate(__uuidof(IAudioSessionManager2), CLSCTX_ALL, nullptr,
-                             (void**)mgr.GetAddressOf()))) return false;
-    ComPtr<IAudioSessionEnumerator> sessions;
-    if (FAILED(mgr->GetSessionEnumerator(&sessions))) return false;
-    int sc = 0;
-    sessions->GetCount(&sc);
-    for (int s = 0; s < sc; ++s) {
-        ComPtr<IAudioSessionControl> ctrl;
-        if (FAILED(sessions->GetSession(s, &ctrl))) continue;
-        AudioSessionState st{};
-        if (SUCCEEDED(ctrl->GetState(&st)) && st == AudioSessionStateActive) return true;
-    }
-    return false;
-}
-
-// Disable every ACTIVE non-AirPods render endpoint that currently holds a default
-// role or an active audio session — the competitor holding the stream. Disabling
-// (SetEndpointVisibility 0 → DEVICE_STATE_DISABLED) forces Windows to migrate the
-// active stream onto the current default endpoint (which the caller has set to the
-// AirPods). Returns the disabled IDs (also persisted to disk before disabling).
-std::vector<std::wstring> disableCompetingRenderEndpoints(IMMDeviceEnumerator* enumerator,
-                                                          IPolicyConfig* policy) {
-    std::vector<std::wstring> disabled;
-
-    auto defaultId = [&](ERole role) -> std::wstring {
-        ComPtr<IMMDevice> cur;
-        if (FAILED(enumerator->GetDefaultAudioEndpoint(eRender, role, &cur)) || !cur) return L"";
-        LPWSTR raw = nullptr;
-        if (FAILED(cur->GetId(&raw)) || !raw) return L"";
-        std::wstring id(raw);
-        CoTaskMemFree(raw);
-        return id;
-    };
-    const std::wstring dC = defaultId(eConsole);
-    const std::wstring dM = defaultId(eMultimedia);
-    const std::wstring dK = defaultId(eCommunications);
-
-    ComPtr<IMMDeviceCollection> col;
-    if (FAILED(enumerator->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &col))) return disabled;
-    UINT count = 0;
-    col->GetCount(&count);
-    for (UINT i = 0; i < count; ++i) {
-        ComPtr<IMMDevice> dev;
-        if (FAILED(col->Item(i, &dev))) continue;
-        LPWSTR raw = nullptr;
-        if (FAILED(dev->GetId(&raw)) || !raw) continue;
-        std::wstring id(raw);
-        CoTaskMemFree(raw);
-
-        std::wstring friendly;
-        ComPtr<IPropertyStore> props;
-        if (SUCCEEDED(dev->OpenPropertyStore(STGM_READ, &props))) {
-            PROPVARIANT name;
-            PropVariantInit(&name);
-            if (SUCCEEDED(props->GetValue(PKEY_Device_FriendlyName, &name)) && name.vt == VT_LPWSTR && name.pwszVal)
-                friendly = name.pwszVal;
-            PropVariantClear(&name);
-        }
-        // Never disable the AirPods themselves.
-        if (foldLower(friendly).find(L"airpods") != std::wstring::npos) continue;
-
-        const bool isDefault = (id == dC || id == dM || id == dK);
-        const bool hasActive = endpointHasActiveSession(dev.Get());
-        if (!isDefault && !hasActive) continue;  // not the competitor holding the route
-
-        persistDisabledEndpoint(id);             // record BEFORE disabling (crash-safe)
-        HRESULT r = policy->SetEndpointVisibility(id.c_str(), 0);
-        log::handover("ACTION  Evict: disabling competitor '{}' (default={}, activeSession={}) hr=0x{:08X}",
-            winrt::to_string(friendly), isDefault ? "yes" : "no", hasActive ? "yes" : "no",
-            (std::uint32_t)r);
-        if (SUCCEEDED(r)) disabled.push_back(id);
-        // On failure we leave the persisted entry: a stale ID just causes a harmless
-        // re-enable on next startup. Better that than losing track of a disable.
-    }
-    return disabled;
 }
 
 // IMMNotificationClient that listens for endpoint state changes and applies
@@ -1194,22 +928,12 @@ bool AirPodsConnector::setAsDefaultAudioDevice() {
     EndpointNotifier* notifier = ensureNotifier(enumerator.Get());
     if (notifier) notifier->arm();
 
-    // DIAGNOSTIC: snapshot the endpoint landscape before we touch anything, so
-    // the handover log shows which device owns the default roles and the live
-    // audio session at the moment we try to claim (e.g. a Jabra holding the
-    // active stream when AirPods arrive).
-    logRenderEndpointSnapshot(enumerator.Get(), "before-route");
-
     // Synchronous fast path: if any AirPods endpoint is *already* in ACTIVE
     // state right now, route immediately. This handles the retry case (caller
     // called us 3s after connect, by which point the endpoint may already be up)
     // and also the case where we just missed a state-change callback firing on
     // another thread.
     bool appliedNow = tryApplyAirPodsRouting(enumerator.Get(), policy.Get());
-
-    // DIAGNOSTIC: snapshot again so we can see whether AirPods actually became
-    // the default for each role and whether the live session moved to them.
-    logRenderEndpointSnapshot(enumerator.Get(), appliedNow ? "after-route" : "after-route(none-active)");
 
     if (appliedNow) {
         log::info("setAsDefaultAudioDevice: AirPods endpoint was already ACTIVE — routed synchronously");
@@ -1266,81 +990,6 @@ void AirPodsConnector::setPersistentArm(bool persistent) {
             (std::uint32_t)hr);
     }
 
-    if (weInited) CoUninitialize();
-}
-
-void AirPodsConnector::evictCompetitorsToClaimRoute() {
-    HRESULT coInitHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-    const bool weInited = (coInitHr == S_OK);
-
-    ComPtr<IMMDeviceEnumerator> enumerator;
-    if (FAILED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
-                                __uuidof(IMMDeviceEnumerator), (void**)enumerator.GetAddressOf()))) {
-        if (weInited) CoUninitialize();
-        return;
-    }
-    ComPtr<IPolicyConfigVista> policyVista;
-    if (FAILED(CoCreateInstance(CLSID_CPolicyConfigVistaClient, nullptr, CLSCTX_ALL,
-                                __uuidof(IPolicyConfigVista), (void**)policyVista.GetAddressOf()))) {
-        if (weInited) CoUninitialize();
-        return;
-    }
-    // Separate non-Vista IPolicyConfig instance for the disable/enable calls — its
-    // SetEndpointVisibility is implemented where the Vista interface's is not.
-    ComPtr<IPolicyConfig> policyCfg;
-    if (FAILED(CoCreateInstance(CLSID_CPolicyConfigClient, nullptr, CLSCTX_ALL,
-                                __uuidof(IPolicyConfig), (void**)policyCfg.GetAddressOf()))) {
-        log::handover("SKIP    Evict: IPolicyConfig unavailable — cannot disable competitor");
-        if (weInited) CoUninitialize();
-        return;
-    }
-
-    // Make AirPods the default first, so the stream migrates TO them (not to PC
-    // speakers) when we disable the competitor.
-    tryApplyAirPodsRouting(enumerator.Get(), policyVista.Get());
-
-    auto disabled = disableCompetingRenderEndpoints(enumerator.Get(), policyCfg.Get());
-    if (disabled.empty()) {
-        log::handover("SKIP    Evict: no competing endpoint holds the route — nothing to disable");
-        if (weInited) CoUninitialize();
-        return;
-    }
-    log::handover("ACTION  Evict: disabled {} competing endpoint(s) — Windows migrates the stream to AirPods",
-        disabled.size());
-
-    // Re-assert AirPods default with the competitor gone, then let the migrated
-    // stream settle on the AirPods before restoring the competitor.
-    tryApplyAirPodsRouting(enumerator.Get(), policyVista.Get());
-    std::this_thread::sleep_for(std::chrono::milliseconds(3000));
-
-    // Re-enable the competitor. The active stream stays on the AirPods — a default
-    // change alone never moves an already-active stream, so Jabra Direct re-asserting
-    // the Jabra as default won't pull the current audio back (only future streams).
-    for (const auto& id : disabled) {
-        HRESULT r = policyCfg->SetEndpointVisibility(id.c_str(), 1);
-        log::handover("ACTION  Evict: re-enabled competitor endpoint hr=0x{:08X}", (std::uint32_t)r);
-    }
-    clearDisabledEndpointsFile();
-
-    if (weInited) CoUninitialize();
-}
-
-void AirPodsConnector::restoreDisabledEndpointsOnStartup() {
-    auto ids = readDisabledEndpoints();
-    if (ids.empty()) return;
-
-    HRESULT coInitHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-    const bool weInited = (coInitHr == S_OK);
-    ComPtr<IPolicyConfig> policy;
-    if (SUCCEEDED(CoCreateInstance(CLSID_CPolicyConfigClient, nullptr, CLSCTX_ALL,
-                                   __uuidof(IPolicyConfig), (void**)policy.GetAddressOf()))) {
-        for (const auto& id : ids) {
-            HRESULT r = policy->SetEndpointVisibility(id.c_str(), 1);
-            log::handover("STARTUP Re-enabling audio endpoint disabled by a previous run hr=0x{:08X}",
-                (std::uint32_t)r);
-        }
-    }
-    clearDisabledEndpointsFile();
     if (weInited) CoUninitialize();
 }
 
