@@ -310,9 +310,11 @@ void HandoverController::onMediaPlayingChanged(bool playing) {
         return;
     }
 
-    // W4 fix: suppress re-triggers from the same app within 30 s of a voluntary release.
-    // Prevents YouTube ads and Chrome auto-resume from stealing AirPods back after the
-    // user explicitly handed them to a phone.
+    // W4 fix: suppress re-triggers from the same app within ~6 s of a voluntary release.
+    // Catches the immediate YouTube-ad / Chrome auto-resume blip that would otherwise
+    // steal the AirPods back right after the user handed them to a phone. Kept short so
+    // an intentional play-to-reclaim a few seconds later is allowed through (the two are
+    // indistinguishable at the GSMTC layer, so we only guard the immediate blip).
     {
         std::scoped_lock lk{m_voluntaryReleaseAppMutex};
         auto sinceRelease = std::chrono::steady_clock::now() - tpFromNs(m_lastVoluntaryReleaseAt.load());

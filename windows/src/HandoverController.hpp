@@ -136,12 +136,15 @@ private:
     std::atomic<bool> m_takeoverInFlight{false};
 
     // W4 fix: after voluntarily releasing to a peer, suppress GSMTC re-triggers from
-    // the same app for 30 s. Prevents YouTube ads and Chrome auto-resume from
-    // stealing the AirPods back after the user explicitly moved them to a phone.
+    // the same app for a short window. Prevents the immediate YouTube-ad / Chrome
+    // auto-resume blip from stealing the AirPods back right after the user moved them
+    // to a phone. Kept short (6 s, was 30 s) so an INTENTIONAL play-to-reclaim a few
+    // seconds later is NOT blocked — a deliberate reclaim is indistinguishable from an
+    // auto-resume at the GSMTC layer, so we only guard the immediate post-release blip.
     std::atomic<std::int64_t> m_lastVoluntaryReleaseAt{0};
     mutable std::mutex m_voluntaryReleaseAppMutex;
     std::string m_voluntaryReleaseAppId;
-    static constexpr std::chrono::seconds kVoluntaryReleaseSuppressWindow{30};
+    static constexpr std::chrono::seconds kVoluntaryReleaseSuppressWindow{6};
 
     std::atomic<bool>    m_autoRoute{true};
     StateChangedCallback m_onStateChanged;

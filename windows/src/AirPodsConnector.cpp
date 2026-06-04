@@ -438,6 +438,7 @@ const char* stateName(DWORD s) {
 struct Endpoint {
     std::wstring id;
     DWORD state;
+    std::wstring name;   // friendly name, for stereo-vs-HFP endpoint preference
 };
 
 // Enumerate endpoints in ALL states (active+disabled+notpresent+unplugged) and
@@ -480,13 +481,93 @@ std::vector<Endpoint> findAirPodsEndpoints(IMMDeviceEnumerator* enumerator, EDat
                 flow == eRender ? "render" : "capture",
                 stateName(state),
                 winrt::to_string(friendly));
-            hits.push_back({idStr, state});
+            hits.push_back({idStr, state, friendly});
         }
         // Non-AirPods endpoint debug lines omitted — they flood the log on
         // every IMMNotificationClient callback (dozens of devices × every
         // device-state-change event). Re-enable if debugging routing issues.
     }
     return hits;
+}
+
+// DIAGNOSTIC: write a full snapshot of every ACTIVE render endpoint to the
+// handover log — friendly name, which default roles it currently owns
+// (C=Console, M=Multimedia, K=Communications), and whether it has an active
+// audio session right now. Used to debug routing collisions with a competing
+// BT audio device (e.g. a Jabra headset that holds the live stream when an
+// AirPods handover lands). [tag] distinguishes the call site (before/after a
+// route apply). Best-effort: never throws, logs nothing on enumeration failure.
+void logRenderEndpointSnapshot(IMMDeviceEnumerator* enumerator, const char* tag) {
+    auto defaultIdForRole = [&](ERole role) -> std::wstring {
+        ComPtr<IMMDevice> cur;
+        if (FAILED(enumerator->GetDefaultAudioEndpoint(eRender, role, &cur)) || !cur) return L"";
+        LPWSTR raw = nullptr;
+        if (FAILED(cur->GetId(&raw)) || !raw) return L"";
+        std::wstring id(raw);
+        CoTaskMemFree(raw);
+        return id;
+    };
+    const std::wstring defConsole    = defaultIdForRole(eConsole);
+    const std::wstring defMultimedia = defaultIdForRole(eMultimedia);
+    const std::wstring defComms      = defaultIdForRole(eCommunications);
+
+    ComPtr<IMMDeviceCollection> col;
+    if (FAILED(enumerator->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &col))) return;
+    UINT count = 0;
+    col->GetCount(&count);
+    log::handover("AUDIO-DIAG [{}] {} active render endpoint(s):", tag, count);
+
+    for (UINT i = 0; i < count; ++i) {
+        ComPtr<IMMDevice> dev;
+        if (FAILED(col->Item(i, &dev))) continue;
+
+        LPWSTR rawId = nullptr;
+        if (FAILED(dev->GetId(&rawId)) || !rawId) continue;
+        std::wstring idStr = rawId;
+        CoTaskMemFree(rawId);
+
+        std::wstring friendly;
+        ComPtr<IPropertyStore> props;
+        if (SUCCEEDED(dev->OpenPropertyStore(STGM_READ, &props))) {
+            PROPVARIANT name;
+            PropVariantInit(&name);
+            if (SUCCEEDED(props->GetValue(PKEY_Device_FriendlyName, &name)) && name.vt == VT_LPWSTR && name.pwszVal)
+                friendly = name.pwszVal;
+            PropVariantClear(&name);
+        }
+
+        std::string roles;
+        if (idStr == defConsole)    roles += "C";
+        if (idStr == defMultimedia) roles += "M";
+        if (idStr == defComms)      roles += "K";
+        if (roles.empty())          roles = "-";
+
+        // Does this endpoint have an active audio session (i.e. is audio
+        // actually flowing here right now)?
+        bool hasActive = false;
+        ComPtr<IAudioSessionManager2> mgr;
+        if (SUCCEEDED(dev->Activate(__uuidof(IAudioSessionManager2), CLSCTX_ALL, nullptr,
+                                    (void**)mgr.GetAddressOf()))) {
+            ComPtr<IAudioSessionEnumerator> sessions;
+            if (SUCCEEDED(mgr->GetSessionEnumerator(&sessions))) {
+                int sc = 0;
+                sessions->GetCount(&sc);
+                for (int s = 0; s < sc && !hasActive; ++s) {
+                    ComPtr<IAudioSessionControl> ctrl;
+                    if (FAILED(sessions->GetSession(s, &ctrl))) continue;
+                    AudioSessionState st{};
+                    if (SUCCEEDED(ctrl->GetState(&st)) && st == AudioSessionStateActive) hasActive = true;
+                }
+            }
+        }
+
+        const bool isAirPods = foldLower(friendly).find(L"airpods") != std::wstring::npos;
+        log::handover("AUDIO-DIAG   {}default=[{}] activeSession={} '{}'",
+            isAirPods ? "*AIRPODS* " : "",
+            roles,
+            hasActive ? "YES" : "no",
+            winrt::to_string(friendly));
+    }
 }
 
 // Update Teams' cmd_settings.json so it uses the specified audio endpoints.
@@ -656,6 +737,55 @@ bool tryApplyAirPodsRouting(IMMDeviceEnumerator* enumerator,
         if (applyEndpointAsDefault(enumerator, policy, eCapture, ep, "capture (input)")) {
             anyApplied = true;
             if (activeCaptureId.empty()) activeCaptureId = ep.id;
+        }
+    }
+
+    // Fallback for the "stuck UNPLUGGED" case: when AirPods are classically
+    // connected but a competing managed device (e.g. Jabra via Jabra Direct)
+    // holds the default, Windows leaves our A2DP render endpoint in UNPLUGGED
+    // state — the audio channel is never opened, so the endpoint never goes
+    // ACTIVE and the ACTIVE-only pass above applies nothing. Forcing the
+    // UNPLUGGED endpoint to default (SetEndpointVisibility + SetDefaultEndpoint,
+    // both handled by applyEndpointAsDefault) opens the A2DP stream and
+    // activates it — without touching the competitor.
+    //
+    // Crucially we target ONLY UNPLUGGED (device present, stream not yet open),
+    // never NOTPRESENT/DISABLED — setting a truly dead endpoint as default makes
+    // apps mute rather than fall back to speakers (the reason non-ACTIVE
+    // endpoints are skipped above). Only runs when nothing ACTIVE was applied,
+    // so normal operation is unchanged.
+    if (!anyApplied) {
+        // AirPods expose two render endpoints: "AirPods Pro - Find My" (A2DP stereo,
+        // for media) and "...Hands-Free" (HFP mono, for calls). For media we must
+        // prefer the stereo endpoint — making the Hands-Free one the default routes
+        // music to a mono call channel. Pass 1: non-Hands-Free (stereo). Pass 2:
+        // Hands-Free as a last resort (better than nothing if stereo isn't present).
+        auto isHandsFree = [](const Endpoint& e) {
+            return foldLower(e.name).find(L"hands-free") != std::wstring::npos
+                || foldLower(e.name).find(L"hands free") != std::wstring::npos;
+        };
+        for (bool wantHandsFree : { false, true }) {
+            if (anyApplied) break;
+            for (auto& ep : renderHits) {
+                if (ep.state != DEVICE_STATE_UNPLUGGED) continue;
+                if (isHandsFree(ep) != wantHandsFree) continue;
+                const char* label = wantHandsFree
+                    ? "render (output, force-unplugged HFP fallback)"
+                    : "render (output, force-unplugged stereo)";
+                if (applyEndpointAsDefault(enumerator, policy, eRender, ep, label)) {
+                    anyApplied = true;
+                    if (activeRenderId.empty()) activeRenderId = ep.id;
+                    break;  // one render endpoint is enough
+                }
+            }
+        }
+        for (auto& ep : captureHits) {
+            if (ep.state != DEVICE_STATE_UNPLUGGED) continue;
+            if (applyEndpointAsDefault(enumerator, policy, eCapture, ep, "capture (input, force-unplugged)")) {
+                anyApplied = true;
+                if (activeCaptureId.empty()) activeCaptureId = ep.id;
+                break;
+            }
         }
     }
 
@@ -928,12 +1058,22 @@ bool AirPodsConnector::setAsDefaultAudioDevice() {
     EndpointNotifier* notifier = ensureNotifier(enumerator.Get());
     if (notifier) notifier->arm();
 
+    // DIAGNOSTIC: snapshot the endpoint landscape before we touch anything, so
+    // the handover log shows which device owns the default roles and the live
+    // audio session at the moment we try to claim (e.g. a Jabra holding the
+    // active stream when AirPods arrive).
+    logRenderEndpointSnapshot(enumerator.Get(), "before-route");
+
     // Synchronous fast path: if any AirPods endpoint is *already* in ACTIVE
     // state right now, route immediately. This handles the retry case (caller
     // called us 3s after connect, by which point the endpoint may already be up)
     // and also the case where we just missed a state-change callback firing on
     // another thread.
     bool appliedNow = tryApplyAirPodsRouting(enumerator.Get(), policy.Get());
+
+    // DIAGNOSTIC: snapshot again so we can see whether AirPods actually became
+    // the default for each role and whether the live session moved to them.
+    logRenderEndpointSnapshot(enumerator.Get(), appliedNow ? "after-route" : "after-route(none-active)");
 
     if (appliedNow) {
         log::info("setAsDefaultAudioDevice: AirPods endpoint was already ACTIVE — routed synchronously");
