@@ -334,6 +334,51 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         @Volatile @JvmStatic var lastMusicTakeoverMs: Long = 0L
 
         /**
+         * Timestamp of the last LOCAL takeover *intent* — stamped by [takeOver] for
+         * every reason (music, call, …), unlike [lastMusicTakeoverMs] which is
+         * music-only. Reason-agnostic and with no effect on routeLandPoller / AACP
+         * gating, it exists solely so the X1 autonomous-connect guard
+         * ([isAutonomousPeerConnect]) can tell a user/app-initiated takeover apart
+         * from an OS notification / ringtone / Apple auto-switch that connects our
+         * A2DP to the AirPods without any intent on our part. Reuses
+         * [MUSIC_TAKEOVER_WINDOW_MS] as its freshness window.
+         */
+        @Volatile @JvmStatic var lastTakeoverIntentMs: Long = 0L
+
+        /**
+         * X1 guard. True when an A2DP/AACP connection to the AirPods looks like an
+         * OS-initiated *autonomous* connect — a notification chime, ringtone, or Apple
+         * auto-switch — rather than a takeover this device intended. Three conditions,
+         * all required:
+         *   1. We did NOT recently call [takeOver] (no music/cross-device/intent stamp
+         *      within its window) — i.e. no local intent to grab the AirPods.
+         *   2. A peer currently holds the AirPods ([CrossDevice.isAvailable]). If no peer
+         *      holds them, a connect here is a legitimate cold/manual connect — keep it.
+         *   3. No media is playing locally. Active local media is real intent.
+         *
+         * When true, the caller must NOT announce ownership to peers: doing so tells the
+         * legitimate holder (e.g. Windows) it lost the AirPods, bounces audio, and can
+         * leave a split-brain ownership state. On devices with BLUETOOTH_PRIVILEGED the
+         * caller can additionally force-release A2DP; without it we can only avoid the
+         * announcement and let onAudioSourceReceived relinquish naturally.
+         *
+         * Lives in the companion (no instance state) so the non-inner connectionReceiver
+         * object can call it too.
+         */
+        @JvmStatic
+        fun isAutonomousPeerConnect(): Boolean {
+            val nowMs = System.currentTimeMillis()
+            val recentTakeover =
+                (nowMs - lastCrossDeviceTakeoverMs < CROSS_DEVICE_TAKEOVER_WINDOW_MS) ||
+                (nowMs - lastMusicTakeoverMs < MUSIC_TAKEOVER_WINDOW_MS) ||
+                (nowMs - lastTakeoverIntentMs < MUSIC_TAKEOVER_WINDOW_MS)
+            if (recentTakeover) return false
+            if (!CrossDevice.isAvailable) return false
+            if (io.nikos.propods.utils.MediaController.getMusicActive()) return false
+            return true
+        }
+
+        /**
          * How fresh a BLE proximity snapshot must be for `takeOver()` to trust its
          * out-of-ear reading. On limited-mode devices (no AACP) ear state comes only
          * from BLE advertisements arriving every few seconds; a stale "both out of
@@ -3365,9 +3410,18 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                             // AACP path already flipped it false and notified.
                             if (action == "android.bluetooth.a2dp.profile.action.CONNECTION_STATE_CHANGED"
                                 && CrossDevice.isAvailable) {
-                                CrossDevice.isAvailable = false
-                                CrossDevice.notifyConnected()
-                                Log.d(TAG, "Notified CrossDevice peer (A2DP connected): AIRPODS_CONNECTED")
+                                if (AirPodsService.isAutonomousPeerConnect()) {
+                                    // X1: the OS auto-connected our A2DP to the AirPods (notification
+                                    // chime / ringtone / Apple auto-switch) while a peer holds them and
+                                    // we have no local takeover intent or media. Claiming ownership here
+                                    // would tell the holder it lost the AirPods and bounce audio. Suppress
+                                    // the announcement; onAudioSourceReceived will relinquish naturally.
+                                    Log.d(TAG, "X1: autonomous A2DP connect (peer holds pods, no local takeover/media) — suppressing ownership announcement")
+                                } else {
+                                    CrossDevice.isAvailable = false
+                                    CrossDevice.notifyConnected()
+                                    Log.d(TAG, "Notified CrossDevice peer (A2DP connected): AIRPODS_CONNECTED")
+                                }
                             }
                         } else if (connectionState == 0) { // BluetoothProfile.STATE_DISCONNECTED
                             Log.d(TAG, "Profile disconnected for AirPods (${bluetoothDevice.address})")
@@ -3498,6 +3552,9 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         if (takingOverFor == "music") {
             lastMusicTakeoverMs = System.currentTimeMillis()
         }
+        // Reason-agnostic intent stamp (music, call, …) for the X1 autonomous-connect
+        // guard. Distinct from lastMusicTakeoverMs so call takeovers are covered too.
+        lastTakeoverIntentMs = System.currentTimeMillis()
 
         // ── Local hijack via Xposed (power-user path) ─────────────────────────────
         // Only kept for users with `vendor_id_hook` set — the hijack uses AACP-level
@@ -4149,9 +4206,18 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 // "crossDeviceAvailable=false" and the user has to press play twice.
                 // (`notifyDisconnected` was already wired in disconnectForCD; this is the
                 // missing symmetric call on the acquiring side.)
-                CrossDevice.isAvailable = false  // we have them now, peer doesn't
-                CrossDevice.notifyConnected()
-                Log.d(TAG, "Notified CrossDevice peer: AIRPODS_CONNECTED")
+                if (AirPodsService.isAutonomousPeerConnect()) {
+                    // X1: AACP socket came up from an OS autonomous connect (notification /
+                    // ringtone) while a peer holds the AirPods and we have no takeover intent.
+                    // Don't announce ownership — the AACP assertion above was already skipped
+                    // (recentTakeover=false), so onAudioSourceReceived will relinquish to the
+                    // real owner. Announcing here would corrupt cross-device ownership state.
+                    Log.d(TAG, "X1: autonomous AACP connect — suppressing ownership announcement to peer")
+                } else {
+                    CrossDevice.isAvailable = false  // we have them now, peer doesn't
+                    CrossDevice.notifyConnected()
+                    Log.d(TAG, "Notified CrossDevice peer: AIRPODS_CONNECTED")
+                }
                 setupStemActions()
 
                 // No app-level read watchdog: AirPods don't send AACP frames spontaneously
