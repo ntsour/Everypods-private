@@ -69,6 +69,19 @@ object CrossDevice {
     // between handovers, so without this Android's BT power-management can drop the ACL.
     private const val SERVER_KEEPALIVE_INTERVAL_MS = 20_000L
 
+    /**
+     * W5 diagnostic: current power-management state of the ProPods process. Sampled at
+     * each keep-alive tick so we can correlate link drops with Doze entering or with the
+     * app NOT being battery-optimization-exempt (OEM standby freeze). Cheap; logs only.
+     */
+    private fun powerStateDiag(): String {
+        val ctx = ServiceManager.getService()?.applicationContext ?: return "[power:?]"
+        return try {
+            val pm = ctx.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+            "[doze=${pm.isDeviceIdleMode} battExempt=${pm.isIgnoringBatteryOptimizations(ctx.packageName)}]"
+        } catch (_: Exception) { "[power:err]" }
+    }
+
     var isEnabled: Boolean = false
 
     /** Set of configured peer MACs. Loaded from `cross_device_peers` on [init];
@@ -237,8 +250,14 @@ object CrossDevice {
                     socket.runCatching { close() }
                     continue
                 }
-                Log.d(TAG, "Client connected: $addr (${clientSockets.size + 1} total)")
+                val peerName = try { socket.remoteDevice.name } catch (_: Exception) { null } ?: "?"
+                Log.d(TAG, "SERVER accepted client: $addr (name='$peerName', ${clientSockets.size + 1} total)")
                 clientSockets.add(socket)
+                // W5-C fix: if we have an active client loop trying to CONNECT to this same
+                // peer, suspend it. The peer just proved it acts as a server (Windows always
+                // connects to us; it never listens), so our outbound connect attempts just
+                // page the radio needlessly and cause RF contention with the AirPods link.
+                CrossDeviceClient.pauseLink(addr)
                 CoroutineScope(Dispatchers.IO).launch { handleClientConnection(socket) }
             }
             // Server socket died (not via close()). Reset the flag and restart
@@ -282,8 +301,13 @@ object CrossDevice {
                     socket.outputStream.write(CrossDevicePackets.REQUEST_CONNECTION_STATUS.packet)
                     socket.outputStream.flush()
                 }.isSuccess
-                if (!ok) break
-                Log.d(TAG, "Server keep-alive ping → $addr")
+                if (!ok) {
+                    // W5: a failed write means the link is dying. A GAP in these
+                    // timestamps with no failure line means the process was frozen.
+                    Log.w(TAG, "Server keep-alive ping FAILED → $addr (link dying)")
+                    break
+                }
+                Log.d(TAG, "Server keep-alive ping → $addr @ ${System.currentTimeMillis()} ${powerStateDiag()}")
             }
         }
 

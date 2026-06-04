@@ -57,7 +57,10 @@ object CrossDeviceClient {
     private const val HEADSET_HELD_RECHECK_MS = 10_000L
 
     private const val INITIAL_BACKOFF_MS = 1_500L
-    private const val MAX_BACKOFF_MS = 60_000L
+    // W5-B1: a COORDINATION link must recover fast — a long backoff has no upside here
+    // (unlike a data sync). Capped at 10 s (was 60 s) so a transient drop doesn't leave
+    // the mesh blind for up to a minute. retryNow() still short-circuits on ACL_CONNECTED.
+    private const val MAX_BACKOFF_MS = 10_000L
 
     /** One per peer we client to. All mutable fields are touched only from the
      *  link's own coroutine except [isConnected]/[socket] (read by send paths) and
@@ -107,6 +110,10 @@ object CrossDeviceClient {
                 }
                 try {
                     val device = adapter.getRemoteDevice(peerMac)
+                    // W5 instrumentation: resolve the peer's display name so logs make
+                    // MAC↔device identity unambiguous (which MAC is the PC vs each phone).
+                    val peerName = try { device.name } catch (_: Exception) { null } ?: "?"
+                    Log.d(TAG, "[$peerMac] CLIENT connect attempt (name='$peerName', backoff=${backoff}ms)")
                     // Insecure RFCOMM: same rationale as the server side. Avoids
                     // a per-connect auth step that races with other BT activity
                     // on the same ACL and intermittently fails with "read ret: -1".
@@ -115,7 +122,7 @@ object CrossDeviceClient {
                     link.socket = s
                     link.isConnected = true
                     backoff = INITIAL_BACKOFF_MS
-                    Log.d(TAG, "[$peerMac] connected")
+                    Log.d(TAG, "[$peerMac] connected (name='$peerName')")
 
                     val svc = ServiceManager.getService()
                     val announcement = if (svc?.holdsAirPods() == true)
@@ -135,8 +142,14 @@ object CrossDeviceClient {
                             try {
                                 s.outputStream.write(CrossDevicePackets.REQUEST_CONNECTION_STATUS.packet)
                                 s.outputStream.flush()
-                                Log.d(TAG, "[$peerMac] keep-alive ping sent")
-                            } catch (_: Exception) { break }
+                                Log.d(TAG, "[$peerMac] keep-alive ping sent @ ${System.currentTimeMillis()}")
+                            } catch (e: Exception) {
+                                // W5: distinguish "ping failed (link dying)" from "process
+                                // frozen, ping never attempted" — the latter shows as a GAP
+                                // in these timestamps with no failure line.
+                                Log.w(TAG, "[$peerMac] keep-alive ping FAILED: ${e.message}")
+                                break
+                            }
                         }
                     }
 
@@ -189,6 +202,26 @@ object CrossDeviceClient {
                 }
             }
         }
+    }
+
+    /**
+     * W5-C fix: the server side just accepted an *inbound* connection from [mac], which
+     * means that peer is acting as an RFCOMM server (e.g. Windows, which ALWAYS connects
+     * to the phone's server and never listens itself). Suspend our outbound connect loop
+     * for [durationMs] so we stop paging that peer's radio every ~10 s for a connection
+     * that will never succeed. The loop resumes naturally after the pause, so recovery
+     * works if the topology ever changes.
+     */
+    fun pauseLink(mac: String, durationMs: Long = 5 * 60 * 1000L) {
+        val link = links[mac] ?: return
+        if (link.isConnected) return   // already connected outbound — nothing to suspend
+        Log.d(TAG, "[${mac}] server accepted inbound from this peer — suspending outbound client for ${durationMs / 1000}s (peer is server-only)")
+        link.backoffJob?.cancel()
+        // Inject a long artificial backoff by starting a new cancellable sleep job.
+        // retryNow() can still short-circuit it if we ever need to reconnect sooner.
+        val scope = CoroutineScope(Dispatchers.IO)
+        val bj = scope.launch { delay(durationMs) }
+        link.backoffJob = bj
     }
 
     /**

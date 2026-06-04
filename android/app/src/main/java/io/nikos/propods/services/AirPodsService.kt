@@ -620,6 +620,22 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     override fun onCreate() {
         super.onCreate()
         Log.i(TAG, "lib exempt worked: ${isBluetoothSocketExempted()}")
+        // W5: request battery-optimization exemption if not already granted. Without it,
+        // the OS can freeze our background threads in Doze/standby and kill the RFCOMM
+        // keep-alive that prevents coordination link drops. Shows a one-time system dialog.
+        try {
+            val pm = getSystemService(POWER_SERVICE) as android.os.PowerManager
+            val isExempt = pm.isIgnoringBatteryOptimizations(packageName)
+            Log.i(TAG, "W5 startup power state: battExempt=$isExempt doze=${pm.isDeviceIdleMode}")
+            if (!isExempt) {
+                Log.i(TAG, "W5: requesting battery optimization exemption (needed for RFCOMM keep-alive)")
+                val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                    data = Uri.parse("package:$packageName")
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                startActivity(intent)
+            }
+        } catch (e: Exception) { Log.w(TAG, "W5 battery exemption request failed: ${e.message}") }
 
         sharedPreferencesLogs = getSharedPreferences("packet_logs", MODE_PRIVATE)
 
@@ -4638,9 +4654,16 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     }
 
     @SuppressLint("MissingPermission")
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        // W5 diagnostic: OEM standby / memory pressure often precedes a process freeze
+        // that silently stops the RFCOMM keep-alive. Correlate these with link drops.
+        Log.d(TAG, "W5 onTrimMemory level=$level")
+    }
+
     override fun onDestroy() {
         clearPacketLogs()
-        Log.d(TAG, "Service stopped is being destroyed for some reason!")
+        Log.w(TAG, "W5 Service onDestroy — process going away; RFCOMM links will drop until restart")
 
         CallNotifListener.onMuteStateChanged = null
         sharedPreferences.unregisterOnSharedPreferenceChangeListener(this)
