@@ -462,6 +462,15 @@ void HandoverController::onMediaPlayingChanged(bool playing) {
             if (m_autoRoute.load() && m_airpods.isClassicallyConnected()) {
                 log::handover("ACTION  Re-asserting AirPods as default audio (3s retry)");
                 m_airpods.setAsDefaultAudioDevice();
+
+                // Last resort: if a managed competitor (Jabra Direct etc.) still holds
+                // the live stream — AirPods are connected and we own them, but no audio
+                // session has migrated onto them — briefly disable the competing endpoint
+                // so Windows force-migrates the stream to the AirPods, then re-enable it.
+                if (m_state.load() == OwnershipState::LocalPc && !m_airpods.hasActiveAudioSessions()) {
+                    log::handover("ACTION  No audio session on AirPods after retry — evicting competing device");
+                    m_airpods.evictCompetitorsToClaimRoute();
+                }
             }
         } else {
             log::handover("FAIL    BT connect failed after 3 attempts — AirPods not acquired");

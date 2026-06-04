@@ -56,6 +56,26 @@ public:
     // (OwnershipState::LocalPc) and false when ownership leaves us.
     void setPersistentArm(bool persistent);
 
+    // Last-resort routing for the "managed competitor won't let go" case (e.g.
+    // Jabra Direct keeps re-asserting the Jabra as default and Windows won't
+    // migrate the live stream to the AirPods). Briefly DISABLES the competing
+    // render endpoint(s) — those currently holding a default role or an active
+    // session that are not the AirPods. Disabling forces Windows to migrate the
+    // active stream onto the current default (AirPods); we re-route + resume,
+    // give the stream a moment to establish, then re-enable the competitor.
+    // Once the stream is actively on the AirPods, re-enabling is safe: a default
+    // change alone never moves an already-active stream. Blocks ~3-4s; call from
+    // the detached takeover thread only. Crash-safe: disabled endpoint IDs are
+    // persisted to disk and restored on next startup (see
+    // restoreDisabledEndpointsOnStartup). No-op if no competitor is found.
+    void evictCompetitorsToClaimRoute();
+
+    // Re-enable any audio endpoints that a previous run disabled via
+    // evictCompetitorsToClaimRoute() but never restored (e.g. the process
+    // crashed mid-eviction). Reads the persisted ID list, re-enables each, and
+    // clears the list. Call once at startup before normal operation.
+    static void restoreDisabledEndpointsOnStartup();
+
 private:
     std::uint64_t m_address;
     std::mutex m_mutex;  // serialize connect/disconnect to avoid parallel races

@@ -154,6 +154,11 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
 
     winrt::init_apartment(winrt::apartment_type::multi_threaded);
 
+    // Safety net: re-enable any audio endpoint a previous run disabled during a
+    // competitor eviction but never restored (e.g. crash mid-eviction). Must run
+    // before normal operation so a managed device is never left dead across restarts.
+    AirPodsConnector::restoreDisabledEndpointsOnStartup();
+
     SettingsStore store;
     Settings settings = store.load();
 
