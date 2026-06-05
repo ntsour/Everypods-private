@@ -77,6 +77,10 @@ HANDLE openFirstRadio() {
 
 AirPodsConnector::AirPodsConnector(std::uint64_t address) : m_address(address) {}
 
+AirPodsConnector::~AirPodsConnector() {
+    stopKeepalive();
+}
+
 namespace {
 
 // HandsFree profile: 0000111E-0000-1000-8000-00805F9B34FB
@@ -951,6 +955,81 @@ void AirPodsConnector::setPersistentArm(bool persistent) {
     }
 
     if (weInited) CoUninitialize();
+
+    if (persistent)
+        startKeepalive();
+    else
+        stopKeepalive();
+}
+
+void AirPodsConnector::startKeepalive() {
+    std::lock_guard lk(m_keepaliveMutex);
+    if (m_keepaliveThread.joinable()) return;  // already running
+    m_keepaliveStop.store(false);
+    m_keepaliveThread = std::thread([this]() {
+        using namespace winrt::Windows::Devices::Bluetooth;
+        using namespace winrt::Windows::Devices::Bluetooth::Rfcomm;
+        using winrt::Windows::Foundation::AsyncStatus;
+        winrt::init_apartment(winrt::apartment_type::multi_threaded);
+        try {
+            auto device = BluetoothDevice::FromBluetoothAddressAsync(m_address).get();
+            if (!device) return;
+            log::handover("KEEPALIVE started");
+            while (!m_keepaliveStop.load()) {
+                // Sleep 5s in 500ms chunks. Short interval means we retry quickly
+                // when a probe is cancelled due to BT radio being busy.
+                for (int i = 0; i < 10 && !m_keepaliveStop.load(); ++i)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                if (m_keepaliveStop.load()) break;
+                if (device.ConnectionStatus() != BluetoothConnectionStatus::Connected) {
+                    log::handover("KEEPALIVE ACL no longer connected — stopping");
+                    break;
+                }
+
+                // SDP probe with 4-second timeout. When the Windows BT radio is busy
+                // (e.g. Android peer RFCOMM teardown), the probe can stall for 15s+
+                // before the request packet is sent — long enough for the AirPods
+                // firmware to idle-drop. Time-boxing to 4s means we cancel and retry
+                // in the next 5s cycle: worst-case gap = 5s + 4s + 5s + 4s + ... and
+                // a retry gets through before the 22s idle timer fires.
+                // The 4s timeout also ensures stopKeepalive() returns promptly when
+                // called during a stalled probe, avoiding handover delay.
+                auto op = device.GetRfcommServicesAsync(BluetoothCacheMode::Uncached);
+                bool timedOut = false;
+                auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(4);
+                while (op.Status() == AsyncStatus::Started) {
+                    if (m_keepaliveStop.load()) {
+                        try { op.Cancel(); } catch (...) {}
+                        break;
+                    }
+                    if (std::chrono::steady_clock::now() > deadline) {
+                        try { op.Cancel(); } catch (...) {}
+                        timedOut = true;
+                        break;
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                }
+                if (m_keepaliveStop.load()) break;
+
+                if (!timedOut && op.Status() == AsyncStatus::Completed) {
+                    log::handover("KEEPALIVE probe ok — ACL alive");
+                } else if (timedOut) {
+                    log::handover("KEEPALIVE probe timed out (4s) — BT radio busy, retrying next cycle");
+                } else {
+                    log::handover("KEEPALIVE probe cancelled or errored — stopping");
+                    break;
+                }
+            }
+        } catch (...) {}
+        log::handover("KEEPALIVE stopped");
+    });
+}
+
+void AirPodsConnector::stopKeepalive() {
+    m_keepaliveStop.store(true);
+    std::lock_guard lk(m_keepaliveMutex);
+    if (m_keepaliveThread.joinable())
+        m_keepaliveThread.join();
 }
 
 bool AirPodsConnector::hasActiveAudioSessions() {

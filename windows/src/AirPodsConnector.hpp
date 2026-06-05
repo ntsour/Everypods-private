@@ -1,13 +1,16 @@
 ﻿#pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <mutex>
+#include <thread>
 
 namespace Propods {
 
 class AirPodsConnector {
 public:
     explicit AirPodsConnector(std::uint64_t address);
+    ~AirPodsConnector();
     AirPodsConnector(const AirPodsConnector&) = delete;
     AirPodsConnector& operator=(const AirPodsConnector&) = delete;
 
@@ -58,7 +61,13 @@ public:
 
 private:
     std::uint64_t m_address;
-    std::mutex m_mutex;  // serialize connect/disconnect to avoid parallel races
+    std::mutex    m_mutex;          // serialize connect/disconnect to avoid parallel races
+    std::mutex    m_keepaliveMutex; // serialize startKeepalive/stopKeepalive
+    std::atomic<bool> m_keepaliveStop{true};
+    std::thread   m_keepaliveThread;
+
+    void startKeepalive();
+    void stopKeepalive();
 };
 
 }
