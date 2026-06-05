@@ -969,55 +969,89 @@ void AirPodsConnector::startKeepalive() {
     m_keepaliveThread = std::thread([this]() {
         using namespace winrt::Windows::Devices::Bluetooth;
         using namespace winrt::Windows::Devices::Bluetooth::Rfcomm;
+        using namespace winrt::Windows::Networking::Sockets;
         using winrt::Windows::Foundation::AsyncStatus;
         winrt::init_apartment(winrt::apartment_type::multi_threaded);
         try {
             auto device = BluetoothDevice::FromBluetoothAddressAsync(m_address).get();
             if (!device) return;
-            log::handover("KEEPALIVE started");
-            while (!m_keepaliveStop.load()) {
-                // Sleep 5s in 500ms chunks. Short interval means we retry quickly
-                // when a probe is cancelled due to BT radio being busy.
-                for (int i = 0; i < 10 && !m_keepaliveStop.load(); ++i)
-                    std::this_thread::sleep_for(std::chrono::milliseconds(500));
-                if (m_keepaliveStop.load()) break;
-                if (device.ConnectionStatus() != BluetoothConnectionStatus::Connected) {
-                    log::handover("KEEPALIVE ACL no longer connected — stopping");
-                    break;
-                }
 
-                // SDP probe with 4-second timeout. When the Windows BT radio is busy
-                // (e.g. Android peer RFCOMM teardown), the probe can stall for 15s+
-                // before the request packet is sent — long enough for the AirPods
-                // firmware to idle-drop. Time-boxing to 4s means we cancel and retry
-                // in the next 5s cycle: worst-case gap = 5s + 4s + 5s + 4s + ... and
-                // a retry gets through before the 22s idle timer fires.
-                // The 4s timeout also ensures stopKeepalive() returns promptly when
-                // called during a stalled probe, avoiding handover delay.
-                auto op = device.GetRfcommServicesAsync(BluetoothCacheMode::Uncached);
-                bool timedOut = false;
-                auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(4);
-                while (op.Status() == AsyncStatus::Started) {
-                    if (m_keepaliveStop.load()) {
-                        try { op.Cancel(); } catch (...) {}
-                        break;
-                    }
-                    if (std::chrono::steady_clock::now() > deadline) {
-                        try { op.Cancel(); } catch (...) {}
-                        timedOut = true;
-                        break;
-                    }
-                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-                }
-                if (m_keepaliveStop.load()) break;
-
-                if (!timedOut && op.Status() == AsyncStatus::Completed) {
-                    log::handover("KEEPALIVE probe ok — ACL alive");
-                } else if (timedOut) {
-                    log::handover("KEEPALIVE probe timed out (4s) — BT radio busy, retrying next cycle");
+            // Primary strategy: persistent RFCOMM socket.
+            // An open L2CAP channel is maintained by the BT controller at the hardware
+            // level — it sends periodic null/poll packets regardless of what the BT
+            // software stack is doing. SDP probes are application-layer operations that
+            // queue behind other BT radio activity, so they can stall for 18s+ and lose
+            // the race against the AirPods 22s idle timer. An open socket cannot stall.
+            //
+            // Use cached SDP — connect() just ran GetRfcommServicesAsync(Uncached),
+            // so the cache is fresh and this returns immediately without a radio op.
+            bool socketKeepalive = false;
+            StreamSocket sock;
+            try {
+                auto services = device.GetRfcommServicesAsync(BluetoothCacheMode::Cached).get();
+                if (services.Services().Size() > 0) {
+                    auto svc = services.Services().GetAt(0);
+                    sock.ConnectAsync(svc.ConnectionHostName(), svc.ConnectionServiceName()).get();
+                    socketKeepalive = true;
+                    log::handover("KEEPALIVE socket open — BT controller maintains ACL");
                 } else {
-                    log::handover("KEEPALIVE probe cancelled or errored — stopping");
-                    break;
+                    log::handover("KEEPALIVE no cached services — falling back to SDP probes");
+                }
+            } catch (...) {
+                log::handover("KEEPALIVE socket open failed — falling back to SDP probes");
+            }
+
+            if (socketKeepalive) {
+                // Socket is open; BT controller handles keepalive automatically.
+                // Poll connection status every 5s for log visibility only.
+                while (!m_keepaliveStop.load()) {
+                    for (int i = 0; i < 10 && !m_keepaliveStop.load(); ++i)
+                        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                    if (m_keepaliveStop.load()) break;
+                    if (device.ConnectionStatus() != BluetoothConnectionStatus::Connected) {
+                        log::handover("KEEPALIVE ACL dropped — stopping");
+                        break;
+                    }
+                    log::handover("KEEPALIVE socket ok — ACL held");
+                }
+                try { sock.Close(); } catch (...) {}
+                log::handover("KEEPALIVE socket closed");
+            } else {
+                // Fallback: periodic SDP probes (application-layer, less reliable).
+                // Used only when the socket open fails or returns no cached services.
+                log::handover("KEEPALIVE started (SDP probe fallback)");
+                while (!m_keepaliveStop.load()) {
+                    for (int i = 0; i < 10 && !m_keepaliveStop.load(); ++i)
+                        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                    if (m_keepaliveStop.load()) break;
+                    if (device.ConnectionStatus() != BluetoothConnectionStatus::Connected) {
+                        log::handover("KEEPALIVE ACL no longer connected — stopping");
+                        break;
+                    }
+                    auto op = device.GetRfcommServicesAsync(BluetoothCacheMode::Uncached);
+                    bool timedOut = false;
+                    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(4);
+                    while (op.Status() == AsyncStatus::Started) {
+                        if (m_keepaliveStop.load()) {
+                            try { op.Cancel(); } catch (...) {}
+                            break;
+                        }
+                        if (std::chrono::steady_clock::now() > deadline) {
+                            try { op.Cancel(); } catch (...) {}
+                            timedOut = true;
+                            break;
+                        }
+                        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                    }
+                    if (m_keepaliveStop.load()) break;
+                    if (!timedOut && op.Status() == AsyncStatus::Completed)
+                        log::handover("KEEPALIVE probe ok — ACL alive");
+                    else if (timedOut)
+                        log::handover("KEEPALIVE probe timed out (4s) — BT radio busy, retrying");
+                    else {
+                        log::handover("KEEPALIVE probe cancelled or errored — stopping");
+                        break;
+                    }
                 }
             }
         } catch (...) {}
