@@ -76,14 +76,14 @@ void HandoverController::startAudioWatcher() {
                     // Starting fresh means the watcher waits to observe what actually happens.
                     lastActive = false;
                     idleStreak = 0;
-                    // Don't call setAsDefaultAudioDevice here — avoids stealing audio routing
-                    // when the user manually connected for another purpose (e.g., firmware update).
                     if (setState(OwnershipState::LocalPc)) {
                         log::handover("BT      AirPods connected (BT rising edge) — claiming ownership");
                         if (m_peers.isAnyConnected()) {
                             log::handover("OUT     kAirPodsConnected -> all peers (BT edge)");
                             m_peers.sendPacket(crossdevice::kAirPodsConnected);
                         }
+                        // Route audio: one SetDefaultEndpoint pass (ACTIVE or UNPLUGGED fallback).
+                        if (m_autoRoute.load()) m_airpods.setAsDefaultAudioDevice();
                     }
                 } else if (!btConnected && lastBtConnected) {
                     // Falling edge: AirPods left Windows. Only act when we thought we owned them.
@@ -395,10 +395,11 @@ void HandoverController::onMediaPlayingChanged(bool playing) {
                 log::handover("OUT     kAirPodsConnected -> all peers");
                 m_peers.sendPacket(crossdevice::kAirPodsConnected);
             }
-            // PURE TEST-REPLICA: nothing else. We woke the link and claimed ownership;
-            // Windows now auto-promotes the freshly-connected AirPods to default and routes
-            // the audio (and A2DP<->HFP call switching) natively. No pause/resume, no
-            // SetDefaultEndpoint, no re-assert — exactly what bt_wake_test did.
+            // Route audio to AirPods: one synchronous SetDefaultEndpoint pass. If the
+            // endpoint is already ACTIVE, this routes immediately. If still UNPLUGGED
+            // (A2DP stream not yet open), the UNPLUGGED fallback in tryApplyAirPodsRouting
+            // forces Windows to open the A2DP channel. No notifier, no 3s re-assert.
+            if (m_autoRoute.load()) m_airpods.setAsDefaultAudioDevice();
         } else {
             log::handover("FAIL    BT connect failed after 3 attempts — AirPods not acquired");
             // Anti-pingpong window so a GSMTC re-trigger doesn't immediately re-attempt.
@@ -645,9 +646,21 @@ void HandoverController::onCallActive() {
     // cause Windows to fight back. GSMTC-triggered media (YouTube etc.) goes through
     // onMediaPlayingChanged directly and is not gated here — GSMTC is edge-triggered
     // so a session that stays "playing" never re-fires anyway.
+    //
+    // Time-gated: suppress only within kVoluntaryReleaseSuppressWindow (30s) of the
+    // release. After that, a new Teams call is an explicit user event and must be
+    // allowed through — otherwise a release for music > 30s ago permanently blocks
+    // future call handovers until onTeamsCallEnded() fires (which it can't if no
+    // Teams call ever started on Windows in the interim).
     if (m_voluntarilyReleased.load()) {
-        log::handover("SKIP    Voluntarily released — suppressing call re-trigger until session ends");
-        return;
+        auto sinceRelease = std::chrono::steady_clock::now() - tpFromNs(m_lastVoluntaryReleaseAt.load());
+        if (sinceRelease < kVoluntaryReleaseSuppressWindow) {
+            log::handover("SKIP    Voluntarily released — suppressing call re-trigger ({}ms since release)",
+                std::chrono::duration_cast<std::chrono::milliseconds>(sinceRelease).count());
+            return;
+        }
+        m_voluntarilyReleased.store(false);
+        log::handover("STATE   m_voluntarilyReleased cleared (suppress window expired, new call)");
     }
     onMediaPlayingChanged(true);
 }

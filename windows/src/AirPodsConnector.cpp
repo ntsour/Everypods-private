@@ -280,62 +280,85 @@ bool AirPodsConnector::connect() {
 
     // Step 1: bring up the BT classical link via uncached SDP / RFCOMM.
     bool socketOpened = false;
+    bool linkUp = false;
     try {
+        log::handover("CONNECT SDP probe (uncached) starting...");
         auto services = device.GetRfcommServicesAsync(BluetoothCacheMode::Uncached).get();
-        log::info("RFCOMM services discovered (uncached): {}", services.Services().Size());
-        for (auto&& svc : services.Services()) {
-            try {
-                log::debug("  opening RFCOMM service '{}'...",
-                    winrt::to_string(svc.ConnectionServiceName()));
-                StreamSocket sock;
-                sock.ConnectAsync(svc.ConnectionHostName(), svc.ConnectionServiceName()).get();
-                socketOpened = true;
-                log::info("RFCOMM socket opened — BT classical link should now be up");
-                sock.Close();
-                break;
-            } catch (const winrt::hresult_error& e) {
-                log::debug("    open failed: 0x{:08X} {}",
-                    (std::uint32_t)e.code().value, winrt::to_string(e.message()));
+        log::handover("CONNECT SDP probe done — {} RFCOMM service(s)", services.Services().Size());
+
+        // Socket connect with 3-second timeout on the first RFCOMM service only.
+        // Previously this blocked for up to 21s when the phone's HFP service hadn't fully
+        // released — long enough for the AirPods to idle-drop before A2DP could open.
+        // A short timeout avoids the block while still sending the HFP wake signal when
+        // the service is available.
+        if (services.Services().Size() > 0) {
+            auto svc     = services.Services().GetAt(0);
+            auto host    = svc.ConnectionHostName();
+            auto svcName = svc.ConnectionServiceName();
+            log::handover("CONNECT RFCOMM socket connect (3s timeout)...");
+            StreamSocket sock;
+            std::atomic<int> sockResult{0}; // 0=pending 1=ok -1=fail
+            std::thread t([&sock, host, svcName, &sockResult]() {
+                try {
+                    winrt::init_apartment(winrt::apartment_type::multi_threaded);
+                    sock.ConnectAsync(host, svcName).get();
+                    sockResult.store(1);
+                } catch (...) { sockResult.store(-1); }
+            });
+            auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+            while (sockResult.load() == 0 && std::chrono::steady_clock::now() < deadline) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
             }
-        }
-        if (!socketOpened && services.Services().Size() == 0) {
-            log::debug("No RFCOMM services advertised right now — A2DP profile activation may still bring up the link");
+            if (sockResult.load() == 1) {
+                socketOpened = true;
+                log::handover("CONNECT RFCOMM socket opened — ACL link up");
+                sock.Close();
+            } else {
+                const char* reason = (sockResult.load() == 0) ? "timed out (3s)" : "failed";
+                log::handover("CONNECT RFCOMM socket {} — continuing with SDP wake only", reason);
+                sock.Close(); // cancels the pending connect if still in flight
+            }
+            t.join();
+        } else {
+            log::handover("CONNECT 0 RFCOMM services — SDP probe alone is the wake trigger");
         }
     } catch (const winrt::hresult_error& e) {
-        log::debug("RFCOMM enumeration failed (non-fatal): 0x{:08X} {}",
+        log::handover("CONNECT SDP/socket phase failed: 0x{:08X} {}",
             (std::uint32_t)e.code().value, winrt::to_string(e.message()));
     }
 
-    // Log the link state between steps to confirm step 1 actually brought it up.
-    try {
-        log::debug("  status mid-connect: connection={}", (int)device.ConnectionStatus());
-    } catch (...) {}
-
-    // The link-wake above (uncached SDP + opportunistic socket open) is sufficient on
-    // its own. Once the ACL link is up, Windows auto-connects the AirPods' already-
-    // enabled A2DP + HFP profiles, activates the audio endpoints, and manages all
-    // A2DP<->HFP switching (including the switch back to A2DP when a call ends) natively
-    // from then on — exactly as it does for any other Bluetooth headset.
-    //
-    // We deliberately do NOT call BluetoothSetServiceState here. ENABLE on a live link
-    // re-runs driver activation and tears down the in-progress A2DP stream (endpoint
-    // stuck UNPLUGGED, no sound); and it is unnecessary because the profiles are already
-    // enabled from pairing. Verified with a standalone test (windows/tools/bt_wake_test):
-    // the link-wake alone drives the stereo render AND HFP capture endpoints to ACTIVE
-    // with zero service toggling. Routing audio onto the AirPods is the
-    // IMMNotificationClient's job once the endpoint reaches DEVICE_STATE_ACTIVE.
-    bool linkUp = false;
     try {
         linkUp = (device.ConnectionStatus() == BluetoothConnectionStatus::Connected);
+        log::handover("CONNECT ACL connection status after wake: {}", (int)device.ConnectionStatus());
     } catch (...) {}
 
-    // Success = we opened a socket or the link is (now) up. Even if neither is
-    // observable yet (AirPods can take a few seconds to settle), the SDP/connection
-    // attempt has been issued and the endpoint watcher finishes the job. If
-    // HandoverController retries, it simply re-issues the harmless link-wake.
+    // ACL keepalive: AirPods firmware idle-drops the link after ~22s with no BT activity.
+    // If the socket connect timed out / failed (HFP still releasing from phone), we have no
+    // active L2CAP channel to keep the link alive. Send SDP probes every 5s for up to 20s
+    // so the notifier has time to catch the UNPLUGGED→ACTIVE transition and route audio.
+    if (linkUp) {
+        log::handover("CONNECT ACL keepalive starting (up to 4×5s probes)");
+        for (int i = 0; i < 4; ++i) {
+            std::this_thread::sleep_for(std::chrono::seconds(5));
+            try {
+                linkUp = (device.ConnectionStatus() == BluetoothConnectionStatus::Connected);
+                if (!linkUp) {
+                    log::handover("CONNECT keepalive {}/4: ACL dropped — done", i + 1);
+                    break;
+                }
+                device.GetRfcommServicesAsync(BluetoothCacheMode::Uncached).get();
+                log::handover("CONNECT keepalive {}/4: ACL alive", i + 1);
+            } catch (...) {
+                log::handover("CONNECT keepalive {}/4: probe failed — stopping", i + 1);
+                linkUp = false;
+                break;
+            }
+        }
+    }
+
     const bool kicked = socketOpened || linkUp;
-    log::info("AirPods connect: link-wake issued (socketOpened={}, linkUp={}) — "
-              "letting Windows activate the audio endpoint natively", socketOpened, linkUp);
+    log::info("AirPods connect: link-wake done (socketOpened={}, linkUp={}) — "
+              "notifier handles routing when A2DP endpoint goes ACTIVE", socketOpened, linkUp);
     return kicked;
 }
 
@@ -367,6 +390,7 @@ const char* stateName(DWORD s) {
 struct Endpoint {
     std::wstring id;
     DWORD state;
+    std::wstring name;  // friendly name, for stereo-vs-HFP preference
 };
 
 // Enumerate endpoints in ALL states (active+disabled+notpresent+unplugged) and
@@ -409,7 +433,7 @@ std::vector<Endpoint> findAirPodsEndpoints(IMMDeviceEnumerator* enumerator, EDat
                 flow == eRender ? "render" : "capture",
                 stateName(state),
                 winrt::to_string(friendly));
-            hits.push_back({idStr, state});
+            hits.push_back({idStr, state, friendly});
         }
         // Non-AirPods endpoint debug lines omitted — they flood the log on
         // every IMMNotificationClient callback (dozens of devices × every
@@ -570,6 +594,15 @@ bool tryApplyAirPodsRouting(IMMDeviceEnumerator* enumerator,
     auto renderHits  = findAirPodsEndpoints(enumerator, eRender);
     auto captureHits = findAirPodsEndpoints(enumerator, eCapture);
 
+    log::handover("ROUTE   found {} render + {} capture AirPods endpoint(s)",
+        renderHits.size(), captureHits.size());
+    for (auto& ep : renderHits)
+        log::handover("ROUTE     render: state={} name='{}'",
+            stateName(ep.state), winrt::to_string(ep.name));
+    for (auto& ep : captureHits)
+        log::handover("ROUTE     capture: state={} name='{}'",
+            stateName(ep.state), winrt::to_string(ep.name));
+
     bool anyApplied = false;
     std::wstring activeRenderId, activeCaptureId;
 
@@ -588,7 +621,30 @@ bool tryApplyAirPodsRouting(IMMDeviceEnumerator* enumerator,
         }
     }
 
+    // UNPLUGGED fallback: try the stereo UNPLUGGED endpoint — forces Windows to open A2DP.
+    if (!anyApplied) {
+        log::handover("ROUTE   no ACTIVE endpoint — trying UNPLUGGED stereo fallback");
+        auto isHandsFree = [](const Endpoint& e) {
+            return foldLower(e.name).find(L"hands-free") != std::wstring::npos
+                || foldLower(e.name).find(L"hands free") != std::wstring::npos;
+        };
+        for (auto& ep : renderHits) {
+            if (ep.state != DEVICE_STATE_UNPLUGGED) continue;
+            if (isHandsFree(ep)) continue;
+            log::handover("ROUTE   applying UNPLUGGED stereo endpoint: '{}'",
+                winrt::to_string(ep.name));
+            if (applyEndpointAsDefault(enumerator, policy, eRender, ep, "render (output, stereo UNPLUGGED)")) {
+                anyApplied = true;
+                if (activeRenderId.empty()) activeRenderId = ep.id;
+                break;
+            }
+        }
+        if (!anyApplied)
+            log::handover("ROUTE   no UNPLUGGED stereo endpoint found — routing not applied");
+    }
+
     if (anyApplied) {
+        log::handover("ROUTE   routing applied — broadcasting device change");
         broadcastDefaultDeviceChange();
         if (!activeRenderId.empty() || !activeCaptureId.empty()) {
             updateTeamsDeviceConfig(activeRenderId, activeCaptureId);
@@ -760,7 +816,7 @@ private:
         PropVariantClear(&name);
         if (foldLower(friendly).find(L"airpods") == std::wstring::npos) return;
 
-        log::info("Endpoint notifier: AirPods endpoint '{}' just hit ACTIVE — routing now",
+        log::handover("ROUTE   AirPods endpoint '{}' just hit ACTIVE — routing now (notifier)",
             winrt::to_string(friendly));
 
         ComPtr<IPolicyConfigVista> policy;
@@ -861,24 +917,40 @@ bool AirPodsConnector::setAsDefaultAudioDevice() {
     // routing caused continuous churn; a single pass here is sufficient. If the endpoint
     // is ACTIVE we set default now; if not yet ACTIVE, HandoverController's 3s retry fires
     // this again by which point the endpoint should have settled.
+    log::handover("ROUTE   setAsDefaultAudioDevice called — running routing pass");
     bool appliedNow = tryApplyAirPodsRouting(enumerator.Get(), policy.Get());
-    if (appliedNow) {
-        log::info("setAsDefaultAudioDevice: AirPods endpoint was already ACTIVE — routed synchronously");
-    } else {
-        log::info("setAsDefaultAudioDevice: no AirPods endpoint ACTIVE yet — will retry");
+
+    // Arm the IMMNotificationClient so when A2DP opens (UNPLUGGED→ACTIVE) we route
+    // immediately on the event thread. Required when endpoint is UNPLUGGED at call time —
+    // SetDefaultEndpoint on UNPLUGGED alone doesn't reliably open A2DP fast enough to
+    // prevent the AirPods from idle-dropping before audio flows.
+    EndpointNotifier* notifier = ensureNotifier(enumerator.Get());
+    if (notifier) {
+        notifier->arm();
+        log::handover("ROUTE   notifier armed — will route when endpoint goes ACTIVE (120s window)");
     }
+
+    log::handover("ROUTE   setAsDefaultAudioDevice done — appliedNow={}", appliedNow);
 
     if (weInited) CoUninitialize();
     return true;
 }
 
 void AirPodsConnector::setPersistentArm(bool persistent) {
-    // PURE TEST-REPLICA (2026-06-04): no-op. This used to arm the IMMNotificationClient
-    // that re-applies SetDefaultEndpoint routing. With Propods doing ZERO audio routing
-    // (Windows auto-promotes/routes natively, like bt_wake_test), there is nothing to
-    // arm. Kept as a no-op so callers compile unchanged; trivially reversible.
-    (void)persistent;
-    return;
+    HRESULT coInitHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    const bool weInited = (coInitHr == S_OK);
+
+    ComPtr<IMMDeviceEnumerator> enumerator;
+    if (SUCCEEDED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
+            __uuidof(IMMDeviceEnumerator), (void**)enumerator.GetAddressOf()))) {
+        EndpointNotifier* notifier = ensureNotifier(enumerator.Get());
+        if (notifier) {
+            notifier->setPersistent(persistent);
+            log::handover("ROUTE   setPersistentArm({})", persistent ? "true" : "false");
+        }
+    }
+
+    if (weInited) CoUninitialize();
 }
 
 bool AirPodsConnector::hasActiveAudioSessions() {
