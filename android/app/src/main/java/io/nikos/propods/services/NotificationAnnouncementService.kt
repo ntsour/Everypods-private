@@ -52,6 +52,9 @@ class NotificationAnnouncementService : NotificationListenerService() {
         private const val TAG = "NotifAnnounceSvc"
         private const val DUPLICATE_WINDOW_MS = 12_000L
 
+        @Volatile var isListenerConnected: Boolean = false
+            private set
+
         // Skip our own foreground service notification, MIUI/OneUI system
         // notifications, and ongoing/group-summary entries that aren't really
         // user-visible events.
@@ -86,8 +89,16 @@ class NotificationAnnouncementService : NotificationListenerService() {
 
     override fun onListenerConnected() {
         super.onListenerConnected()
+        isListenerConnected = true
         Log.d(TAG, "Listener connected")
         migrateLegacyPrefs()
+    }
+
+    override fun onListenerDisconnected() {
+        super.onListenerDisconnected()
+        isListenerConnected = false
+        Log.w(TAG, "Listener disconnected — requesting rebind")
+        requestRebind(ComponentName(applicationContext, NotificationAnnouncementService::class.java))
     }
 
     /**

@@ -658,6 +658,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         initializeAACPManagerCallback()
 
         sharedPreferences.registerOnSharedPreferenceChangeListener(this)
+        startNotifListenerWatchdog()
 
         // Sync OS mic state + play confirmation sound when the user mutes/unmutes
         // from inside the VoIP app (Teams in-app button). Without this, pressing
@@ -2938,6 +2939,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
     private var activeCallGestureLoopRunning = false
     private var mutedReminderJob: kotlinx.coroutines.Job? = null
+    private var notifListenerWatchdogJob: kotlinx.coroutines.Job? = null
 
     private fun startMutedReminder() {
         mutedReminderJob?.cancel()
@@ -2958,6 +2960,33 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     private fun stopMutedReminder() {
         mutedReminderJob?.cancel()
         mutedReminderJob = null
+    }
+
+    private fun startNotifListenerWatchdog() {
+        notifListenerWatchdogJob?.cancel()
+        notifListenerWatchdogJob = CoroutineScope(Dispatchers.Default).launch {
+            // Initial kick: on some OEMs (MIUI) the NLS is not yet bound when the
+            // foreground service starts. Requesting rebind immediately handles that.
+            if (NotificationAnnouncementService.isAccessGranted(applicationContext) &&
+                !NotificationAnnouncementService.isListenerConnected
+            ) {
+                android.service.notification.NotificationListenerService.requestRebind(
+                    ComponentName(applicationContext, NotificationAnnouncementService::class.java)
+                )
+                Log.d(TAG, "Watchdog: initial rebind requested for NotificationAnnouncementService")
+            }
+            while (isActive) {
+                delay(5 * 60_000L)
+                if (NotificationAnnouncementService.isAccessGranted(applicationContext) &&
+                    !NotificationAnnouncementService.isListenerConnected
+                ) {
+                    android.service.notification.NotificationListenerService.requestRebind(
+                        ComponentName(applicationContext, NotificationAnnouncementService::class.java)
+                    )
+                    Log.d(TAG, "Watchdog: rebind requested for NotificationAnnouncementService")
+                }
+            }
+        }
     }
 
     fun handleActiveCall() {
@@ -4696,6 +4725,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         startupBatteryAlertJob?.cancel()
         startupBatteryAlertJob = null
         startupBatteryAlertArmed = false
+        notifListenerWatchdogJob?.cancel()
+        notifListenerWatchdogJob = null
         if (checkSelfPermission("android.permission.READ_PHONE_STATE") == PackageManager.PERMISSION_GRANTED) {
             telephonyManager.unregisterTelephonyCallback(phoneStateListener)
         }
