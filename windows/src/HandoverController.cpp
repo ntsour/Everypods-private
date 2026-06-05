@@ -344,23 +344,26 @@ void HandoverController::onMediaPlayingChanged(bool playing) {
     // misfired. We just wake the link and let Windows route the already-playing audio onto
     // the AirPods once it activates them — like selecting the device in the sound flyout.
 
-    // CONNECT-FIRST (replicates bt_wake_test): do NOT send kRequestDisconnect and do NOT
-    // wait for the phone to release. Releasing the phone first leaves the AirPods idle, and
-    // Windows then only brings up the ACL link — the A2DP endpoint stays UNPLUGGED with no
-    // sound, and the pods idle-drop. Instead we wake/connect WHILE the phone still actively
-    // holds the pods; that is exactly the condition under which the AirPods switch their A2DP
-    // to Windows (the standalone test proved it). After we have them, we broadcast
-    // kAirPodsConnected so the phone updates its ownership to RemoteAndroid. Windows then
-    // routes the already-playing audio onto the AirPods natively.
+    // Send kRequestDisconnect to peers immediately (no waiting) so the phone knows to
+    // release — especially important for limited-mode devices (Xiaomi) that can't force-drop
+    // A2DP but need the signal to stop playing and allow their link to drop naturally.
+    // Then connect right away in parallel (don't wait for ack/grace). The phone releases
+    // while we're already connecting; the AirPods switch their A2DP to Windows once free.
+    const bool peerConnected = m_peers.isAnyConnected();
+    if (peerConnected) {
+        log::handover("OUT     kRequestDisconnect -> all peers");
+        m_peers.sendPacket(crossdevice::kRequestDisconnect);
+    }
 
     // Dispatch the blocking BT connect to a detached thread (the WinRT media-callback thread
     // must not block or the runtime terminates it).
-    std::thread([this]() {
+    std::thread([this, peerConnected]() {
         winrt::init_apartment(winrt::apartment_type::multi_threaded);
 
-        // Connect immediately — phone still holds the pods → waking the link makes them
-        // switch to Windows. Retries (1.5s, 3s) cover a straggling first attempt.
-        log::handover("ACTION  BT connect attempt 1/3 (connect-first; phone still holds pods)");
+        // Connect immediately while the phone is releasing — the AirPods switch their A2DP
+        // to Windows as soon as the phone's link drops. Retries (1.5s, 3s) cover the case
+        // where the phone hasn't fully released yet on the first attempt.
+        log::handover("ACTION  BT connect attempt 1/3 (connect while phone releases in parallel)");
         bool connected = m_airpods.connect();
         if (!connected) {
             log::handover("RETRY   BT connect attempt 1 failed — backing off");

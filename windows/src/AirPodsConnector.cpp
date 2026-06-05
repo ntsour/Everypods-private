@@ -829,20 +829,14 @@ EndpointNotifier* ensureNotifier(IMMDeviceEnumerator* enumerator) {
 // register an IMMNotificationClient and wait for OnDeviceStateChanged on an
 // AirPods endpoint to fire with DEVICE_STATE_ACTIVE.
 bool AirPodsConnector::setAsDefaultAudioDevice() {
-    // PURE TEST-REPLICA (2026-06-04): Propods does ZERO audio routing. We only wake the
-    // AirPods BT link and let Windows do exactly what it does for any other headset —
-    // auto-promote the freshly-connected device to default and route the audio. This
-    // mirrors the standalone bt_wake_test (wake only) which drove both endpoints ACTIVE
-    // with sound and no SetDefaultEndpoint. Forcing the default endpoint here (and the
-    // IMMNotificationClient it armed) was part of the interference we are removing.
-    // Kept as a no-op so callers compile unchanged and this is trivially reversible:
-    // if Windows turns out not to move an already-playing stream, re-enable a single
-    // SetDefaultEndpoint-on-ACTIVE here.
-    return true;
-
-#if 0  // routing intentionally disabled — see comment above
+    // One-shot synchronous routing: if the AirPods endpoint is already ACTIVE, make them
+    // the default output/input device immediately via SetDefaultEndpoint. No IMMNotification-
+    // Client arm, no 3s re-assert, no routing loop — just one quiet pass. Required because
+    // Windows doesn't always auto-promote the AirPods to default when another audio device
+    // is already the output (e.g. PC speakers, Xiaomi overnight, etc.), leaving the endpoint
+    // ACTIVE but no audio flowing → idle-drop. If the endpoint is not ACTIVE yet (still
+    // UNPLUGGED), this is a no-op and returns true (caller retries via HandoverController).
     HRESULT coInitHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-    // S_FALSE means already initialized on this thread — that's fine.
     const bool weInited = (coInitHr == S_OK);
 
     ComPtr<IMMDeviceEnumerator> enumerator;
@@ -863,40 +857,19 @@ bool AirPodsConnector::setAsDefaultAudioDevice() {
         return false;
     }
 
-    // Register the IMMNotificationClient on first call. Arm it so a future
-    // OnDeviceStateChanged(ACTIVE) on any AirPods endpoint will trigger
-    // tryApplyAirPodsRouting automatically.
-    EndpointNotifier* notifier = ensureNotifier(enumerator.Get());
-    if (notifier) notifier->arm();
-
-    // Synchronous fast path: if any AirPods endpoint is *already* in ACTIVE
-    // state right now, route immediately. This handles the retry case (caller
-    // called us 3s after connect, by which point the endpoint may already be up)
-    // and also the case where we just missed a state-change callback firing on
-    // another thread.
+    // Synchronous pass only — no IMMNotificationClient notifier arm. The notifier-based
+    // routing caused continuous churn; a single pass here is sufficient. If the endpoint
+    // is ACTIVE we set default now; if not yet ACTIVE, HandoverController's 3s retry fires
+    // this again by which point the endpoint should have settled.
     bool appliedNow = tryApplyAirPodsRouting(enumerator.Get(), policy.Get());
-
     if (appliedNow) {
         log::info("setAsDefaultAudioDevice: AirPods endpoint was already ACTIVE — routed synchronously");
-    } else if (notifier) {
-        log::info("setAsDefaultAudioDevice: no AirPods endpoint ACTIVE yet — "
-                  "waiting for OnDeviceStateChanged callback ({}s window)",
-                  EndpointNotifier::kArmWindow.count());
     } else {
-        // Notifier registration failed (very rare). Fall back to a best-effort
-        // synchronous scan — but do NOT apply UNPLUGGED endpoints. Better to
-        // do nothing than to set a dead device as default (which causes apps
-        // to mute audio rather than fall back to speakers).
-        log::warn("setAsDefaultAudioDevice: notifier unavailable — audio may not route until "
-                  "the user manually switches output device");
+        log::info("setAsDefaultAudioDevice: no AirPods endpoint ACTIVE yet — will retry");
     }
 
     if (weInited) CoUninitialize();
-    // Return true if we routed or if the notifier is now armed for a future
-    // routing. The caller (HandoverController) doesn't distinguish — either way
-    // the system is making best effort to route.
-    return appliedNow || (notifier != nullptr);
-#endif  // routing intentionally disabled
+    return true;
 }
 
 void AirPodsConnector::setPersistentArm(bool persistent) {
