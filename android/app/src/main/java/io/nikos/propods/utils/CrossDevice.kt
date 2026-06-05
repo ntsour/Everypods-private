@@ -362,7 +362,15 @@ object CrossDevice {
                 Log.d(TAG, "[$sourceMac] REQUEST_HANDOVER — releasing AirPods (eagerly marking peer as holder)")
                 holders.add(sourceMac)
                 ServiceManager.getService()?.markPeerTakeoverAttempt()
-                ServiceManager.getService()?.disconnectForCD()
+                // Only hand over if a pod is actually in ear. If both pods are in the
+                // case (BLE reports neither in ear), the peer has nothing to hand over
+                // to — ignore the request rather than disconnecting and showing a popup.
+                val service = ServiceManager.getService()
+                if (service?.isAnyPodInEar() != false) {
+                    service?.disconnectForCD()
+                } else {
+                    Log.d(TAG, "[$sourceMac] REQUEST_HANDOVER ignored — no pod in ear (pods in case)")
+                }
             }
             raw.contentEquals(CrossDevicePackets.REQUEST_DISCONNECT.packet) -> {
                 // Mark that a peer is taking over so we apply cooldown appropriately.
@@ -370,7 +378,12 @@ object CrossDevice {
                 // so hasPods reflects the real taker, not all configured peers.
                 holders.add(sourceMac)
                 ServiceManager.getService()?.markPeerTakeoverAttempt()
-                ServiceManager.getService()?.disconnectForCD()
+                val service = ServiceManager.getService()
+                if (service?.isAnyPodInEar() != false) {
+                    service?.disconnectForCD()
+                } else {
+                    Log.d(TAG, "[$sourceMac] REQUEST_DISCONNECT ignored — no pod in ear (pods in case)")
+                }
             }
             raw.contentEquals(CrossDevicePackets.AIRPODS_CONNECTED.packet) -> {
                 holders.add(sourceMac)

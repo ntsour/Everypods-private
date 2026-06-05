@@ -1388,13 +1388,14 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 )
                 // Clear any pending music-takeover replay — we just gave up ownership.
                 MediaController.cancelPendingMusicTakeover()
+                val inCase = areBothPodsInCase()
                 if (reasonReverseTapped) {
                     Log.d(TAG, "reverse tapped (already disconnected above)")
                     disconnectedBecauseReversed = true
                     // NOTE: do NOT call disconnectAudio() again here — the prior
                     // unconditional call above already handled it. A duplicate call
                     // back-to-back through reflection caused BT-stack state confusion.
-                    showIsland(
+                    if (!inCase) showIsland(
                         this@AirPodsService,
                         (batteryNotification.getBattery()
                             .find { it.component == BatteryComponent.LEFT }?.level
@@ -1407,7 +1408,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                         otherDeviceName = senderName
                     )
                 }
-                if (!aacpManager.owns) {
+                if (!aacpManager.owns && !inCase) {
                     showIsland(
                         this@AirPodsService,
                         (batteryNotification.getBattery()
@@ -1424,6 +1425,10 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             }
 
             override fun onShowNearbyUI(sender: String) {
+                if (areBothPodsInCase()) {
+                    Log.d(TAG, "Ignoring ShowNearbyUI from $sender — AirPods are in case")
+                    return
+                }
                 val senderName =
                     aacpManager.connectedDevices.find { it.mac == sender }?.type ?: "Other device"
                 showIsland(
@@ -3552,6 +3557,13 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
      * connect is never blocked. Worst case, connectAudio() to genuinely in-case
      * (lid-closed, unconnectable) pods simply fails and audio stays on speaker.
      */
+    fun isAnyPodInEar(): Boolean {
+        // Conservative default: if no BLE data is available, assume pods might be in use
+        // so the caller proceeds rather than blocking a legitimate handover.
+        val status = bleManager.getMostRecentStatus() ?: return true
+        return status.isLeftInEar || status.isRightInEar
+    }
+
     private fun areBothPodsInCase(): Boolean {
         val socketUp = ::socket.isInitialized && socket.isConnected
         if (!socketUp) return false
