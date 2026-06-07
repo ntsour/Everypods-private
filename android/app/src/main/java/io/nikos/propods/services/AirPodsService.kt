@@ -3586,9 +3586,15 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
      * (lid-closed, unconnectable) pods simply fails and audio stays on speaker.
      */
     fun isAnyPodInEar(): Boolean {
-        // Conservative default: if no BLE data is available, assume pods might be in use
-        // so the caller proceeds rather than blocking a legitimate handover.
-        val status = bleManager.getMostRecentStatus() ?: return true
+        // If we have fresh BLE data, trust it.
+        val status = bleManager.getMostRecentStatus() ?: run {
+            // No BLE data — check whether we actually have any connection.
+            // If neither the L2CAP socket nor A2DP is up, the AirPods cannot
+            // possibly be in ear with US. This prevents false handover popups
+            // on AACP-less devices (e.g. Xiaomi) when the peer claims the pods
+            // while they're in the case.
+            return (::socket.isInitialized && socket.isConnected) || isA2dpConnected()
+        }
         return status.isLeftInEar || status.isRightInEar
     }
 
