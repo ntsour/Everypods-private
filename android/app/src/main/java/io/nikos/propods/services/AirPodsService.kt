@@ -659,6 +659,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
         sharedPreferences.registerOnSharedPreferenceChangeListener(this)
         startNotifListenerWatchdog()
+        startStaleNotificationCleanup()
 
         // Sync OS mic state + play confirmation sound when the user mutes/unmutes
         // from inside the VoIP app (Teams in-app button). Without this, pressing
@@ -2853,6 +2854,9 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         val a2dpConnected = try { isA2dpConnected() } catch (_: Exception) { false }
         val socketReady = ::socket.isInitialized && socket.isConnected
         if (!::socket.isInitialized && !a2dpConnected) {
+            // Nothing is actually connected — cancel any stale "connected" notification
+            // left over from a previous session (e.g. on Xiaomi where A2DP silently drops).
+            notificationManager.cancel(2)
             return
         }
         if (connected && (config.bleOnlyMode || socketReady || a2dpConnected)) {
@@ -2945,6 +2949,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     private var activeCallGestureLoopRunning = false
     private var mutedReminderJob: kotlinx.coroutines.Job? = null
     private var notifListenerWatchdogJob: kotlinx.coroutines.Job? = null
+    private var staleNotificationCleanupJob: kotlinx.coroutines.Job? = null
 
     private fun startMutedReminder() {
         mutedReminderJob?.cancel()
@@ -2990,6 +2995,29 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     )
                     Log.d(TAG, "Watchdog: rebind requested for NotificationAnnouncementService")
                 }
+            }
+        }
+    }
+
+    /**
+     * One-shot delayed check that cancels a stale "connected" notification
+     * if the AirPods aren't actually connected after service startup.
+     *
+     * Handles the Xiaomi scenario where the notification persists from a
+     * previous session because no AIRPODS_DISCONNECTED broadcast fires
+     * (the A2DP connection silently dropped without an ACL event).
+     */
+    private fun startStaleNotificationCleanup() {
+        staleNotificationCleanupJob?.cancel()
+        staleNotificationCleanupJob = CoroutineScope(Dispatchers.Default).launch {
+            delay(10_000L) // let connections establish
+            val a2dpConnected = try { isA2dpConnected() } catch (_: Exception) { false }
+            val socketReady = ::socket.isInitialized && socket.isConnected
+            val hasSavedMac = macAddress.isNotEmpty()
+            if (hasSavedMac && !socketReady && !a2dpConnected) {
+                val notificationManager = getSystemService(NotificationManager::class.java)
+                notificationManager.cancel(2)
+                Log.d(TAG, "Stale notification cleanup: cancelled (no active connection after startup)")
             }
         }
     }
@@ -4739,6 +4767,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         startupBatteryAlertArmed = false
         notifListenerWatchdogJob?.cancel()
         notifListenerWatchdogJob = null
+        staleNotificationCleanupJob?.cancel()
+        staleNotificationCleanupJob = null
         if (checkSelfPermission("android.permission.READ_PHONE_STATE") == PackageManager.PERMISSION_GRANTED) {
             telephonyManager.unregisterTelephonyCallback(phoneStateListener)
         }
