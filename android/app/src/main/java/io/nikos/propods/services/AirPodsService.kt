@@ -48,6 +48,7 @@ import android.content.pm.PackageManager
 import android.content.res.Resources
 import android.graphics.Color
 import android.media.AudioManager
+import android.media.session.MediaSessionManager
 import android.net.Uri
 import android.os.BatteryManager
 import android.os.Binder
@@ -55,6 +56,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import android.os.ParcelUuid
 import android.os.UserHandle
 import android.provider.Settings
@@ -1520,17 +1522,28 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             }
 
             override fun onStemPressReceived(stemPress: ByteArray) {
+                Log.d(TAG, "onStemPressReceived: raw=${stemPress.joinToString(" ") { "%02X".format(it) }}")
 
                 val (stemPressType, bud) = aacpManager.parseStemPressResponse(stemPress)
+                Log.d(TAG, "onStemPressReceived: type=$stemPressType, bud=$bud, cameraActive=$cameraActive, cameraAction=${config.cameraAction}")
 
-                Log.d(
-                    "AirPodsParser",
-                    "Stem press received: $stemPressType on $bud, cameraActive: $cameraActive, cameraAction: ${config.cameraAction}"
-                )
+                val inCall = isInAnyCall()
+                Log.d(TAG, "onStemPressReceived: isInAnyCall=$inCall")
 
-                if (isInAnyCall() && handleCallStemPress(stemPressType)) {
+                // Safety net: ensure stem config is sent whenever a call is
+                // active. For self-managed VoIP (WhatsApp) the TelephonyManager
+                // callback doesn't fire, so setupStemActions() may not have been
+                // called yet. This re-applies the config so single press is
+                // forwarded by the AirPods firmware.
+                if (inCall) {
+                    setupStemActions()
+                }
+
+                if (inCall && handleCallStemPress(stemPressType)) {
+                    Log.d(TAG, "onStemPressReceived: handled by call handler")
                     return
                 }
+                Log.d(TAG, "onStemPressReceived: falling through to normal actions")
 
                 if (stemPressType == StemPressType.SINGLE_PRESS && isAnnouncementSpeaking()) {
                     Log.d("AirPodsParser", "Single press consumed: stopping active announcement")
@@ -1794,19 +1807,32 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
      * which handles Teams and other VoIP apps that ignore HFP CHUP.
      */
     private fun handleCallStemPress(pressType: StemPressType): Boolean {
-        // Incoming ringing call: single press = answer, double press = reject
-        if (isCallRinging) {
+        val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
+        val voipRinging = !isCallRinging && !isInCall &&
+            (audioManager.mode == AudioManager.MODE_RINGTONE ||
+                (try { (getSystemService(TELECOM_SERVICE) as TelecomManager).isInCall } catch (_: Exception) { false } && !isVoIPCallActive))
+        val isRinging = isCallRinging || voipRinging
+        Log.d(TAG, "handleCallStemPress: pressType=$pressType, isCallRinging=$isCallRinging, isInCall=$isInCall, isVoIPCallActive=$isVoIPCallActive, audioMode=${audioManager.mode}, voipRinging=$voipRinging, isRinging=$isRinging")
+        if (isRinging) {
             when (pressType) {
                 StemPressType.SINGLE_PRESS -> {
-                    Log.d(TAG, "handleCallStemPress: ringing call, answering")
+                    Log.d(TAG, "handleCallStemPress: SINGLE_PRESS → answerCall() (voip=$voipRinging)")
                     answerCall(); return true
                 }
                 StemPressType.DOUBLE_PRESS -> {
-                    Log.d(TAG, "handleCallStemPress: ringing call, declining")
+                    Log.d(TAG, "handleCallStemPress: DOUBLE_PRESS → rejectCall() (voip=$voipRinging)")
                     rejectCall(); return true
                 }
-                else -> return false
+                else -> {
+                    Log.d(TAG, "handleCallStemPress: unknown press type in ringing state → returning false")
+                    return false
+                }
             }
+        }
+        // Not ringing — must be an active call to proceed with mute/end.
+        if (!isInCall && !isVoIPCallActive) {
+            Log.d(TAG, "handleCallStemPress: not ringing and no active call → returning false")
+            return false
         }
         // CALL_MANAGEMENT_CONFIG byte[1]: 0x02 = mute on double press (flipped), 0x03 = mute on single press (default)
         val callConfig = aacpManager.getControlCommandStatus(
@@ -1817,11 +1843,14 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             (pressType == StemPressType.DOUBLE_PRESS && muteIsDoublePress)
         val isEndCallPress = (pressType == StemPressType.DOUBLE_PRESS && !muteIsDoublePress) ||
             (pressType == StemPressType.SINGLE_PRESS && muteIsDoublePress)
+        Log.d(TAG, "handleCallStemPress: active call mute/end, pressType=$pressType, muteIsDoublePress=$muteIsDoublePress, isMutePress=$isMutePress, isEndCallPress=$isEndCallPress")
         if (isMutePress) {
+            Log.d(TAG, "handleCallStemPress: toggling mute")
             toggleMicMute()
             return true
         }
         if (isEndCallPress) {
+            Log.d(TAG, "handleCallStemPress: ending call")
             rejectCall()
             return true
         }
@@ -2400,9 +2429,29 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     private var callNumber: String? = null
 
     private fun isInAnyCall(): Boolean {
-        if (isInCall || isCallRinging || isVoIPCallActive) return true
+        val inCall = isInCall
+        val ringing = isCallRinging
+        val voip = isVoIPCallActive
         val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
-        return audioManager.mode == AudioManager.MODE_IN_COMMUNICATION
+        val audioMode = audioManager.mode
+        val telecomInCall = try {
+            (getSystemService(TELECOM_SERVICE) as TelecomManager).isInCall
+        } catch (_: SecurityException) { false }
+        Log.d(TAG, "isInAnyCall: isInCall=$inCall, isCallRinging=$ringing, isVoIPCallActive=$voip, audioMode=$audioMode, telecomInCall=$telecomInCall")
+        if (inCall || ringing || voip) {
+            Log.d(TAG, "isInAnyCall: true (cellular/Teams)")
+            return true
+        }
+        if (audioMode == AudioManager.MODE_IN_COMMUNICATION) {
+            Log.d(TAG, "isInAnyCall: true (MODE_IN_COMMUNICATION)")
+            return true
+        }
+        if (telecomInCall) {
+            Log.d(TAG, "isInAnyCall: true (TelecomManager.isInCall)")
+            return true
+        }
+        Log.d(TAG, "isInAnyCall: false")
+        return false
     }
 
     private fun initGestureDetector() {
@@ -3083,43 +3132,133 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         }
     }
 
+    /**
+     * Dispatch a media-button KeyEvent (DOWN+UP) directly to Telecom's
+     * HeadsetMediaButton MediaSession via MediaController.dispatchMediaButtonEvent.
+     *
+     * This is the ONLY third-party-viable path to reach Telecom's call MediaSession
+     * because:
+     *   - MediaSessionService.dispatchMediaKeyEvent drops third-party callers
+     *     when a FLAG_EXCLUSIVE_GLOBAL_PRIORITY session is active (Telecom's
+     *     HeadsetMediaButton session sets that flag during calls).
+     *   - MediaController.dispatchMediaButtonEvent goes session→session via its
+     *     own binder and bypasses the global-priority gatekeeping.
+     *   - MediaSessionManager.getActiveSessions(notificationListenerCn) returns
+     *     the Telecom session as element 0 when our NLS (CallNotifListener) is
+     *     enabled by the user.
+     *
+     * Telecom routes HEADSETHOOK to CallsManager.onMediaButton(SHORT_PRESS):
+     *   - Ringing  → answers the call (any ConnectionService, including self-managed)
+     *   - Active   → ends the call
+     *
+     * @return true if the event was successfully dispatched to Telecom's controller.
+     */
+    private fun dispatchHeadsethookToTelecom(keyCode: Int = KeyEvent.KEYCODE_HEADSETHOOK): Boolean {
+        return try {
+            val msm = getSystemService(MEDIA_SESSION_SERVICE) as MediaSessionManager
+            val nlsCn = android.content.ComponentName(this, CallNotifListener::class.java)
+
+            val controllers = try {
+                msm.getActiveSessions(nlsCn)
+            } catch (se: SecurityException) {
+                Log.e(TAG, "dispatchHeadsethookToTelecom: getActiveSessions SecurityException — NLS not enabled? ${se.message}")
+                return false
+            }
+
+            val telecom = controllers.firstOrNull {
+                it.packageName == "com.android.server.telecom" ||
+                    it.packageName == "android" ||
+                    it.tag == "HeadsetMediaButton"
+            }
+            if (telecom == null) {
+                Log.w(TAG, "dispatchHeadsethookToTelecom: no Telecom session in active sessions (${controllers.size} total)")
+                controllers.forEachIndexed { i, c ->
+                    Log.d(TAG, "  [$i] pkg=${c.packageName} tag=${c.tag}")
+                }
+                return false
+            }
+
+            val now = SystemClock.uptimeMillis()
+            val down = KeyEvent(now, now, KeyEvent.ACTION_DOWN, keyCode, 0)
+            val up = KeyEvent(now, now, KeyEvent.ACTION_UP, keyCode, 0)
+            val rDown = telecom.dispatchMediaButtonEvent(down)
+            val rUp = telecom.dispatchMediaButtonEvent(up)
+            Log.d(TAG, "dispatchHeadsethookToTelecom: keyCode=$keyCode pkg=${telecom.packageName} tag=${telecom.tag} DOWN=$rDown UP=$rUp")
+            rDown && rUp
+        } catch (e: Exception) {
+            Log.e(TAG, "dispatchHeadsethookToTelecom: EXCEPTION ${e.javaClass.simpleName}: ${e.message}")
+            false
+        }
+    }
+
     private fun answerCall() {
         Log.d(TAG, "answerCall called")
+
+        // Primary path: HEADSETHOOK → Telecom's HeadsetMediaButton session.
+        // Works for cellular calls AND self-managed VoIP (WhatsApp etc.).
+        // Telecom maps a SHORT_PRESS during RINGING → answer.
+        if (dispatchHeadsethookToTelecom()) {
+            Log.d(TAG, "answerCall: dispatched to Telecom session — call should be answered")
+            islandWindow?.close()
+            return
+        }
+
+        // Fallback 1: TelecomManager.acceptRingingCall() — works for non-self-managed.
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 val telecomManager = getSystemService(TELECOM_SERVICE) as TelecomManager
                 if (checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS) == PackageManager.PERMISSION_GRANTED) {
-                    telecomManager.acceptRingingCall() // TODO: Switch to InCallService (needs CDM association)
+                    telecomManager.acceptRingingCall()
+                    Log.d(TAG, "answerCall: TelecomManager.acceptRingingCall() called")
+                } else {
+                    Log.w(TAG, "answerCall: ANSWER_PHONE_CALLS permission not granted")
                 }
-            } else {
-                val telephonyService = getSystemService(TELEPHONY_SERVICE) as TelephonyManager
-                val telephonyClass = Class.forName(telephonyService.javaClass.name)
-                val method = telephonyClass.getDeclaredMethod("getITelephony")
-                method.isAccessible = true
-                val telephonyInterface = method.invoke(telephonyService)
-                val answerCallMethod =
-                    telephonyInterface.javaClass.getDeclaredMethod("answerRingingCall")
-                answerCallMethod.invoke(telephonyInterface)
             }
-
-            sendToast("Call answered via head gesture")
         } catch (e: Exception) {
-            e.printStackTrace()
-            sendToast("Failed to answer call: ${e.message}")
-        } finally {
-            islandWindow?.close()
+            Log.w(TAG, "answerCall: TelecomManager.acceptRingingCall failed: ${e.message}")
         }
+
+        // Fallback 2: notification "Answer" action PendingIntent. Self-managed VoIP
+        // apps don't always honor this (the answer PendingIntent often launches an
+        // Activity that gets blocked from a service context), but it's harmless.
+        CallNotifListener.answerCall()
+
+        islandWindow?.close()
     }
 
     private fun rejectCall() {
         Log.d(TAG, "rejectCall called")
+
+        // Determine ringing vs active. During ringing we want to DECLINE (don't
+        // answer the call); during an active call we want to END it.
+        val telecomInCall = try {
+            (getSystemService(TELECOM_SERVICE) as TelecomManager).isInCall
+        } catch (_: Exception) { false }
+        val ringing = isCallRinging
+        val active = !ringing && (isInCall || isVoIPCallActive || telecomInCall)
+        Log.d(TAG, "rejectCall: ringing=$ringing active=$active (isCallRinging=$isCallRinging isInCall=$isInCall isVoIPCallActive=$isVoIPCallActive telecomInCall=$telecomInCall)")
+
+        if (active) {
+            // For an active call, route HEADSETHOOK to Telecom's HeadsetMediaButton
+            // session. Telecom maps SHORT_PRESS during ACTIVE → end call. This is
+            // the only third-party path that ends self-managed VoIP calls in-progress
+            // (WhatsApp, Signal, etc.).
+            if (dispatchHeadsethookToTelecom()) {
+                Log.d(TAG, "rejectCall: dispatched to Telecom session — active call should end")
+                sendToast("Call ended")
+                islandWindow?.close()
+                return
+            }
+        }
+
+        // Cellular / non-self-managed fallback: TelecomManager.endCall().
         var telecomEnded = false
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 val telecomManager = getSystemService(TELECOM_SERVICE) as TelecomManager
                 if (checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS) == PackageManager.PERMISSION_GRANTED) {
-                    telecomEnded = telecomManager.endCall() // TODO: Switch to InCallService (needs CDM association)
-                    Log.d(TAG, "telecomManager.endCall() returned $telecomEnded")
+                    telecomEnded = telecomManager.endCall()
+                    Log.d(TAG, "rejectCall: TelecomManager.endCall() returned $telecomEnded")
                 }
             } else {
                 val telephonyService = getSystemService(TELEPHONY_SERVICE) as TelephonyManager
@@ -3131,24 +3270,25 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 endCallMethod.invoke(telephonyInterface)
             }
         } catch (e: Exception) {
-            Log.w(TAG, "telecomManager.endCall failed: ${e.message}")
+            Log.w(TAG, "rejectCall: TelecomManager.endCall failed: ${e.message}")
         }
 
-        // For VoIP calls (Teams/Zoom/Meet), telecomManager.endCall() returns false
-        // because the call isn't owned by the system telecom stack. Try Teams'
-        // own Hang up notification action first; fall back to a HEADSETHOOK media
-        // key event for other VoIP apps.
         if (!telecomEnded) {
-            val teamsHandled = CallNotifListener.hangUp()
-            if (teamsHandled) {
-                Log.d(TAG, "rejectCall: ended via Teams notification action")
-                sendToast("Teams call ended")
+            // Notification actions: hangUp (Teams etc., active call) or
+            // declineCall (incoming ringing). Both are Broadcast PendingIntents
+            // and work cross-process for most VoIP apps.
+            val handled = CallNotifListener.hangUp()
+            if (handled) {
+                Log.d(TAG, "rejectCall: ended via notification hang-up action")
+                sendToast("Call ended")
             } else {
-                val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
-                audioManager.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_HEADSETHOOK))
-                audioManager.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_HEADSETHOOK))
-                Log.d(TAG, "rejectCall: dispatched HEADSETHOOK as VoIP end-call fallback")
-                sendToast("End call (VoIP)")
+                val declined = CallNotifListener.declineCall()
+                if (declined) {
+                    Log.d(TAG, "rejectCall: declined via notification decline action")
+                    sendToast("Call declined")
+                } else {
+                    Log.w(TAG, "rejectCall: no method worked — call may remain active")
+                }
             }
         } else {
             sendToast("Call ended")
