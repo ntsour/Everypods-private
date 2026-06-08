@@ -667,7 +667,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         // from inside the VoIP app (Teams in-app button). Without this, pressing
         // the in-app button and then the stem would desync the two mute states.
         CallNotifListener.onMuteStateChanged = { muted ->
-            if (isInAnyCall()) applyMuteStateFromTeams(muted)
+            if (isInAnyCall()) applyMuteStateFromAppNotif(muted)
         }
 
         localMac = config.selfMacAddress
@@ -1808,19 +1808,21 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
      */
     private fun handleCallStemPress(pressType: StemPressType): Boolean {
         val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
+        val notifRinging = CallNotifListener.isVoipNotifRinging
+        val notifActive = CallNotifListener.isVoipNotifActive
         val voipRinging = !isCallRinging && !isInCall &&
             (audioManager.mode == AudioManager.MODE_RINGTONE ||
                 (try { (getSystemService(TELECOM_SERVICE) as TelecomManager).isInCall } catch (_: Exception) { false } && !isVoIPCallActive))
-        val isRinging = isCallRinging || voipRinging
-        Log.d(TAG, "handleCallStemPress: pressType=$pressType, isCallRinging=$isCallRinging, isInCall=$isInCall, isVoIPCallActive=$isVoIPCallActive, audioMode=${audioManager.mode}, voipRinging=$voipRinging, isRinging=$isRinging")
+        val isRinging = isCallRinging || voipRinging || notifRinging
+        Log.d(TAG, "handleCallStemPress: pressType=$pressType, isCallRinging=$isCallRinging, isInCall=$isInCall, isVoIPCallActive=$isVoIPCallActive, audioMode=${audioManager.mode}, voipRinging=$voipRinging, notifRinging=$notifRinging, notifActive=$notifActive, isRinging=$isRinging")
         if (isRinging) {
             when (pressType) {
                 StemPressType.SINGLE_PRESS -> {
-                    Log.d(TAG, "handleCallStemPress: SINGLE_PRESS → answerCall() (voip=$voipRinging)")
+                    Log.d(TAG, "handleCallStemPress: SINGLE_PRESS → answerCall() (voip=$voipRinging, notif=$notifRinging)")
                     answerCall(); return true
                 }
                 StemPressType.DOUBLE_PRESS -> {
-                    Log.d(TAG, "handleCallStemPress: DOUBLE_PRESS → rejectCall() (voip=$voipRinging)")
+                    Log.d(TAG, "handleCallStemPress: DOUBLE_PRESS → rejectCall() (voip=$voipRinging, notif=$notifRinging)")
                     rejectCall(); return true
                 }
                 else -> {
@@ -1830,7 +1832,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             }
         }
         // Not ringing — must be an active call to proceed with mute/end.
-        if (!isInCall && !isVoIPCallActive) {
+        if (!isInCall && !isVoIPCallActive && !notifActive) {
             Log.d(TAG, "handleCallStemPress: not ringing and no active call → returning false")
             return false
         }
@@ -1857,13 +1859,27 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         return false
     }
 
+    // Tracks our own stem-press mute toggle so the resulting notification-update
+    // echo doesn't double-chime. Some VoIP apps (Teams) post the active-call
+    // notification *multiple* times in rapid succession while toggling — the
+    // notification state can even flap mute→unmute→mute→unmute within 50 ms.
+    // We must suppress ALL chime/state-apply within the echo window after our
+    // own toggle, regardless of how many notification updates arrive.
+    @Volatile private var lastSelfMuteAtMs: Long = 0L
+    private val selfMuteEchoWindowMs = 2000L
+
     private fun toggleMicMute() {
         val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
         // Use the VoIP app's notification state as the canonical source of truth.
         // If the user muted from inside the app, isMicrophoneMute may still be false
         // and we'd get the wrong toggle direction without this.
-        val wasMuted = CallNotifListener.isTeamsMuted() ?: audioManager.isMicrophoneMute
+        val wasMuted = CallNotifListener.isMuteShownByAppNotif() ?: audioManager.isMicrophoneMute
         val nowMuted = !wasMuted
+
+        // Record the toggle timestamp BEFORE setting state — so any reactive
+        // notification update (which can fire on a different thread before this
+        // method returns) already sees the echo guard armed.
+        lastSelfMuteAtMs = SystemClock.elapsedRealtime()
 
         // Hardware-level system mic mute. Cuts mic input at the audio HAL so the
         // other party hears silence even if the VoIP app's own UI shows "unmuted".
@@ -1885,21 +1901,30 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         gestureDetector?.audio?.playConfirmation(!nowMuted)
     }
 
-    /** Called when the VoIP app's in-notification mute state changes (user pressed the
-     *  in-app button). Syncs the OS mic flag so the next stem press reads the right state,
-     *  and plays the same confirmation tone as a stem press would.
+    /** Called when the watched VoIP app's in-notification mute state changes (user
+     *  pressed the in-app Mute/Unmute button). Syncs the OS mic flag so the next stem
+     *  press reads the right state, and plays the same confirmation tone as a stem
+     *  press would.
      *
-     *  If the OS mic already matches [muted] the notification update was caused by our
-     *  own stem press firing CallNotifListener.setMuted() — not by the in-app button —
-     *  so we skip the sound to avoid playing it twice. */
-    private fun applyMuteStateFromTeams(muted: Boolean) {
+     *  If [lastSelfMuteAtMs] is within [selfMuteEchoWindowMs] of now, the notification
+     *  update was caused by our own stem press firing CallNotifListener.setMuted() —
+     *  so we skip both the OS mic write AND the chime to avoid playing it twice. The
+     *  guard suppresses *all* updates within the window (some apps post 5+ flapping
+     *  notification updates per toggle), not just the first matching one. */
+    private fun applyMuteStateFromAppNotif(muted: Boolean) {
+        val now = SystemClock.elapsedRealtime()
+        val age = now - lastSelfMuteAtMs
+        if (age < selfMuteEchoWindowMs) {
+            Log.d(TAG, "applyMuteStateFromAppNotif: echo from our own stem press (muted=$muted, age=${age}ms) — skipping")
+            return
+        }
         val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
         if (audioManager.isMicrophoneMute == muted) {
-            Log.d(TAG, "applyMuteStateFromTeams: OS already in sync ($muted), skipping (stem-press echo)")
+            Log.d(TAG, "applyMuteStateFromAppNotif: OS already in sync ($muted), skipping")
             return
         }
         audioManager.setMicrophoneMute(muted)
-        Log.d(TAG, "applyMuteStateFromTeams: OS mic muted=$muted (synced from in-app button)")
+        Log.d(TAG, "applyMuteStateFromAppNotif: OS mic muted=$muted (synced from in-app button)")
         initGestureDetector()
         gestureDetector?.audio?.playConfirmation(!muted)
         if (muted) startMutedReminder() else stopMutedReminder()
@@ -2437,7 +2462,9 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         val telecomInCall = try {
             (getSystemService(TELECOM_SERVICE) as TelecomManager).isInCall
         } catch (_: SecurityException) { false }
-        Log.d(TAG, "isInAnyCall: isInCall=$inCall, isCallRinging=$ringing, isVoIPCallActive=$voip, audioMode=$audioMode, telecomInCall=$telecomInCall")
+        val voipNotifRinging = CallNotifListener.isVoipNotifRinging
+        val voipNotifActive = CallNotifListener.isVoipNotifActive
+        Log.d(TAG, "isInAnyCall: isInCall=$inCall, isCallRinging=$ringing, isVoIPCallActive=$voip, audioMode=$audioMode, telecomInCall=$telecomInCall, voipNotifRinging=$voipNotifRinging, voipNotifActive=$voipNotifActive")
         if (inCall || ringing || voip) {
             Log.d(TAG, "isInAnyCall: true (cellular/Teams)")
             return true
@@ -2448,6 +2475,11 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         }
         if (telecomInCall) {
             Log.d(TAG, "isInAnyCall: true (TelecomManager.isInCall)")
+            return true
+        }
+        // VoIP apps that bypass Telecom (Viber) — rely on the call-notification cache.
+        if (voipNotifRinging || voipNotifActive) {
+            Log.d(TAG, "isInAnyCall: true (CallNotifListener: ringing=$voipNotifRinging active=$voipNotifActive)")
             return true
         }
         Log.d(TAG, "isInAnyCall: false")
@@ -3006,7 +3038,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             while (true) {
                 delay(15_000)
                 val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
-                if (isInAnyCall() && (CallNotifListener.isTeamsMuted() ?: audioManager.isMicrophoneMute)) {
+                if (isInAnyCall() && (CallNotifListener.isMuteShownByAppNotif() ?: audioManager.isMicrophoneMute)) {
                     gestureDetector?.audio?.playMuteReminder()
                     Log.d(TAG, "Mute reminder beep played")
                 } else {
@@ -3091,7 +3123,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             Log.d(TAG, "Active-call gesture detected: accepted=$accepted, inAnyCall=${isInAnyCall()}")
             if (!isInAnyCall()) return@startDetection
             val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
-            val isMuted = CallNotifListener.isTeamsMuted() ?: audioManager.isMicrophoneMute
+            val isMuted = CallNotifListener.isMuteShownByAppNotif() ?: audioManager.isMicrophoneMute
             if (!accepted) {
                 if (!isMuted) {
                     audioManager.setMicrophoneMute(true)
