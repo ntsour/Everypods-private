@@ -4571,8 +4571,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         // issues kRequestDisconnect — without this veto the first requester blindly wins
         // even when this device is the one actually handling the call. Music-only requests
         // are unaffected (they never call disconnectForCD while isInCall/isCallRinging).
-        if (isCallRinging || isInCall) {
-            Log.d(TAG, "Call-hold veto: ignoring REQUEST_DISCONNECT (isCallRinging=$isCallRinging, isInCall=$isInCall)")
+        if (isInAnyCall()) {
+            Log.d(TAG, "Call-hold veto: ignoring REQUEST_DISCONNECT — active call detected")
             CrossDevice.notifyConnected()   // re-assert ownership so requester doesn't hang
             return
         }
