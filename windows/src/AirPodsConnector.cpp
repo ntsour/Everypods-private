@@ -1039,7 +1039,12 @@ bool AirPodsConnector::hasActiveCallSessions() {
         // because every comms app that's in a call also has a render session, and
         // checking render alone keeps this consistent with hasActiveAudioSessions().
         for (auto& ep : findAirPodsEndpoints(enumerator.Get(), eRender)) {
-            if (ep.state != DEVICE_STATE_ACTIVE) continue;
+            // Check both ACTIVE and UNPLUGGED. During early-call setup
+            // (Teams ringing/connecting), A2DP hasn't negotiated yet — the
+            // endpoint is UNPLUGGED but Teams has already created its audio
+            // session on it. Skipping UNPLUGGED would miss the session and
+            // fail the call-hold veto.
+            if (ep.state != DEVICE_STATE_ACTIVE && ep.state != DEVICE_STATE_UNPLUGGED) continue;
             ComPtr<IMMDevice> dev;
             if (FAILED(enumerator->GetDevice(ep.id.c_str(), &dev))) continue;
 
