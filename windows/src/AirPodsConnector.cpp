@@ -1125,12 +1125,12 @@ void AirPodsConnector::startKeepalive() {
                 } catch (const winrt::hresult_error& e) {
                     log::handover("KEEPALIVE AT+BRSF? failed: 0x{:08X} {} — stopping keepalive",
                         (std::uint32_t)e.code().value, winrt::to_string(e.message()));
-                    {
-                        std::scoped_lock lk2(m_socketMutex);
-                        m_keepaliveSocket.Close();
-                        m_keepaliveSocket = nullptr;
-                        m_keepaliveWriter = nullptr;
-                    }
+                    // ulk (from outer scope at line 1028) already holds m_socketMutex.
+                    // Do NOT lock again — that would deadlock. The socket Close() may
+                    // throw (already-aborted socket), so wrap in try-catch.
+                    try { m_keepaliveSocket.Close(); } catch (...) {}
+                    m_keepaliveSocket = nullptr;
+                    m_keepaliveWriter = nullptr;
                     break;
                 }
             }
