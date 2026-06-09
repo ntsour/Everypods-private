@@ -1003,15 +1003,22 @@ void AirPodsConnector::startKeepalive() {
                     }
                     std::this_thread::sleep_for(std::chrono::milliseconds(50));
                 }
-                lastProbe = std::chrono::steady_clock::now();
                 if (m_keepaliveStop.load()) break;
 
-                if (!timedOut && op.Status() == AsyncStatus::Completed)
+                if (!timedOut && op.Status() == AsyncStatus::Completed) {
                     log::handover("KEEPALIVE SDP probe ok — ACL alive");
-                else if (timedOut)
-                    log::handover("KEEPALIVE SDP probe timed out (3s) — retrying in 15s");
-                else
-                    log::handover("KEEPALIVE SDP probe errored — retrying in 15s");
+                    lastProbe = std::chrono::steady_clock::now();
+                } else if (timedOut) {
+                    log::handover("KEEPALIVE SDP probe timed out (3s) — retrying in 3s");
+                    // Transient radio congestion (BT busy with RFCOMM reconnects,
+                    // A2DP negotiation, etc.). Retry fast — don't wait 15s.
+                    lastProbe = std::chrono::steady_clock::now()
+                                - std::chrono::seconds(12);
+                } else {
+                    log::handover("KEEPALIVE SDP probe errored — retrying in 3s");
+                    lastProbe = std::chrono::steady_clock::now()
+                                - std::chrono::seconds(12);
+                }
             } catch (const winrt::hresult_error& e) {
                 log::handover("KEEPALIVE exception: 0x{:08X} {} — stopping",
                     (std::uint32_t)e.code().value, winrt::to_string(e.message()));
