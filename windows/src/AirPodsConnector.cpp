@@ -1123,15 +1123,21 @@ void AirPodsConnector::startKeepalive() {
                         // Next 15s cycle will try again.
                     }
                 } catch (const winrt::hresult_error& e) {
-                    log::handover("KEEPALIVE AT+BRSF? failed: 0x{:08X} {} — stopping keepalive",
-                        (std::uint32_t)e.code().value, winrt::to_string(e.message()));
+                    auto code = (std::uint32_t)e.code().value;
+                    log::handover("KEEPALIVE AT+BRSF? failed: 0x{:08X} {} — "
+                                  "cleaning up socket; will retry on next cycle",
+                                  code, winrt::to_string(e.message()));
                     // ulk (from outer scope at line 1028) already holds m_socketMutex.
                     // Do NOT lock again — that would deadlock. The socket Close() may
                     // throw (already-aborted socket), so wrap in try-catch.
                     try { m_keepaliveSocket.Close(); } catch (...) {}
                     m_keepaliveSocket = nullptr;
                     m_keepaliveWriter = nullptr;
-                    break;
+                    // Don't break — the AirPods may still be classically connected.
+                    // On the next poll iteration the self-heal code will attempt to
+                    // establish a fresh RFCOMM socket and continue AT exchanges.
+                    lastExchange = std::chrono::steady_clock::now();
+                    continue;
                 }
             }
             lastExchange = std::chrono::steady_clock::now();
