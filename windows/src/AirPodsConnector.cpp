@@ -295,12 +295,6 @@ bool AirPodsConnector::connect() {
         // released — long enough for the AirPods to idle-drop before A2DP could open.
         // A short timeout avoids the block while still sending the HFP wake signal when
         // the service is available.
-        //
-        // If the socket connects successfully, we KEEP it open instead of closing it.
-        // The persistent RFCOMM channel maintains an active L2CAP connection to the
-        // AirPods. The keepalive thread uses this socket to send periodic AT commands
-        // that reset the AirPods' 22s firmware idle-drop timer — without requiring
-        // expensive SDP probes that go through bthserv.
         if (services.Services().Size() > 0) {
             auto svc     = services.Services().GetAt(0);
             auto host    = svc.ConnectionHostName();
@@ -321,16 +315,8 @@ bool AirPodsConnector::connect() {
             }
             if (sockResult.load() == 1) {
                 socketOpened = true;
-                log::handover("CONNECT RFCOMM socket opened — ACL link up, keeping socket open for keepalive");
-                // Transfer the socket + writer to the keepalive-held members so the
-                // keepalive thread can use it for periodic AT command exchanges.
-                {
-                    std::scoped_lock slk(m_socketMutex);
-                    m_keepaliveSocket = std::move(sock);
-                    m_keepaliveWriter = winrt::Windows::Storage::Streams::DataWriter(
-                        m_keepaliveSocket.OutputStream());
-                }
-                log::handover("CONNECT persistent RFCOMM socket installed — SDP probes eliminated");
+                log::handover("CONNECT RFCOMM socket opened — ACL link up");
+                sock.Close();
             } else {
                 const char* reason = (sockResult.load() == 0) ? "timed out (3s)" : "failed";
                 log::handover("CONNECT RFCOMM socket {} — continuing with SDP wake only", reason);
@@ -351,15 +337,12 @@ bool AirPodsConnector::connect() {
             (int)device.ConnectionStatus(), linkUp);
     } catch (...) {}
 
-    // No ACL keepalive SDP probes needed. If we installed a persistent RFCOMM socket
-    // above, the keepalive thread uses it for lightweight AT command exchanges that
-    // reset the AirPods' 22s idle timer without going through bthserv.
-    // If we didn't get a socket (timeout or failure), the BT-edge observer in the
-    // watcher handles any ACL drops — no point hammering the radio with SDP probes.
+    // Keepalive is handled by the SDP probe thread in startKeepalive().
+    // The RFCOMM socket above was a wake trigger only — we don't maintain it.
 
     const bool kicked = socketOpened || linkUp;
-    log::handover("CONNECT done (socketOpened={}, linkUp={}) — "
-                  "keepalive thread uses persistent RFCOMM socket", socketOpened, linkUp);
+    log::handover("CONNECT done (socketOpened={}, linkUp={})",
+                  socketOpened, linkUp);
     return kicked;
 }
 
@@ -964,201 +947,87 @@ void AirPodsConnector::startKeepalive() {
     if (m_keepaliveThread.joinable()) return;  // already running
     m_keepaliveStop.store(false);
     m_keepaliveThread = std::thread([this]() {
-        using namespace winrt::Windows::Storage::Streams;
+        using namespace winrt::Windows::Devices::Bluetooth;
+        using winrt::Windows::Foundation::AsyncStatus;
         winrt::init_apartment(winrt::apartment_type::multi_threaded);
-        log::handover("KEEPALIVE started (RFCOMM socket keepalive)");
-
-        // The keepalive thread holds a persistent RFCOMM socket + DataWriter that
-        // was installed during connect(). This maintains an active L2CAP channel
-        // to the AirPods. To reset the 22s firmware idle-drop timer, we send an
-        // HFP AT command (AT+BRSF? = query supported features) every ~15s when
-        // audio is silent. The AT command exchange generates L2CAP data traffic
-        // that resets the idle timer, WITHOUT going through bthserv (WinRT
-        // StreamSocket bypasses the legacy Bluetooth API service).
-        //
-        // When A2DP is actively streaming, no keepalive is needed — A2DP frames
-        // reset the timer at zero cost.
-        //
-        // The HFP RFCOMM channel is the first service we connect to. AT+BRSF?
-        // is a standard HFP command that the AirPods' HFP implementation will
-        // respond to even without an active SCO (audio) connection.
-        const std::string_view kAtBrsf = "AT+BRSF?\r\n";
+        log::handover("KEEPALIVE started (SDP probes)");
 
         bool audioActive = hasActiveAudioSessions();
         if (audioActive)
-            log::handover("KEEPALIVE audio active — A2DP maintaining link, no AT exchange needed");
+            log::handover("KEEPALIVE audio active — A2DP maintaining link, probes suspended");
 
-        auto lastExchange = std::chrono::steady_clock::now();
-        bool exchangeImmediately = !audioActive;
+        auto lastProbe = std::chrono::steady_clock::now();
+        bool probeImmediately = !audioActive;
 
         while (!m_keepaliveStop.load()) {
             try {
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));
-            if (m_keepaliveStop.load()) break;
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                if (m_keepaliveStop.load()) break;
 
-            // Quick WinRT connection check — no bthserv involved.
-            if (!isClassicallyConnectedWinRT()) {
-                log::handover("KEEPALIVE ACL dropped (WinRT check) — stopping keepalive");
-                break;
-            }
-
-            bool nowActive = hasActiveAudioSessions();
-            if (nowActive && !audioActive) {
-                log::handover("KEEPALIVE audio started — A2DP maintaining link, AT exchange suspended");
-                lastExchange = std::chrono::steady_clock::now();
-            } else if (!nowActive && audioActive) {
-                log::handover("KEEPALIVE audio stopped — AT exchange immediately");
-                exchangeImmediately = true;
-            }
-            audioActive = nowActive;
-
-            if (audioActive) {
-                lastExchange = std::chrono::steady_clock::now();
-                continue;
-            }
-
-            // Audio silent: send AT command if immediate flag set or 15s since last exchange.
-            auto sinceExchange = std::chrono::steady_clock::now() - lastExchange;
-            if (!exchangeImmediately && sinceExchange < std::chrono::seconds(15)) continue;
-            exchangeImmediately = false;
-
-            // Send AT+BRSF? over the held RFCOMM socket.
-            // If no socket is held (e.g. keepalive started via BT-edge observer before
-            // connect() ran), attempt to establish an RFCOMM connection now.
-            {
-                std::unique_lock ulk(m_socketMutex);
-                if (!m_keepaliveWriter) {
-                    log::handover("KEEPALIVE no RFCOMM socket held — attempting RFCOMM connect (self-heal)");
-                    ulk.unlock();  // release before blocking I/O
-                    try {
-                        using namespace winrt::Windows::Devices::Bluetooth;
-                        using namespace winrt::Windows::Devices::Bluetooth::Rfcomm;
-                        using namespace winrt::Windows::Networking::Sockets;
-                        auto device = BluetoothDevice::FromBluetoothAddressAsync(m_address).get();
-                        if (device) {
-                            // Use cached services — no fresh SDP query needed since the
-                            // device is already connected and we know its services.
-                            auto services = device.GetRfcommServicesAsync(
-                                BluetoothCacheMode::Cached).get();
-                            if (services.Services().Size() > 0) {
-                                auto svc = services.Services().GetAt(0);
-                                StreamSocket sock;
-                                sock.ConnectAsync(
-                                    svc.ConnectionHostName(),
-                                    svc.ConnectionServiceName()).get();
-                                std::scoped_lock lk2(m_socketMutex);
-                                // Close any stale socket first to avoid resource leaks.
-                                if (m_keepaliveSocket) {
-                                    try { m_keepaliveSocket.Close(); } catch (...) {}
-                                }
-                                m_keepaliveSocket = std::move(sock);
-                                m_keepaliveWriter = DataWriter(
-                                    m_keepaliveSocket.OutputStream());
-                                log::handover("KEEPALIVE RFCOMM socket established (self-heal)");
-                            }
-                        }
-                    } catch (const winrt::hresult_error& e) {
-                        // WSAEADDRINUSE (0x80072740) means the previous RFCOMM socket's
-                        // endpoint is still held by the Bluetooth stack (TIME_WAIT on the
-                        // remote). This is transient — the next connect() call in the
-                        // takeover path will establish a fresh socket. Don't break on it;
-                        // just log and wait for the next retry cycle. The watcher's BT-edge
-                        // observer handles reconnection anyway.
-                        auto code = (std::uint32_t)e.code().value;
-                        log::handover("KEEPALIVE self-heal RFCOMM failed: 0x{:08X} {}",
-                            code, winrt::to_string(e.message()));
-                        if (code == 0x80072740) {  // WSAEADDRINUSE — transient, retry later
-                            // Don't break — let the while loop retry in 15s.
-                            log::handover("KEEPALIVE self-heal WSAEADDRINUSE — socket endpoint "
-                                          "still held by BT stack; will retry on next cycle");
-                            lastExchange = std::chrono::steady_clock::now();
-                            continue;  // back to the while loop
-                        }
-                        break;  // any other error: give up
-                    }
-                    if (!m_keepaliveWriter) {
-                        log::handover("KEEPALIVE self-heal failed — no RFCOMM socket available");
-                        break;
-                    }
-                    // Re-acquire the lock for the AT command below
-                    ulk.lock();
+                // WinRT connection check — no bthserv, no radio traffic.
+                if (!isClassicallyConnectedWinRT()) {
+                    log::handover("KEEPALIVE ACL dropped (WinRT check) — stopping");
+                    break;
                 }
-                try {
-                    log::handover("KEEPALIVE AT+BRSF? -> AirPods (RFCOMM, L2CAP keepalive)");
-                    m_keepaliveWriter.WriteString(winrt::to_hstring(kAtBrsf));
-                    m_keepaliveWriter.StoreAsync().get();
 
-                    // Wait up to 2s for response (response is fast — <100ms for AT+BRSF?).
-                    // We don't need to parse the response; the L2CAP data exchange itself
-                    // resets the idle timer.
-                    auto reader = DataReader(m_keepaliveSocket.InputStream());
-                    reader.InputStreamOptions(InputStreamOptions::Partial);
-                    auto readDeadline = std::chrono::steady_clock::now()
-                                        + std::chrono::seconds(2);
-                    uint32_t readSize = 64;
-                    bool gotResponse = false;
-                    while (std::chrono::steady_clock::now() < readDeadline) {
-                        auto loadOp = reader.LoadAsync(readSize);
-                        // Poll with short sleep so we can check m_keepaliveStop
-                        auto pollDeadline = std::chrono::steady_clock::now()
-                                            + std::chrono::milliseconds(100);
-                        while (loadOp.Status() == winrt::Windows::Foundation::AsyncStatus::Started
-                               && std::chrono::steady_clock::now() < pollDeadline
-                               && !m_keepaliveStop.load()) {
-                            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-                        }
-                        if (m_keepaliveStop.load()) break;
-                        if (loadOp.Status() != winrt::Windows::Foundation::AsyncStatus::Started) {
-                            uint32_t avail = loadOp.GetResults();
-                            if (avail > 0) {
-                                log::handover("KEEPALIVE AT+BRSF? response received ({} bytes) — ACL alive", avail);
-                                gotResponse = true;
-                            }
-                            break;
-                        }
-                    }
-                    if (!gotResponse && !m_keepaliveStop.load()) {
-                        log::handover("KEEPALIVE AT+BRSF? no response within 2s — socket may be stale");
-                        // Don't break — the socket might still be alive, just slow.
-                        // Next 15s cycle will try again.
-                    }
-                } catch (const winrt::hresult_error& e) {
-                    auto code = (std::uint32_t)e.code().value;
-                    log::handover("KEEPALIVE AT+BRSF? failed: 0x{:08X} {} — "
-                                  "cleaning up socket; will retry on next cycle",
-                                  code, winrt::to_string(e.message()));
-                    // ulk (from outer scope at line 1028) already holds m_socketMutex.
-                    // Do NOT lock again — that would deadlock. The socket Close() may
-                    // throw (already-aborted socket), so wrap in try-catch.
-                    try { m_keepaliveSocket.Close(); } catch (...) {}
-                    m_keepaliveSocket = nullptr;
-                    m_keepaliveWriter = nullptr;
-                    // Don't break — the AirPods may still be classically connected.
-                    // On the next poll iteration the self-heal code will attempt to
-                    // establish a fresh RFCOMM socket and continue AT exchanges.
-                    lastExchange = std::chrono::steady_clock::now();
+                bool nowActive = hasActiveAudioSessions();
+                if (nowActive && !audioActive) {
+                    log::handover("KEEPALIVE audio started — A2DP maintaining link, probes suspended");
+                    lastProbe = std::chrono::steady_clock::now();
+                } else if (!nowActive && audioActive) {
+                    log::handover("KEEPALIVE audio stopped — probing immediately");
+                    probeImmediately = true;
+                }
+                audioActive = nowActive;
+
+                if (audioActive) {
+                    lastProbe = std::chrono::steady_clock::now();
                     continue;
                 }
-            }
-            lastExchange = std::chrono::steady_clock::now();
-            }  // end try
-            catch (const winrt::hresult_error& e) {
-                log::handover("KEEPALIVE unhandled hresult: 0x{:08X} {} — stopping",
+
+                // Audio silent: probe if immediate or 15s since last probe.
+                auto sinceProbe = std::chrono::steady_clock::now() - lastProbe;
+                if (!probeImmediately && sinceProbe < std::chrono::seconds(15)) continue;
+                probeImmediately = false;
+
+                // SDP probe (Uncached). Sends L2CAP SDP query to the AirPods,
+                // resetting their 22s firmware idle-drop timer. 3s timeout
+                // covers normal SDP response (<1s) with headroom.
+                log::handover("KEEPALIVE SDP probe (Uncached)");
+                auto device = BluetoothDevice::FromBluetoothAddressAsync(m_address).get();
+                if (!device) { break; }
+                auto op = device.GetRfcommServicesAsync(BluetoothCacheMode::Uncached);
+                auto deadline = std::chrono::steady_clock::now()
+                                + std::chrono::seconds(3);
+                bool timedOut = false;
+                while (op.Status() == AsyncStatus::Started) {
+                    if (m_keepaliveStop.load()) {
+                        try { op.Cancel(); } catch (...) {}
+                        break;
+                    }
+                    if (std::chrono::steady_clock::now() > deadline) {
+                        try { op.Cancel(); } catch (...) {}
+                        timedOut = true;
+                        break;
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                }
+                lastProbe = std::chrono::steady_clock::now();
+                if (m_keepaliveStop.load()) break;
+
+                if (!timedOut && op.Status() == AsyncStatus::Completed)
+                    log::handover("KEEPALIVE SDP probe ok — ACL alive");
+                else if (timedOut)
+                    log::handover("KEEPALIVE SDP probe timed out (3s) — retrying in 15s");
+                else
+                    log::handover("KEEPALIVE SDP probe errored — retrying in 15s");
+            } catch (const winrt::hresult_error& e) {
+                log::handover("KEEPALIVE exception: 0x{:08X} {} — stopping",
                     (std::uint32_t)e.code().value, winrt::to_string(e.message()));
                 break;
             } catch (const std::exception& e) {
-                log::handover("KEEPALIVE unhandled exception: {} — stopping", e.what());
+                log::handover("KEEPALIVE exception: {} — stopping", e.what());
                 break;
-            }
-        }
-
-        // If we exit the loop (stop requested or socket died), clean up.
-        {
-            std::scoped_lock lk(m_socketMutex);
-            if (m_keepaliveSocket) {
-                try { m_keepaliveSocket.Close(); } catch (...) {}
-                m_keepaliveSocket = nullptr;
-                m_keepaliveWriter = nullptr;
             }
         }
         log::handover("KEEPALIVE stopped");
@@ -1167,19 +1036,9 @@ void AirPodsConnector::startKeepalive() {
 
 void AirPodsConnector::stopKeepalive() {
     m_keepaliveStop.store(true);
-    // Close the socket to unblock any pending I/O in the keepalive thread.
-    {
-        std::scoped_lock lk(m_socketMutex);
-        if (m_keepaliveSocket) {
-            try { m_keepaliveSocket.Close(); } catch (...) {}
-            m_keepaliveSocket = nullptr;
-            m_keepaliveWriter = nullptr;
-        }
-    }
     std::lock_guard lk(m_keepaliveMutex);
     if (m_keepaliveThread.joinable())
         m_keepaliveThread.join();
-    log::handover("KEEPALIVE thread joined");
 }
 
 bool AirPodsConnector::hasActiveAudioSessions() {

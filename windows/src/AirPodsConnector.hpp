@@ -5,9 +5,6 @@
 #include <mutex>
 #include <thread>
 
-#include <winrt/Windows.Networking.Sockets.h>
-#include <winrt/Windows.Storage.Streams.h>
-
 namespace Propods {
 
 class AirPodsConnector {
@@ -74,14 +71,6 @@ private:
     std::mutex    m_keepaliveMutex; // serialize startKeepalive/stopKeepalive
     std::atomic<bool> m_keepaliveStop{true};
     std::thread   m_keepaliveThread;
-
-    // Persistent RFCOMM socket held open by the keepalive thread. Maintains an
-    // active L2CAP channel to the AirPods so the 22s firmware idle-drop timer
-    // is reset through regular AT command exchanges. WinRT StreamSocket does
-    // NOT go through bthserv for data transfer.
-    std::mutex    m_socketMutex;
-    winrt::Windows::Networking::Sockets::StreamSocket m_keepaliveSocket{nullptr};
-    winrt::Windows::Storage::Streams::DataWriter      m_keepaliveWriter{nullptr};
 
     void startKeepalive();
     void stopKeepalive();
