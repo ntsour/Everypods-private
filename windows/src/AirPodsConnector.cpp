@@ -936,9 +936,11 @@ void AirPodsConnector::setPersistentArm(bool persistent) {
 
     if (weInited) CoUninitialize();
 
-    if (persistent)
-        startKeepalive();
-    else
+    // Keepalive start/stop is called explicitly from HandoverController.
+    // The CLAIM path must NOT start keepalive — uncached SDP probes kill
+    // an already-established A2DP link (the AirPods were connected before
+    // Propods started). Only connect() and the BT-edge observer start it.
+    if (!persistent)
         stopKeepalive();
 }
 
@@ -977,9 +979,11 @@ void AirPodsConnector::startKeepalive() {
                 // At 15s boundary: check audio once. If playing, skip probe.
                 audioActive = hasActiveAudioSessions();
                 if (audioActive) {
+                    log::handover("KEEPALIVE 15s boundary — audio active, probe skipped (lastProbe reset)");
                     lastProbe = std::chrono::steady_clock::now();
                     continue;
                 }
+                log::handover("KEEPALIVE 15s boundary — audio idle, sending SDP probe");
 
                 // SDP probe (Uncached). Sends L2CAP SDP query to the AirPods,
                 // resetting their 22s firmware idle-drop timer. 3s timeout

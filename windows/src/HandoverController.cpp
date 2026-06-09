@@ -78,6 +78,7 @@ void HandoverController::startAudioWatcher() {
                     idleStreak = 0;
                     if (setState(OwnershipState::LocalPc)) {
                         log::handover("BT      AirPods connected (BT rising edge) — claiming ownership");
+                        m_airpods.startKeepalive();
                         if (m_peers.isAnyConnected()) {
                             log::handover("OUT     kAirPodsConnected -> all peers (BT edge)");
                             m_peers.sendPacket(crossdevice::kAirPodsConnected);
@@ -394,9 +395,12 @@ void HandoverController::onMediaPlayingChanged(bool playing) {
             // two paths broadcasts.
             const bool claimed = setState(OwnershipState::LocalPc);
             m_lastLocalTakeover.store(tpToNs(std::chrono::steady_clock::now()));
-            if (claimed && m_peers.isAnyConnected()) {
-                log::handover("OUT     kAirPodsConnected -> all peers");
-                m_peers.sendPacket(crossdevice::kAirPodsConnected);
+            if (claimed) {
+                m_airpods.startKeepalive();
+                if (m_peers.isAnyConnected()) {
+                    log::handover("OUT     kAirPodsConnected -> all peers");
+                    m_peers.sendPacket(crossdevice::kAirPodsConnected);
+                }
             }
             // Route audio to AirPods: one synchronous SetDefaultEndpoint pass. If the
             // endpoint is already ACTIVE, this routes immediately. If still UNPLUGGED
