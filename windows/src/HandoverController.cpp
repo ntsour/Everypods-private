@@ -260,7 +260,7 @@ void HandoverController::onMediaPlayingChanged(bool playing) {
         return;
     }
 
-    const bool actuallyConnected = m_airpods.isClassicallyConnected();
+    const bool actuallyConnected = m_airpods.isClassicallyConnectedWinRT();
     const bool stateLocal = (m_state.load() == OwnershipState::LocalPc);
     log::debug("Media start: state={} airpodsConnected={}",
         stateLocal ? "LocalPc" : "remote/unknown",
@@ -608,7 +608,7 @@ void HandoverController::onPeerConnectionChanged(bool connected) {
     if (connected) {
         log::handover("PEER    Android connected via CrossDevice RFCOMM");
         // Re-sync cached state with reality before announcing.
-        const bool airpodsHere = m_airpods.isClassicallyConnected();
+        const bool airpodsHere = m_airpods.isClassicallyConnectedWinRT();
         const bool wasLocalPc  = (m_state.load() == OwnershipState::LocalPc);
 
         // Gate the sync broadcast on setState's return value. If state didn't
