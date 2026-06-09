@@ -3,7 +3,6 @@
 #include <atomic>
 #include <cstdint>
 #include <mutex>
-#include <thread>
 
 namespace Propods {
 
@@ -65,21 +64,9 @@ public:
     // (OwnershipState::LocalPc) and false when ownership leaves us.
     void setPersistentArm(bool persistent);
 
-    // Start the SDP-probe keepalive thread that prevents the AirPods' 22s
-    // firmware idle-drop timeout. Must only be called from paths that have
-    // freshly established the BT link (connect() or BT-edge observer).
-    // Do NOT call from the CLAIM path — uncached SDP probes kill an
-    // already-established A2DP session.
-    void startKeepalive();
-
 private:
     std::uint64_t m_address;
     std::mutex    m_mutex;          // serialize connect/disconnect to avoid parallel races
-    std::mutex    m_keepaliveMutex; // serialize startKeepalive/stopKeepalive
-    std::atomic<bool> m_keepaliveStop{true};
-    std::thread   m_keepaliveThread;
-
-    void stopKeepalive();
 };
 
 }

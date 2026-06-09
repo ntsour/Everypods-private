@@ -78,7 +78,6 @@ HANDLE openFirstRadio() {
 AirPodsConnector::AirPodsConnector(std::uint64_t address) : m_address(address) {}
 
 AirPodsConnector::~AirPodsConnector() {
-    stopKeepalive();
 }
 
 namespace {
@@ -935,112 +934,6 @@ void AirPodsConnector::setPersistentArm(bool persistent) {
     }
 
     if (weInited) CoUninitialize();
-
-    // Keepalive start/stop is called explicitly from HandoverController.
-    // The CLAIM path must NOT start keepalive — uncached SDP probes kill
-    // an already-established A2DP link (the AirPods were connected before
-    // Propods started). Only connect() and the BT-edge observer start it.
-    if (!persistent)
-        stopKeepalive();
-}
-
-void AirPodsConnector::startKeepalive() {
-    std::lock_guard lk(m_keepaliveMutex);
-    if (m_keepaliveThread.joinable()) return;  // already running
-    m_keepaliveStop.store(false);
-    m_keepaliveThread = std::thread([this]() {
-        using namespace winrt::Windows::Devices::Bluetooth;
-        using winrt::Windows::Foundation::AsyncStatus;
-        winrt::init_apartment(winrt::apartment_type::multi_threaded);
-        log::handover("KEEPALIVE started (SDP probes)");
-
-        bool audioActive = hasActiveAudioSessions();
-        if (audioActive)
-            log::handover("KEEPALIVE audio active — A2DP maintaining link, probes suspended");
-
-        auto lastProbe = std::chrono::steady_clock::now();
-
-        while (!m_keepaliveStop.load()) {
-            try {
-                std::this_thread::sleep_for(std::chrono::milliseconds(500));
-                if (m_keepaliveStop.load()) break;
-
-                // WinRT connection check — no bthserv, no radio traffic.
-                if (!isClassicallyConnectedWinRT()) {
-                    log::handover("KEEPALIVE ACL dropped (WinRT check) — stopping");
-                    break;
-                }
-
-                // Audio check deferred to probe boundary (below) to avoid
-                // expensive COM audio enumeration every 500ms.
-                auto sinceProbe = std::chrono::steady_clock::now() - lastProbe;
-                if (sinceProbe < std::chrono::seconds(15)) continue;
-
-                // At 15s boundary: check audio once. If playing, skip probe.
-                audioActive = hasActiveAudioSessions();
-                if (audioActive) {
-                    log::handover("KEEPALIVE 15s boundary — audio active, probe skipped (lastProbe reset)");
-                    lastProbe = std::chrono::steady_clock::now();
-                    continue;
-                }
-                log::handover("KEEPALIVE 15s boundary — audio idle, sending SDP probe");
-
-                // SDP probe (Uncached). Sends L2CAP SDP query to the AirPods,
-                // resetting their 22s firmware idle-drop timer. 3s timeout
-                // covers normal SDP response (<1s) with headroom.
-                log::handover("KEEPALIVE SDP probe (Uncached)");
-                auto device = BluetoothDevice::FromBluetoothAddressAsync(m_address).get();
-                if (!device) { break; }
-                auto op = device.GetRfcommServicesAsync(BluetoothCacheMode::Uncached);
-                auto deadline = std::chrono::steady_clock::now()
-                                + std::chrono::seconds(3);
-                bool timedOut = false;
-                while (op.Status() == AsyncStatus::Started) {
-                    if (m_keepaliveStop.load()) {
-                        try { op.Cancel(); } catch (...) {}
-                        break;
-                    }
-                    if (std::chrono::steady_clock::now() > deadline) {
-                        try { op.Cancel(); } catch (...) {}
-                        timedOut = true;
-                        break;
-                    }
-                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-                }
-                if (m_keepaliveStop.load()) break;
-
-                if (!timedOut && op.Status() == AsyncStatus::Completed) {
-                    log::handover("KEEPALIVE SDP probe ok — ACL alive");
-                    lastProbe = std::chrono::steady_clock::now();
-                } else if (timedOut) {
-                    log::handover("KEEPALIVE SDP probe timed out (3s) — retrying in 3s");
-                    // Transient radio congestion (BT busy with RFCOMM reconnects,
-                    // A2DP negotiation, etc.). Retry fast — don't wait 15s.
-                    lastProbe = std::chrono::steady_clock::now()
-                                - std::chrono::seconds(12);
-                } else {
-                    log::handover("KEEPALIVE SDP probe errored — retrying in 3s");
-                    lastProbe = std::chrono::steady_clock::now()
-                                - std::chrono::seconds(12);
-                }
-            } catch (const winrt::hresult_error& e) {
-                log::handover("KEEPALIVE exception: 0x{:08X} {} — stopping",
-                    (std::uint32_t)e.code().value, winrt::to_string(e.message()));
-                break;
-            } catch (const std::exception& e) {
-                log::handover("KEEPALIVE exception: {} — stopping", e.what());
-                break;
-            }
-        }
-        log::handover("KEEPALIVE stopped");
-    });
-}
-
-void AirPodsConnector::stopKeepalive() {
-    m_keepaliveStop.store(true);
-    std::lock_guard lk(m_keepaliveMutex);
-    if (m_keepaliveThread.joinable())
-        m_keepaliveThread.join();
 }
 
 bool AirPodsConnector::hasActiveAudioSessions() {
