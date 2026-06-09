@@ -1027,7 +1027,7 @@ void AirPodsConnector::startKeepalive() {
             {
                 std::unique_lock ulk(m_socketMutex);
                 if (!m_keepaliveWriter) {
-                    log::handover("KEEPALIVE no RFCOMM socket held — attempting RFCOMM connect");
+                    log::handover("KEEPALIVE no RFCOMM socket held — attempting RFCOMM connect (self-heal)");
                     ulk.unlock();  // release before blocking I/O
                     try {
                         using namespace winrt::Windows::Devices::Bluetooth;
@@ -1035,6 +1035,8 @@ void AirPodsConnector::startKeepalive() {
                         using namespace winrt::Windows::Networking::Sockets;
                         auto device = BluetoothDevice::FromBluetoothAddressAsync(m_address).get();
                         if (device) {
+                            // Use cached services — no fresh SDP query needed since the
+                            // device is already connected and we know its services.
                             auto services = device.GetRfcommServicesAsync(
                                 BluetoothCacheMode::Cached).get();
                             if (services.Services().Size() > 0) {
@@ -1044,6 +1046,10 @@ void AirPodsConnector::startKeepalive() {
                                     svc.ConnectionHostName(),
                                     svc.ConnectionServiceName()).get();
                                 std::scoped_lock lk2(m_socketMutex);
+                                // Close any stale socket first to avoid resource leaks.
+                                if (m_keepaliveSocket) {
+                                    try { m_keepaliveSocket.Close(); } catch (...) {}
+                                }
                                 m_keepaliveSocket = std::move(sock);
                                 m_keepaliveWriter = DataWriter(
                                     m_keepaliveSocket.OutputStream());
@@ -1051,12 +1057,26 @@ void AirPodsConnector::startKeepalive() {
                             }
                         }
                     } catch (const winrt::hresult_error& e) {
-                        log::handover("KEEPALIVE self-heal RFCOMM failed: 0x{:08X} {} — stopping",
-                            (std::uint32_t)e.code().value, winrt::to_string(e.message()));
-                        break;
+                        // WSAEADDRINUSE (0x80072740) means the previous RFCOMM socket's
+                        // endpoint is still held by the Bluetooth stack (TIME_WAIT on the
+                        // remote). This is transient — the next connect() call in the
+                        // takeover path will establish a fresh socket. Don't break on it;
+                        // just log and wait for the next retry cycle. The watcher's BT-edge
+                        // observer handles reconnection anyway.
+                        auto code = (std::uint32_t)e.code().value;
+                        log::handover("KEEPALIVE self-heal RFCOMM failed: 0x{:08X} {}",
+                            code, winrt::to_string(e.message()));
+                        if (code == 0x80072740) {  // WSAEADDRINUSE — transient, retry later
+                            // Don't break — let the while loop retry in 15s.
+                            log::handover("KEEPALIVE self-heal WSAEADDRINUSE — socket endpoint "
+                                          "still held by BT stack; will retry on next cycle");
+                            lastExchange = std::chrono::steady_clock::now();
+                            continue;  // back to the while loop
+                        }
+                        break;  // any other error: give up
                     }
                     if (!m_keepaliveWriter) {
-                        log::handover("KEEPALIVE self-heal failed — no RFCOMM socket available, stopping");
+                        log::handover("KEEPALIVE self-heal failed — no RFCOMM socket available");
                         break;
                     }
                     // Re-acquire the lock for the AT command below
