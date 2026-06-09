@@ -1022,11 +1022,45 @@ void AirPodsConnector::startKeepalive() {
             exchangeImmediately = false;
 
             // Send AT+BRSF? over the held RFCOMM socket.
+            // If no socket is held (e.g. keepalive started via BT-edge observer before
+            // connect() ran), attempt to establish an RFCOMM connection now.
             {
-                std::scoped_lock lk(m_socketMutex);
+                std::unique_lock ulk(m_socketMutex);
                 if (!m_keepaliveWriter) {
-                    log::handover("KEEPALIVE no RFCOMM socket held — keepalive impossible, stopping");
-                    break;
+                    log::handover("KEEPALIVE no RFCOMM socket held — attempting RFCOMM connect");
+                    ulk.unlock();  // release before blocking I/O
+                    try {
+                        using namespace winrt::Windows::Devices::Bluetooth;
+                        using namespace winrt::Windows::Devices::Bluetooth::Rfcomm;
+                        using namespace winrt::Windows::Networking::Sockets;
+                        auto device = BluetoothDevice::FromBluetoothAddressAsync(m_address).get();
+                        if (device) {
+                            auto services = device.GetRfcommServicesAsync(
+                                BluetoothCacheMode::Cached).get();
+                            if (services.Services().Size() > 0) {
+                                auto svc = services.Services().GetAt(0);
+                                StreamSocket sock;
+                                sock.ConnectAsync(
+                                    svc.ConnectionHostName(),
+                                    svc.ConnectionServiceName()).get();
+                                std::scoped_lock lk2(m_socketMutex);
+                                m_keepaliveSocket = std::move(sock);
+                                m_keepaliveWriter = DataWriter(
+                                    m_keepaliveSocket.OutputStream());
+                                log::handover("KEEPALIVE RFCOMM socket established (self-heal)");
+                            }
+                        }
+                    } catch (const winrt::hresult_error& e) {
+                        log::handover("KEEPALIVE self-heal RFCOMM failed: 0x{:08X} {} — stopping",
+                            (std::uint32_t)e.code().value, winrt::to_string(e.message()));
+                        break;
+                    }
+                    if (!m_keepaliveWriter) {
+                        log::handover("KEEPALIVE self-heal failed — no RFCOMM socket available, stopping");
+                        break;
+                    }
+                    // Re-acquire the lock for the AT command below
+                    ulk.lock();
                 }
                 try {
                     log::handover("KEEPALIVE AT+BRSF? -> AirPods (RFCOMM, L2CAP keepalive)");
