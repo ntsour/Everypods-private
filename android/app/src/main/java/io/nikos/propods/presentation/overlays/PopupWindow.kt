@@ -43,6 +43,7 @@ import android.view.animation.DecelerateInterpolator
 import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.media.AudioManager
 import android.widget.VideoView
 import io.nikos.propods.R
 import io.nikos.propods.data.AirPodsNotifications
@@ -137,6 +138,7 @@ class PopupWindow(
                 updateBatteryStatus(batteryNotification)
 
                 val vid = mView.findViewById<VideoView>(R.id.video)
+                vid.setAudioFocusRequest(AudioManager.AUDIOFOCUS_NONE)
                 vid.setVideoPath("android.resource://${mView.context.packageName}/" + R.raw.connected)
                 vid.resolveAdjustedSize(vid.width, vid.height)
                 vid.start()

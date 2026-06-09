@@ -37,7 +37,9 @@ class GestureFeedback(context: Context) {
     private val soundsLoaded = AtomicBoolean(false)
 
     private val soundPool = SoundPool.Builder()
-        .setMaxStreams(3)
+        // Increased to 6 so we can stack confirmation chimes 4-deep while
+        // still leaving headroom for directional + mute-reminder sounds.
+        .setMaxStreams(6)
         .setAudioAttributes(
             AudioAttributes.Builder()
                 .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
@@ -177,8 +179,17 @@ class GestureFeedback(context: Context) {
 
         val soundId = if (isYes) confirmYesId else confirmNoId
         if (soundId != 0 && soundsLoaded.get()) {
-            val streamId = soundPool.play(soundId, 1.0f, 1.0f, 1, 0, 1.0f)
-            Log.d(TAG, "Playing ${if (isYes) "YES" else "NO"} confirmation - streamID=$streamId")
+            // Stack the same sample 4 times to cut through call audio.
+            // SoundPool caps the per-stream volume at 1.0, so stacking is the
+            // only way to push effective output above the single-stream ceiling.
+            // 4 identical samples played simultaneously sum to ~+12 dB
+            // (4× pressure ≈ ~3× perceived loudness — what the user asked for).
+            // The auditory system integrates the overlapping triggers as a
+            // single louder confirmation rather than discrete echoes.
+            val streamIds = IntArray(4) {
+                soundPool.play(soundId, 1.0f, 1.0f, 1, 0, 1.0f)
+            }
+            Log.d(TAG, "Playing ${if (isYes) "YES" else "NO"} confirmation x4 - streamIDs=${streamIds.joinToString()}")
         }
     }
 }
