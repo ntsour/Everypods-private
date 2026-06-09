@@ -579,27 +579,13 @@ void HandoverController::onPeerConnectionChanged(bool connected) {
 }
 
 void HandoverController::onCallActive() {
-    // Teams/WASAPI-specific entry point. Suppressed after a voluntary release so an
-    // ongoing Teams call that is now routing through the peer's AirPods doesn't
-    // cause Windows to fight back. GSMTC-triggered media (YouTube etc.) goes through
-    // onMediaPlayingChanged directly and is not gated here — GSMTC is edge-triggered
-    // so a session that stays "playing" never re-fires anyway.
-    //
-    // Time-gated: suppress only within kVoluntaryReleaseSuppressWindow (30s) of the
-    // release. After that, a new Teams call is an explicit user event and must be
-    // allowed through — otherwise a release for music > 30s ago permanently blocks
-    // future call handovers until onTeamsCallEnded() fires (which it can't if no
-    // Teams call ever started on Windows in the interim).
-    if (m_voluntarilyReleased.load()) {
-        auto sinceRelease = std::chrono::steady_clock::now() - tpFromNs(m_lastVoluntaryReleaseAt.load());
-        if (sinceRelease < kVoluntaryReleaseSuppressWindow) {
-            log::handover("SKIP    Voluntarily released — suppressing call re-trigger ({}ms since release)",
-                std::chrono::duration_cast<std::chrono::milliseconds>(sinceRelease).count());
-            return;
-        }
-        m_voluntarilyReleased.store(false);
-        log::handover("STATE   m_voluntarilyReleased cleared (suppress window expired, new call)");
-    }
+    // A Teams/WASAPI trigger is always an explicit user action (answered call,
+    // joined meeting), never GSMTC auto-resume. Clear the voluntary-release
+    // gate immediately — the user chose to take a call, so AirPods must move.
+    // The 30s suppression window in onMediaPlayingChanged guards the GSMTC
+    // path (Chrome auto-resume after device drop).
+    if (m_voluntarilyReleased.exchange(false))
+        log::handover("STATE   m_voluntarilyReleased cleared (call active)");
     onMediaPlayingChanged(true);
 }
 
