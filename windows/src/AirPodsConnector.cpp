@@ -992,6 +992,7 @@ void AirPodsConnector::startKeepalive() {
         bool exchangeImmediately = !audioActive;
 
         while (!m_keepaliveStop.load()) {
+            try {
             std::this_thread::sleep_for(std::chrono::milliseconds(500));
             if (m_keepaliveStop.load()) break;
 
@@ -1134,6 +1135,15 @@ void AirPodsConnector::startKeepalive() {
                 }
             }
             lastExchange = std::chrono::steady_clock::now();
+            }  // end try
+            catch (const winrt::hresult_error& e) {
+                log::handover("KEEPALIVE unhandled hresult: 0x{:08X} {} — stopping",
+                    (std::uint32_t)e.code().value, winrt::to_string(e.message()));
+                break;
+            } catch (const std::exception& e) {
+                log::handover("KEEPALIVE unhandled exception: {} — stopping", e.what());
+                break;
+            }
         }
 
         // If we exit the loop (stop requested or socket died), clean up.
