@@ -24,6 +24,12 @@ public:
     // connection state (true = ACL link up to this PC right now).
     bool isClassicallyConnected();
 
+    // Query WinRT BluetoothDevice API for connection state. Bypasses bthserv
+    // (Bluetooth Support Service) that the Win32 BluetoothFindFirstRadio /
+    // BluetoothGetDeviceInfo path routes through. WinRT goes directly through
+    // the modern Bluetooth driver stack with less overhead.
+    bool isClassicallyConnectedWinRT();
+
     // True when at least one non-system audio session is in the Active state on
     // the AirPods render endpoint (i.e. a call, meeting, or other app is actively
     // using the AirPods for audio output right now).

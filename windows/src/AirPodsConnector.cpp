@@ -1224,6 +1224,18 @@ bool AirPodsConnector::isClassicallyConnected() {
     return err == ERROR_SUCCESS && info.fConnected;
 }
 
+bool AirPodsConnector::isClassicallyConnectedWinRT() {
+    if (m_address == 0) return false;
+    try {
+        using namespace winrt::Windows::Devices::Bluetooth;
+        auto device = BluetoothDevice::FromBluetoothAddressAsync(m_address).get();
+        return device != nullptr
+            && device.ConnectionStatus() == BluetoothConnectionStatus::Connected;
+    } catch (const winrt::hresult_error&) {
+        return false;
+    }
+}
+
 bool AirPodsConnector::disconnect() {
     if (m_address == 0) return false;
     std::lock_guard<std::mutex> lk(m_mutex);

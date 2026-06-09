@@ -42,7 +42,7 @@ void HandoverController::startAudioWatcher() {
         int  idleStreak = 0;         // # consecutive polls observed idle while broadcast=active
         constexpr int kIdleStreakThreshold = 2;
         // Initialised to actual state so the first poll doesn't produce a synthetic edge.
-        bool lastBtConnected = m_airpods.isClassicallyConnected();
+        bool lastBtConnected = m_airpods.isClassicallyConnectedWinRT();
         while (m_watcherRunning.load()) {
             try {
                 // Resolve Unknown state if peers are now connected.
@@ -50,7 +50,7 @@ void HandoverController::startAudioWatcher() {
                 // raced us here and already resolved Unknown, setState returns false and we
                 // skip the duplicate send.
                 if (m_state.load() == OwnershipState::Unknown && m_peers.isAnyConnected()) {
-                    bool airpodsHere = m_airpods.isClassicallyConnected();
+                    bool airpodsHere = m_airpods.isClassicallyConnectedWinRT();
                     bool changed = setState(airpodsHere ? OwnershipState::LocalPc
                                                         : OwnershipState::RemoteAndroid);
                     if (changed) {
@@ -66,7 +66,7 @@ void HandoverController::startAudioWatcher() {
                 // CrossDevice protocol (Apple auto-switch, manual connect, phone grabs via BT
                 // before RFCOMM is up). Runs every 500 ms poll — fast enough for the handover
                 // feel while cheap enough not to stress the BT stack.
-                bool btConnected = m_airpods.isClassicallyConnected();
+                bool btConnected = m_airpods.isClassicallyConnectedWinRT();
                 if (btConnected && !lastBtConnected) {
                     // Rising edge: AirPods just appeared on Windows (X1, X3, C2 scenarios).
                     // Reset audio state: the classical BT link is up but A2DP hasn't negotiated
@@ -190,9 +190,12 @@ void HandoverController::startAudioWatcher() {
                 // Continue polling, don't crash
             }
 
-            // Sliced sleep so shutdown is responsive (50 ms × 10 = 500 ms poll interval).
+            // Sliced sleep so shutdown is responsive (100 ms × 10 = 1000 ms poll interval).
+            // Reduced from 500 ms to 1000 ms to cut legacy-BT and COM audio enumeration
+            // overhead in half. BT-edge precision of 1 s is still fast enough for
+            // handover responsiveness (the protocol handshake takes 1-3 s anyway).
             for (int i = 0; i < 10 && m_watcherRunning.load(); ++i) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
             }
         }
     });
