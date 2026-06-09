@@ -195,7 +195,7 @@ void HandoverController::onMediaPlayingChanged(bool playing) {
         return;
     }
 
-    const bool actuallyConnected = m_airpods.isClassicallyConnectedWinRT();
+    const bool actuallyConnected = m_airpods.isClassicallyConnected();
     const bool stateLocal = (m_state.load() == OwnershipState::LocalPc);
     log::debug("Media start: state={} airpodsConnected={}",
         stateLocal ? "LocalPc" : "remote/unknown",

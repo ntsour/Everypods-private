@@ -1034,60 +1034,77 @@ bool AirPodsConnector::hasActiveCallSessions() {
     ComPtr<IMMDeviceEnumerator> enumerator;
     HRESULT hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
                                   __uuidof(IMMDeviceEnumerator), (void**)enumerator.GetAddressOf());
-    if (SUCCEEDED(hr)) {
-        // Render-side: calls produce output audio. We don't bother checking capture
-        // because every comms app that's in a call also has a render session, and
-        // checking render alone keeps this consistent with hasActiveAudioSessions().
-        for (auto& ep : findAirPodsEndpoints(enumerator.Get(), eRender)) {
-            // Check both ACTIVE and UNPLUGGED. During early-call setup
-            // (Teams ringing/connecting), A2DP hasn't negotiated yet — the
-            // endpoint is UNPLUGGED but Teams has already created its audio
-            // session on it. Skipping UNPLUGGED would miss the session and
-            // fail the call-hold veto.
-            if (ep.state != DEVICE_STATE_ACTIVE && ep.state != DEVICE_STATE_UNPLUGGED) continue;
-            ComPtr<IMMDevice> dev;
-            if (FAILED(enumerator->GetDevice(ep.id.c_str(), &dev))) continue;
-
-            ComPtr<IAudioSessionManager2> mgr;
-            if (FAILED(dev->Activate(__uuidof(IAudioSessionManager2), CLSCTX_ALL,
-                                     nullptr, (void**)mgr.GetAddressOf()))) continue;
-
-            ComPtr<IAudioSessionEnumerator> sessions;
-            if (FAILED(mgr->GetSessionEnumerator(&sessions))) continue;
-
-            int count = 0;
-            sessions->GetCount(&count);
-            for (int i = 0; i < count && !callActive; ++i) {
-                ComPtr<IAudioSessionControl> ctrl;
-                if (FAILED(sessions->GetSession(i, &ctrl))) continue;
-                AudioSessionState state{};
-                if (FAILED(ctrl->GetState(&state)) || state != AudioSessionStateActive) continue;
-
-                // QueryInterface for IAudioSessionControl2 — IAudioSessionControl alone
-                // doesn't expose GetProcessId. Available since Windows 7.
-                ComPtr<IAudioSessionControl2> ctrl2;
-                if (FAILED(ctrl.As(&ctrl2))) continue;
-
-                // System-sounds session is never a call.
-                if (ctrl2->IsSystemSoundsSession() == S_OK) continue;
-
-                DWORD pid = 0;
-                if (FAILED(ctrl2->GetProcessId(&pid)) || pid == 0) continue;
-
-                std::wstring exe = getProcessExeBasename(pid);
-                if (exe.empty()) continue;
-
-                if (isCommsAppExe(exe)) {
-                    callActive = true;
-                    // info-level so it's visible alongside the REJECT log from
-                    // HandoverController; the caller can correlate timestamps.
-                    log::info("hasActiveCallSessions: active comms session on AirPods from '{}' (pid {})",
-                        winrt::to_string(exe), pid);
-                }
-            }
-            if (callActive) break;
-        }
+    if (!SUCCEEDED(hr)) {
+        log::handover("CALLVETO CoCreateInstance(MMDeviceEnumerator) failed: 0x{:08X}", (std::uint32_t)hr);
+        if (weInited) CoUninitialize();
+        return false;
     }
+
+    auto endpoints = findAirPodsEndpoints(enumerator.Get(), eRender);
+    log::handover("CALLVETO found {} AirPods render endpoint(s)", endpoints.size());
+
+    for (auto& ep : endpoints) {
+        if (ep.state != DEVICE_STATE_ACTIVE && ep.state != DEVICE_STATE_UNPLUGGED) {
+            log::handover("CALLVETO   ep='{}' state={} — skip (not ACTIVE or UNPLUGGED)",
+                winrt::to_string(ep.name), stateName(ep.state));
+            continue;
+        }
+        log::handover("CALLVETO   ep='{}' state={} — checking...",
+            winrt::to_string(ep.name), stateName(ep.state));
+
+        ComPtr<IMMDevice> dev;
+        if (FAILED(enumerator->GetDevice(ep.id.c_str(), &dev))) {
+            log::handover("CALLVETO   GetDevice failed");
+            continue;
+        }
+
+        ComPtr<IAudioSessionManager2> mgr;
+        if (FAILED(dev->Activate(__uuidof(IAudioSessionManager2), CLSCTX_ALL,
+                                 nullptr, (void**)mgr.GetAddressOf()))) {
+            log::handover("CALLVETO   Activate(IAudioSessionManager2) failed");
+            continue;
+        }
+
+        ComPtr<IAudioSessionEnumerator> sessions;
+        if (FAILED(mgr->GetSessionEnumerator(&sessions))) {
+            log::handover("CALLVETO   GetSessionEnumerator failed");
+            continue;
+        }
+
+        int count = 0;
+        sessions->GetCount(&count);
+        log::handover("CALLVETO   {} session(s) on endpoint", count);
+
+        for (int i = 0; i < count && !callActive; ++i) {
+            ComPtr<IAudioSessionControl> ctrl;
+            if (FAILED(sessions->GetSession(i, &ctrl))) continue;
+            AudioSessionState state{};
+            if (FAILED(ctrl->GetState(&state)) || state != AudioSessionStateActive) continue;
+
+            ComPtr<IAudioSessionControl2> ctrl2;
+            if (FAILED(ctrl.As(&ctrl2))) continue;
+            if (ctrl2->IsSystemSoundsSession() == S_OK) continue;
+
+            DWORD pid = 0;
+            if (FAILED(ctrl2->GetProcessId(&pid)) || pid == 0) continue;
+
+            std::wstring exe = getProcessExeBasename(pid);
+            if (exe.empty()) continue;
+
+            log::handover("CALLVETO   session pid={} exe='{}' state=Active",
+                pid, winrt::to_string(exe));
+
+            if (isCommsAppExe(exe)) {
+                callActive = true;
+                log::handover("CALLVETO   -> MATCH: '{}' is a comms app — call veto ACTIVE",
+                    winrt::to_string(exe));
+            }
+        }
+        if (callActive) break;
+    }
+
+    if (!callActive)
+        log::handover("CALLVETO -> NO active comms session found — veto will NOT fire");
 
     if (weInited) CoUninitialize();
     return callActive;
