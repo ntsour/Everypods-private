@@ -957,7 +957,6 @@ void AirPodsConnector::startKeepalive() {
             log::handover("KEEPALIVE audio active — A2DP maintaining link, probes suspended");
 
         auto lastProbe = std::chrono::steady_clock::now();
-        bool probeImmediately = !audioActive;
 
         while (!m_keepaliveStop.load()) {
             try {
@@ -970,25 +969,17 @@ void AirPodsConnector::startKeepalive() {
                     break;
                 }
 
-                bool nowActive = hasActiveAudioSessions();
-                if (nowActive && !audioActive) {
-                    log::handover("KEEPALIVE audio started — A2DP maintaining link, probes suspended");
-                    lastProbe = std::chrono::steady_clock::now();
-                } else if (!nowActive && audioActive) {
-                    log::handover("KEEPALIVE audio stopped — probing immediately");
-                    probeImmediately = true;
-                }
-                audioActive = nowActive;
+                // Audio check deferred to probe boundary (below) to avoid
+                // expensive COM audio enumeration every 500ms.
+                auto sinceProbe = std::chrono::steady_clock::now() - lastProbe;
+                if (sinceProbe < std::chrono::seconds(15)) continue;
 
+                // At 15s boundary: check audio once. If playing, skip probe.
+                audioActive = hasActiveAudioSessions();
                 if (audioActive) {
                     lastProbe = std::chrono::steady_clock::now();
                     continue;
                 }
-
-                // Audio silent: probe if immediate or 15s since last probe.
-                auto sinceProbe = std::chrono::steady_clock::now() - lastProbe;
-                if (!probeImmediately && sinceProbe < std::chrono::seconds(15)) continue;
-                probeImmediately = false;
 
                 // SDP probe (Uncached). Sends L2CAP SDP query to the AirPods,
                 // resetting their 22s firmware idle-drop timer. 3s timeout
