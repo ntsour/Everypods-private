@@ -98,6 +98,7 @@ import io.nikos.propods.bluetooth.BluetoothConnectionManager
 import io.nikos.propods.data.AirPodsInstance
 import io.nikos.propods.data.AirPodsModels
 import io.nikos.propods.data.AirPodsNotifications
+import io.nikos.propods.data.CustomEq
 import io.nikos.propods.data.Battery
 import io.nikos.propods.data.BatteryComponent
 import io.nikos.propods.data.BatteryStatus
@@ -1282,8 +1283,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 // which triggers Android's audio policy to re-evaluate routing.
                 // During that re-evaluation the audio focus is briefly yanked
                 // and media apps (VLC, Pocket Casts, etc.) pause.
-                val bothChargingNow = batteryNotification.getBattery()[0].status == BatteryStatus.CHARGING &&
-                    batteryNotification.getBattery()[1].status == BatteryStatus.CHARGING
+                val bothChargingNow = batteryNotification.getBattery()[0].status.let { it == BatteryStatus.CHARGING || it == BatteryStatus.OPTIMIZED_CHARGING } &&
+                    batteryNotification.getBattery()[1].status.let { it == BatteryStatus.CHARGING || it == BatteryStatus.OPTIMIZED_CHARGING }
                 val prev = lastBothCharging
                 lastBothCharging = bothChargingNow
                 if (prev == null) {
@@ -1641,6 +1642,17 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     Intent(AirPodsNotifications.EQ_DATA).putExtra("eqData", eqData).apply {
                         setPackage(packageName)
                     })
+            }
+
+            override fun onCustomEqReceived(customEq: CustomEq) {
+                sendBroadcast(
+                    Intent(AirPodsNotifications.CUSTOM_EQ_DATA)
+                        .putExtra("state", customEq.state)
+                        .putExtra("low",   customEq.low)
+                        .putExtra("mid",   customEq.mid)
+                        .putExtra("high",  customEq.high)
+                        .apply { setPackage(packageName) }
+                )
             }
 
             override fun onUnknownPacketReceived(packet: ByteArray) {
@@ -2737,7 +2749,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     it,
                     it.METADATA_UNTETHERED_CASE_CHARGING,
                     (if (batteryNotification.getBattery()
-                            .find { it.component == BatteryComponent.CASE }?.status == BatteryStatus.CHARGING
+                            .find { it.component == BatteryComponent.CASE }?.status.let { it == BatteryStatus.CHARGING || it == BatteryStatus.OPTIMIZED_CHARGING }
                     ) "1".toByteArray() else "0".toByteArray())
                 )
                 SystemApisUtils.setMetadata(
@@ -2751,7 +2763,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     it,
                     it.METADATA_UNTETHERED_LEFT_CHARGING,
                     (if (batteryNotification.getBattery()
-                            .find { it.component == BatteryComponent.LEFT }?.status == BatteryStatus.CHARGING
+                            .find { it.component == BatteryComponent.LEFT }?.status.let { it == BatteryStatus.CHARGING || it == BatteryStatus.OPTIMIZED_CHARGING }
                     ) "1".toByteArray() else "0".toByteArray())
                 )
                 SystemApisUtils.setMetadata(
@@ -2765,7 +2777,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     it,
                     it.METADATA_UNTETHERED_RIGHT_CHARGING,
                     (if (batteryNotification.getBattery()
-                            .find { it.component == BatteryComponent.RIGHT }?.status == BatteryStatus.CHARGING
+                            .find { it.component == BatteryComponent.RIGHT }?.status.let { it == BatteryStatus.CHARGING || it == BatteryStatus.OPTIMIZED_CHARGING }
                     ) "1".toByteArray() else "0".toByteArray())
                 )
             }
@@ -2802,7 +2814,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             )
             it.setViewVisibility(
                 R.id.left_charging_icon,
-                if (leftBattery?.status == BatteryStatus.CHARGING) View.VISIBLE else View.GONE
+                if (leftBattery?.status == BatteryStatus.CHARGING || leftBattery?.status == BatteryStatus.OPTIMIZED_CHARGING) View.VISIBLE else View.GONE
             )
 
             it.setTextViewText(R.id.right_battery_widget, rightBattery?.let {
@@ -2813,7 +2825,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             )
             it.setViewVisibility(
                 R.id.right_charging_icon,
-                if (rightBattery?.status == BatteryStatus.CHARGING) View.VISIBLE else View.GONE
+                if (rightBattery?.status == BatteryStatus.CHARGING || rightBattery?.status == BatteryStatus.OPTIMIZED_CHARGING) View.VISIBLE else View.GONE
             )
 
             it.setTextViewText(R.id.case_battery_widget, caseBattery?.let {
@@ -2824,7 +2836,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             )
             it.setViewVisibility(
                 R.id.case_charging_icon,
-                if (caseBattery?.status == BatteryStatus.CHARGING) View.VISIBLE else View.GONE
+                if (caseBattery?.status == BatteryStatus.CHARGING || caseBattery?.status == BatteryStatus.OPTIMIZED_CHARGING) View.VISIBLE else View.GONE
             )
 
             it.setViewVisibility(
@@ -2945,7 +2957,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             val batteryText = """${
                 batteryList?.find { it.component == BatteryComponent.LEFT }?.let {
                     if (it.status != BatteryStatus.DISCONNECTED) {
-                        "L: ${if (it.status == BatteryStatus.CHARGING) "⚡" else ""} ${it.level}%"
+                        "L: ${if (it.status == BatteryStatus.CHARGING || it.status == BatteryStatus.OPTIMIZED_CHARGING) "⚡" else ""} ${it.level}%"
                     } else {
                         ""
                     }
@@ -2953,7 +2965,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             } ${
                 batteryList?.find { it.component == BatteryComponent.RIGHT }?.let {
                     if (it.status != BatteryStatus.DISCONNECTED) {
-                        "R: ${if (it.status == BatteryStatus.CHARGING) "⚡" else ""} ${it.level}%"
+                        "R: ${if (it.status == BatteryStatus.CHARGING || it.status == BatteryStatus.OPTIMIZED_CHARGING) "⚡" else ""} ${it.level}%"
                     } else {
                         ""
                     }
@@ -2961,7 +2973,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             } ${
                 batteryList?.find { it.component == BatteryComponent.CASE }?.let {
                     if (it.status != BatteryStatus.DISCONNECTED) {
-                        "Case: ${if (it.status == BatteryStatus.CHARGING) "⚡" else ""} ${it.level}%"
+                        "Case: ${if (it.status == BatteryStatus.CHARGING || it.status == BatteryStatus.OPTIMIZED_CHARGING) "⚡" else ""} ${it.level}%"
                     } else {
                         ""
                     }
@@ -3395,8 +3407,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         )
 
         // Check charging status
-        val isLeftCharging = leftBattery?.status == BatteryStatus.CHARGING
-        val isRightCharging = rightBattery?.status == BatteryStatus.CHARGING
+        val isLeftCharging = leftBattery?.status == BatteryStatus.CHARGING || leftBattery?.status == BatteryStatus.OPTIMIZED_CHARGING
+        val isRightCharging = rightBattery?.status == BatteryStatus.CHARGING || rightBattery?.status == BatteryStatus.OPTIMIZED_CHARGING
         isLeftCharging && isRightCharging
 
         // Create arguments for vendor-specific event
@@ -3777,8 +3789,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         val left = batt.find { it.component == BatteryComponent.LEFT }
         val right = batt.find { it.component == BatteryComponent.RIGHT }
         if (left == null || right == null) return false
-        return left.status == BatteryStatus.CHARGING &&
-            right.status == BatteryStatus.CHARGING
+        return (left.status == BatteryStatus.CHARGING || left.status == BatteryStatus.OPTIMIZED_CHARGING) &&
+            (right.status == BatteryStatus.CHARGING || right.status == BatteryStatus.OPTIMIZED_CHARGING)
     }
 
     @RequiresApi(Build.VERSION_CODES.R)

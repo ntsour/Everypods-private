@@ -113,6 +113,11 @@
         <string name="volume_swipe_speed">Velocità di Scorrimento del Volume</string>
         <string name="volume_swipe_speed_description">Per evitare regolazioni involontarie del volume, seleziona il tempo di attesa preferito tra gli scorrimenti.</string>
         <string name="equalizer">Equalizzatore</string>
+        <string name="eq_recommended">Consigliato</string>
+        <string name="eq_custom">Personalizzato</string>
+        <string name="eq_bass">Bassi</string>
+        <string name="eq_mid">Medi</string>
+        <string name="eq_treble">Alti</string>
         <string name="apply_eq_to">Applica EQ a</string>
         <string name="phone">Telefono</string>
         <string name="media">Media</string>

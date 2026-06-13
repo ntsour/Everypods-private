@@ -53,6 +53,7 @@ fun AudioSettings(
     conversationalAwarenessCapability: Boolean,
     loudSoundReductionCapability: Boolean,
     adaptiveAudioCapability: Boolean,
+    customEqCapability: Boolean = false,
 
     adaptiveVolumeChecked: Boolean,
     onAdaptiveVolumeCheckedChange: (Boolean) -> Unit,
@@ -71,7 +72,7 @@ fun AudioSettings(
     val isDarkTheme = isSystemInDarkTheme()
     val textColor = if (isDarkTheme) Color.White else Color.Black
 
-    if (!adaptiveVolumeCapability && !conversationalAwarenessCapability && !loudSoundReductionCapability && !adaptiveAudioCapability) {
+    if (!adaptiveVolumeCapability && !conversationalAwarenessCapability && !loudSoundReductionCapability && !adaptiveAudioCapability && !customEqCapability) {
         return
     }
     Box(
@@ -160,6 +161,21 @@ fun AudioSettings(
                 independent = false
             )
         }
+
+        if (customEqCapability) {
+            HorizontalDivider(
+                thickness = 1.dp,
+                color = Color(0x40888888),
+                modifier = Modifier
+                    .padding(horizontal = 12.dp)
+            )
+            NavigationButton(
+                to = "equalizer_screen",
+                name = stringResource(R.string.equalizer),
+                navController = navController,
+                independent = false
+            )
+        }
     }
 }
 
@@ -172,6 +188,7 @@ fun AudioSettingsPreview() {
         conversationalAwarenessCapability = true,
         loudSoundReductionCapability = true,
         adaptiveAudioCapability = true,
+        customEqCapability = true,
         adaptiveVolumeChecked = true,
         onAdaptiveVolumeCheckedChange = { },
         conversationalAwarenessChecked = true,

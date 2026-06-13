@@ -22,6 +22,7 @@ package io.nikos.propods.bluetooth
 
 import android.util.Log
 import io.nikos.propods.bluetooth.connection.DeferredHandshakeAckSource
+import io.nikos.propods.data.CustomEq
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.io.encoding.ExperimentalEncodingApi
@@ -50,6 +51,7 @@ class AACPManager {
             const val PROXIMITY_KEYS_RSP: Byte = 0x31
             const val STEM_PRESS: Byte = 0x19
             const val EQ_DATA: Byte = 0x53
+            const val CUSTOM_EQ: Byte = 0x63
             const val CONNECTED_DEVICES: Byte = 0x2E // TiPi 1
             const val AUDIO_SOURCE: Byte = 0x0E // TiPi 2
             const val SMART_ROUTING: Byte = 0x10
@@ -201,6 +203,11 @@ class AACPManager {
     var eqOnMedia: Boolean = false
         private set
 
+    var customEq: CustomEq = CustomEq(state = 1, low = 50, mid = 50, high = 50)
+        private set
+
+    var customEqCallback: ((CustomEq) -> Unit)? = null
+
     fun getControlCommandStatus(identifier: ControlCommandIdentifiers): ControlCommandStatus? {
         return controlCommandStatusList.find { it.identifier == identifier }
     }
@@ -238,6 +245,7 @@ class AACPManager {
         fun onOwnershipToFalseRequest(sender: String, reasonReverseTapped: Boolean)
         fun onShowNearbyUI(sender: String)
         fun onEQPacketReceived(eqData: FloatArray)
+        fun onCustomEqReceived(customEq: CustomEq)
     }
 
     fun parseStemPressResponse(data: ByteArray): Pair<StemPressType, StemPressBudType> {
@@ -605,6 +613,13 @@ class AACPManager {
                 Log.d(TAG, "Parsing Information Packet")
                 val information = parseInformationPacket(packet)
                 callback?.onDeviceInformationReceived(information)
+            }
+
+            Opcodes.CUSTOM_EQ -> {
+                Log.d(TAG, "Parsing CUSTOM_EQ: ${packet.toHexString()}")
+                customEq = parseCustomEqPacket(packet)
+                customEqCallback?.invoke(customEq)
+                callback?.onCustomEqReceived(customEq)
             }
 
             else -> {
@@ -1311,5 +1326,33 @@ class AACPManager {
             rightSerialNumber = strings.getOrNull(9) ?: "",
             version3 = strings.getOrNull(10) ?: "",
         )
+    }
+
+    fun sendCustomEqPacket(eq: CustomEq): Boolean {
+        return sendDataPacket(eq.toPacket())
+    }
+
+    fun parseCustomEqPacket(packet: ByteArray): CustomEq {
+        val data = packet.sliceArray(6 until packet.size)
+
+        if (data.size < 7) {
+            Log.e(TAG, "CUSTOM_EQ packet length less than 7, returning default")
+            return CustomEq(1, 50, 50, 50)
+        }
+
+        val lengthLow  = data[0].toInt() and 0xFF
+        val lengthHigh = data[1].toInt() and 0xFF
+        val length     = (lengthHigh shl 8) or lengthLow
+
+        if (length != 5) {
+            Log.w(TAG, "parseCustomEqPacket: unexpected length ($length), parsing anyway")
+        }
+
+        val state = data[3].toInt()
+        val low   = data[4].toInt()
+        val mid   = data[5].toInt()
+        val high  = data[6].toInt()
+
+        return CustomEq(state, low, mid, high)
     }
 }

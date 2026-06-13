@@ -113,6 +113,11 @@
     <string name="volume_swipe_speed">Vitesse du balayage du volume</string>
     <string name="volume_swipe_speed_description">Pour éviter les changements de volume involontaires, sélectionnez le délai préféré entre les balayages.</string>
     <string name="equalizer">Égaliseur</string>
+    <string name="eq_recommended">Recommandé</string>
+    <string name="eq_custom">Personnalisé</string>
+    <string name="eq_bass">Basses</string>
+    <string name="eq_mid">Médiums</string>
+    <string name="eq_treble">Aigus</string>
     <string name="apply_eq_to">Appliquer l\'EQ à</string>
     <string name="phone">Téléphone</string>
     <string name="media">Média</string>

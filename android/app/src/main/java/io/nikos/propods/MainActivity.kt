@@ -138,6 +138,7 @@ import io.nikos.propods.presentation.components.StyledSelectList
 import io.nikos.propods.presentation.screens.AccessibilitySettingsScreen
 import io.nikos.propods.presentation.screens.AdaptiveStrengthScreen
 import io.nikos.propods.presentation.screens.AirPodsSettingsScreen
+import io.nikos.propods.presentation.screens.EqualizerScreen
 import io.nikos.propods.presentation.screens.AppSettingsScreen
 import io.nikos.propods.presentation.screens.CameraControlScreen
 import io.nikos.propods.presentation.screens.DebugScreen
@@ -389,10 +390,13 @@ fun Main() {
                     composable("hearing_aid_adjustments") {
                         if (airPodsViewModel != null) HearingAidAdjustmentsScreen(airPodsViewModel)
                     }
-                    composable("adaptive_strength") {
-                        if (airPodsViewModel != null) AdaptiveStrengthScreen(airPodsViewModel, navController)
-                    }
-                    composable("camera_control") {
+                     composable("adaptive_strength") {
+                         if (airPodsViewModel != null) AdaptiveStrengthScreen(airPodsViewModel, navController)
+                     }
+                     composable("equalizer_screen") {
+                         if (airPodsViewModel != null) EqualizerScreen(airPodsViewModel)
+                     }
+                     composable("camera_control") {
                         if (airPodsViewModel != null) CameraControlScreen(airPodsViewModel)
                     }
                     composable("open_source_licenses") {

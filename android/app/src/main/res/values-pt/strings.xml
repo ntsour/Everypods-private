@@ -113,6 +113,11 @@
     <string name="volume_swipe_speed">Velocidade de Deslize de Volume</string>
     <string name="volume_swipe_speed_description">Para evitar ajustes de volume não intencionais, selecione o tempo de espera preferido entre deslizes.</string>
     <string name="equalizer">Equalizador</string>
+    <string name="eq_recommended">Recomendado</string>
+    <string name="eq_custom">Personalizado</string>
+    <string name="eq_bass">Graves</string>
+    <string name="eq_mid">Médios</string>
+    <string name="eq_treble">Agudos</string>
     <string name="apply_eq_to">Aplicar EQ a</string>
     <string name="phone">Telefone</string>
     <string name="media">Mídia</string>

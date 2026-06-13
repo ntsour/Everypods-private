@@ -44,7 +44,8 @@ enum class Capability {
     ADAPTIVE_AUDIO,
     ADAPTIVE_VOLUME,
     SWIPE_FOR_VOLUME,
-    HRM
+    HRM,
+    CUSTOM_EQ
 }
 
 class AirPods: AirPodsBase(
@@ -212,7 +213,8 @@ class AirPodsPro2USBC: AirPodsBase(
         Capability.ADAPTIVE_AUDIO,
         Capability.ADAPTIVE_VOLUME,
         Capability.SWIPE_FOR_VOLUME,
-        Capability.HEAD_GESTURES
+        Capability.HEAD_GESTURES,
+        Capability.CUSTOM_EQ
     )
 )
 
@@ -242,7 +244,8 @@ class AirPodsPro3: AirPodsBase(
         Capability.ADAPTIVE_AUDIO,
         Capability.ADAPTIVE_VOLUME,
         Capability.SWIPE_FOR_VOLUME,
-        Capability.HRM
+        Capability.HRM,
+        Capability.CUSTOM_EQ
     )
 )
 
