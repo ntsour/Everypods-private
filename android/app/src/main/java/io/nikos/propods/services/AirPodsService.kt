@@ -2791,13 +2791,13 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         val widgetIds = appWidgetManager.getAppWidgetIds(componentName)
 
         val remoteViews = RemoteViews(packageName, R.layout.battery_widget).also { it ->
-            val openActivityIntent = PendingIntent.getActivity(
+            val reconnectIntent = PendingIntent.getService(
                 this,
                 0,
-                Intent(this, MainActivity::class.java),
+                Intent(this, AirPodsService::class.java).setAction(ACTION_WIDGET_RECONNECT),
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
-            it.setOnClickPendingIntent(R.id.battery_widget, openActivityIntent)
+            it.setOnClickPendingIntent(R.id.battery_widget, reconnectIntent)
 
             val leftBattery =
                 batteryNotification.getBattery().find { it.component == BatteryComponent.LEFT }
@@ -3392,6 +3392,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
     @Suppress("PrivatePropertyName")
     private val ACTION_ASI_UPDATE_BLUETOOTH_DATA = "batterywidget.impl.action.update_bluetooth_data"
+    private val ACTION_WIDGET_RECONNECT = "io.nikos.propods.WIDGET_RECONNECT"
 
     @SuppressLint("MissingPermission")
     fun broadcastBatteryInformation() {
@@ -3750,6 +3751,11 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             Log.d(TAG, "reconnect after reversed received, taking over")
             disconnectedBecauseReversed = false
             takeOver("music", manualTakeOverAfterReversed = true)
+        }
+
+        if (intent?.action == ACTION_WIDGET_RECONNECT) {
+            Log.d(TAG, "widget reconnect tapped")
+            reconnectFromSavedMac()
         }
 
         return START_STICKY
