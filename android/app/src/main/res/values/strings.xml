@@ -116,8 +116,13 @@
     <string name="press_and_hold_duration_description">Adjust the duration required to press and hold on your AirPods.</string>
     <string name="volume_swipe_speed">Volume Swipe Speed</string>
     <string name="volume_swipe_speed_description">To prevent unintended volume adjustments, select preferred wait time between swipes.</string>
-    <string name="equalizer">Equalizer</string>
-    <string name="apply_eq_to">Apply EQ to</string>
+     <string name="equalizer">Equalizer</string>
+     <string name="eq_recommended">Recommended</string>
+     <string name="eq_custom">Custom</string>
+     <string name="eq_bass">Bass</string>
+     <string name="eq_mid">Mid</string>
+     <string name="eq_treble">Treble</string>
+     <string name="apply_eq_to">Apply EQ to</string>
     <string name="phone">Phone</string>
     <string name="media">Media</string>
     <string name="band_label">Band %d</string>

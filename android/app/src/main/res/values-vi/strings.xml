@@ -113,6 +113,11 @@
     <string name="volume_swipe_speed">Tốc độ vuốt âm lượng</string>
     <string name="volume_swipe_speed_description">Để tránh điều chỉnh âm lượng ngoài ý muốn, hãy chọn thời gian chờ giữa các lần vuốt.</string>
     <string name="equalizer">Bộ chỉnh âm</string>
+    <string name="eq_recommended">Được đề xuất</string>
+    <string name="eq_custom">Tùy chỉnh</string>
+    <string name="eq_bass">Trầm</string>
+    <string name="eq_mid">Trung</string>
+    <string name="eq_treble">Bổng</string>
     <string name="apply_eq_to">Áp dụng EQ cho</string>
     <string name="phone">Điện thoại</string>
     <string name="media">Media</string>

@@ -52,6 +52,7 @@ import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
+import android.media.AudioManager
 import android.widget.VideoView
 import androidx.core.net.toUri
 import androidx.dynamicanimation.animation.DynamicAnimation
@@ -374,6 +375,7 @@ class IslandWindow(private val context: Context) {
 
         val videoView = islandView.findViewById<VideoView>(R.id.island_video_view)
         val videoUri = "android.resource://${context.packageName}/${R.raw.island}".toUri()
+        videoView.setAudioFocusRequest(AudioManager.AUDIOFOCUS_NONE)
         videoView.setVideoURI(videoUri)
         videoView.setOnPreparedListener { mediaPlayer ->
             mediaPlayer.isLooping = true

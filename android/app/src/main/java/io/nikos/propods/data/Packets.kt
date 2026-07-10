@@ -82,6 +82,7 @@ class AirPodsNotifications {
         const val AIRPODS_CONNECTION_DETECTED = "io.nikos.propods.AIRPODS_CONNECTION_DETECTED"
         const val DISCONNECT_RECEIVERS = "io.nikos.propods.DISCONNECT_RECEIVERS"
         const val EQ_DATA = "io.nikos.propods.EQ_DATA"
+        const val CUSTOM_EQ_DATA = "io.nikos.propods.CUSTOM_EQ_DATA"
         const val AIRPODS_INFORMATION_UPDATED = "io.nikos.propods.AIRPODS_INFORMATION_UPDATED"
     }
 

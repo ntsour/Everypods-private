@@ -24,16 +24,19 @@ import android.os.Build
 // AirPods. False means the device runs the same UI but every AACP-controlled
 // feature is greyed out (battery, handover, BLE-based features still work).
 //
-// The L2CAP `l2c_fcr_hook` offsets stay stable across monthly OS drops on a given
-// SDK level, so we trust Pixel + SDK ≥ 36 wholesale rather than maintaining a
-// hand-curated allowlist of monthly Build.ID strings (which goes stale every month).
+// Android 17 (SDK 37): Google confirmed the L2CAP fix is required platform-wide,
+// so all OEMs must ship it. Confirmed working on OneUI 9 (Samsung Galaxy S25).
+// We trust all SDK ≥ 37 devices wholesale.
+//
+// Android 16 (SDK 36): fix was available on Pixel and OnePlus/OPPO only.
 // If a future build breaks the hook, the Xposed module itself will fail to load
 // and `XposedState.bluetoothScopeEnabled` stays false — the UI then degrades
-// cleanly. Same heuristic as OnePlus/Oppo.
+// cleanly.
 fun isAacpCapable(): Boolean {
     val mfr = Build.MANUFACTURER.lowercase()
     val sdk = Build.VERSION.SDK_INT
     return when {
+        sdk >= 37 -> true                                // Android 17+: all OEMs
         mfr == "google" -> sdk >= 36
         mfr in listOf("oneplus", "oppo") -> sdk >= 36
         else -> false

@@ -113,6 +113,11 @@
     <string name="volume_swipe_speed">Ses Kaydırma Hızı</string>
     <string name="volume_swipe_speed_description">İstenmeyen ses ayarlamalarını önlemek için, kaydırmalar arasındaki tercih edilen bekleme süresini seçin.</string>
     <string name="equalizer">Ekolayzer</string>
+    <string name="eq_recommended">Önerilen</string>
+    <string name="eq_custom">Özel</string>
+    <string name="eq_bass">Bas</string>
+    <string name="eq_mid">Orta</string>
+    <string name="eq_treble">Tiz</string>
     <string name="apply_eq_to">EQ\'yu uygula</string>
     <string name="phone">Telefon</string>
     <string name="media">Medya</string>

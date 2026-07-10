@@ -1,5 +1,6 @@
 ﻿#pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <mutex>
 
@@ -8,6 +9,7 @@ namespace Propods {
 class AirPodsConnector {
 public:
     explicit AirPodsConnector(std::uint64_t address);
+    ~AirPodsConnector();
     AirPodsConnector(const AirPodsConnector&) = delete;
     AirPodsConnector& operator=(const AirPodsConnector&) = delete;
 
@@ -20,6 +22,12 @@ public:
     // Query Win32 Bluetooth API for the device's actual classic-Bluetooth
     // connection state (true = ACL link up to this PC right now).
     bool isClassicallyConnected();
+
+    // Query WinRT BluetoothDevice API for connection state. Bypasses bthserv
+    // (Bluetooth Support Service) that the Win32 BluetoothFindFirstRadio /
+    // BluetoothGetDeviceInfo path routes through. WinRT goes directly through
+    // the modern Bluetooth driver stack with less overhead.
+    bool isClassicallyConnectedWinRT();
 
     // True when at least one non-system audio session is in the Active state on
     // the AirPods render endpoint (i.e. a call, meeting, or other app is actively
@@ -58,7 +66,7 @@ public:
 
 private:
     std::uint64_t m_address;
-    std::mutex m_mutex;  // serialize connect/disconnect to avoid parallel races
+    std::mutex    m_mutex;          // serialize connect/disconnect to avoid parallel races
 };
 
 }

@@ -113,6 +113,11 @@
     <string name="volume_swipe_speed">音量滑動速度</string>
     <string name="volume_swipe_speed_description">為防止意外調整音量，請選擇滑動之間的偏好等待時間。</string>
     <string name="equalizer">等化器</string>
+    <string name="eq_recommended">推薦</string>
+    <string name="eq_custom">自訂</string>
+    <string name="eq_bass">低音</string>
+    <string name="eq_mid">中音</string>
+    <string name="eq_treble">高音</string>
     <string name="apply_eq_to">套用 EQ 至</string>
     <string name="phone">電話</string>
     <string name="media">媒體</string>

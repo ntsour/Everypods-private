@@ -112,6 +112,11 @@
     <string name="volume_swipe_speed">音量滑动速度</string>
     <string name="volume_swipe_speed_description">为防止意外的音量调整，请选择滑动之间的首选等待时间。</string>
     <string name="equalizer">均衡器</string>
+    <string name="eq_recommended">推荐</string>
+    <string name="eq_custom">自定义</string>
+    <string name="eq_bass">低音</string>
+    <string name="eq_mid">中音</string>
+    <string name="eq_treble">高音</string>
     <string name="apply_eq_to">将均衡器应用于</string>
     <string name="phone">电话</string>
     <string name="media">媒体</string>

@@ -48,6 +48,7 @@ fun AudioSettingsScreen(
                 conversationalAwarenessCapability = appState.isPremium,
                 loudSoundReductionCapability = state.capabilities.contains(io.nikos.propods.data.Capability.LOUD_SOUND_REDUCTION),
                 adaptiveAudioCapability = state.capabilities.contains(io.nikos.propods.data.Capability.ADAPTIVE_VOLUME),
+                customEqCapability = state.capabilities.contains(io.nikos.propods.data.Capability.CUSTOM_EQ),
                 adaptiveVolumeChecked = false,
                 onAdaptiveVolumeCheckedChange = {},
                 conversationalAwarenessChecked = appState.conversationalAwarenessPauseMusicEnabled,

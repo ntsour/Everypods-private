@@ -113,6 +113,11 @@
     <string name="volume_swipe_speed">Швидкість проведення пальцем для гучності</string>
     <string name="volume_swipe_speed_description">Щоб запобігти ненавмисним налаштуванням гучності, виберіть бажаний час очікування між проведеннями пальцем.</string>
     <string name="equalizer">Еквалайзер</string>
+    <string name="eq_recommended">Рекомендовано</string>
+    <string name="eq_custom">Власний</string>
+    <string name="eq_bass">Баси</string>
+    <string name="eq_mid">Середні</string>
+    <string name="eq_treble">Верхні</string>
     <string name="apply_eq_to">Застосувати EQ до</string>
     <string name="phone">Телефон</string>
     <string name="media">Медіа</string>

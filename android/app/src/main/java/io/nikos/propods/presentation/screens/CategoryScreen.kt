@@ -1115,6 +1115,7 @@ private fun AudioContent(
                 conversationalAwarenessCapability = m.capabilities.contains(Capability.CONVERSATION_AWARENESS),
                 loudSoundReductionCapability = m.capabilities.contains(Capability.LOUD_SOUND_REDUCTION),
                 adaptiveAudioCapability = m.capabilities.contains(Capability.ADAPTIVE_VOLUME),
+                customEqCapability = m.capabilities.contains(Capability.CUSTOM_EQ),
                 adaptiveVolumeChecked = state.controlStates[AACPManager.Companion.ControlCommandIdentifiers.ADAPTIVE_VOLUME_CONFIG]?.getOrNull(0) == 0x01.toByte(),
                 onAdaptiveVolumeCheckedChange = { viewModel.setControlCommandBoolean(AACPManager.Companion.ControlCommandIdentifiers.ADAPTIVE_VOLUME_CONFIG, it) },
                 conversationalAwarenessChecked = state.controlStates[AACPManager.Companion.ControlCommandIdentifiers.CONVERSATION_DETECT_CONFIG]?.getOrNull(0) == 0x01.toByte() && state.isPremium,

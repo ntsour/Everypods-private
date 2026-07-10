@@ -48,6 +48,7 @@ import android.content.pm.PackageManager
 import android.content.res.Resources
 import android.graphics.Color
 import android.media.AudioManager
+import android.media.session.MediaSessionManager
 import android.net.Uri
 import android.os.BatteryManager
 import android.os.Binder
@@ -55,6 +56,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import android.os.ParcelUuid
 import android.os.UserHandle
 import android.provider.Settings
@@ -96,6 +98,7 @@ import io.nikos.propods.bluetooth.BluetoothConnectionManager
 import io.nikos.propods.data.AirPodsInstance
 import io.nikos.propods.data.AirPodsModels
 import io.nikos.propods.data.AirPodsNotifications
+import io.nikos.propods.data.CustomEq
 import io.nikos.propods.data.Battery
 import io.nikos.propods.data.BatteryComponent
 import io.nikos.propods.data.BatteryStatus
@@ -659,12 +662,13 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
         sharedPreferences.registerOnSharedPreferenceChangeListener(this)
         startNotifListenerWatchdog()
+        startStaleNotificationCleanup()
 
         // Sync OS mic state + play confirmation sound when the user mutes/unmutes
         // from inside the VoIP app (Teams in-app button). Without this, pressing
         // the in-app button and then the stem would desync the two mute states.
         CallNotifListener.onMuteStateChanged = { muted ->
-            if (isInAnyCall()) applyMuteStateFromTeams(muted)
+            if (isInAnyCall()) applyMuteStateFromAppNotif(muted)
         }
 
         localMac = config.selfMacAddress
@@ -1279,8 +1283,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 // which triggers Android's audio policy to re-evaluate routing.
                 // During that re-evaluation the audio focus is briefly yanked
                 // and media apps (VLC, Pocket Casts, etc.) pause.
-                val bothChargingNow = batteryNotification.getBattery()[0].status == BatteryStatus.CHARGING &&
-                    batteryNotification.getBattery()[1].status == BatteryStatus.CHARGING
+                val bothChargingNow = batteryNotification.getBattery()[0].status.let { it == BatteryStatus.CHARGING || it == BatteryStatus.OPTIMIZED_CHARGING } &&
+                    batteryNotification.getBattery()[1].status.let { it == BatteryStatus.CHARGING || it == BatteryStatus.OPTIMIZED_CHARGING }
                 val prev = lastBothCharging
                 lastBothCharging = bothChargingNow
                 if (prev == null) {
@@ -1519,17 +1523,28 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             }
 
             override fun onStemPressReceived(stemPress: ByteArray) {
+                Log.d(TAG, "onStemPressReceived: raw=${stemPress.joinToString(" ") { "%02X".format(it) }}")
 
                 val (stemPressType, bud) = aacpManager.parseStemPressResponse(stemPress)
+                Log.d(TAG, "onStemPressReceived: type=$stemPressType, bud=$bud, cameraActive=$cameraActive, cameraAction=${config.cameraAction}")
 
-                Log.d(
-                    "AirPodsParser",
-                    "Stem press received: $stemPressType on $bud, cameraActive: $cameraActive, cameraAction: ${config.cameraAction}"
-                )
+                val inCall = isInAnyCall()
+                Log.d(TAG, "onStemPressReceived: isInAnyCall=$inCall")
 
-                if (isInAnyCall() && handleCallStemPress(stemPressType)) {
+                // Safety net: ensure stem config is sent whenever a call is
+                // active. For self-managed VoIP (WhatsApp) the TelephonyManager
+                // callback doesn't fire, so setupStemActions() may not have been
+                // called yet. This re-applies the config so single press is
+                // forwarded by the AirPods firmware.
+                if (inCall) {
+                    setupStemActions()
+                }
+
+                if (inCall && handleCallStemPress(stemPressType)) {
+                    Log.d(TAG, "onStemPressReceived: handled by call handler")
                     return
                 }
+                Log.d(TAG, "onStemPressReceived: falling through to normal actions")
 
                 if (stemPressType == StemPressType.SINGLE_PRESS && isAnnouncementSpeaking()) {
                     Log.d("AirPodsParser", "Single press consumed: stopping active announcement")
@@ -1627,6 +1642,17 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     Intent(AirPodsNotifications.EQ_DATA).putExtra("eqData", eqData).apply {
                         setPackage(packageName)
                     })
+            }
+
+            override fun onCustomEqReceived(customEq: CustomEq) {
+                sendBroadcast(
+                    Intent(AirPodsNotifications.CUSTOM_EQ_DATA)
+                        .putExtra("state", customEq.state)
+                        .putExtra("low",   customEq.low)
+                        .putExtra("mid",   customEq.mid)
+                        .putExtra("high",  customEq.high)
+                        .apply { setPackage(packageName) }
+                )
             }
 
             override fun onUnknownPacketReceived(packet: ByteArray) {
@@ -1829,19 +1855,34 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
      * which handles Teams and other VoIP apps that ignore HFP CHUP.
      */
     private fun handleCallStemPress(pressType: StemPressType): Boolean {
-        // Incoming ringing call: single press = answer, double press = reject
-        if (isCallRinging) {
+        val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
+        val notifRinging = CallNotifListener.isVoipNotifRinging
+        val notifActive = CallNotifListener.isVoipNotifActive
+        val voipRinging = !isCallRinging && !isInCall &&
+            (audioManager.mode == AudioManager.MODE_RINGTONE ||
+                (try { (getSystemService(TELECOM_SERVICE) as TelecomManager).isInCall } catch (_: Exception) { false } && !isVoIPCallActive))
+        val isRinging = isCallRinging || voipRinging || notifRinging
+        Log.d(TAG, "handleCallStemPress: pressType=$pressType, isCallRinging=$isCallRinging, isInCall=$isInCall, isVoIPCallActive=$isVoIPCallActive, audioMode=${audioManager.mode}, voipRinging=$voipRinging, notifRinging=$notifRinging, notifActive=$notifActive, isRinging=$isRinging")
+        if (isRinging) {
             when (pressType) {
                 StemPressType.SINGLE_PRESS -> {
-                    Log.d(TAG, "handleCallStemPress: ringing call, answering")
+                    Log.d(TAG, "handleCallStemPress: SINGLE_PRESS → answerCall() (voip=$voipRinging, notif=$notifRinging)")
                     answerCall(); return true
                 }
                 StemPressType.DOUBLE_PRESS -> {
-                    Log.d(TAG, "handleCallStemPress: ringing call, declining")
+                    Log.d(TAG, "handleCallStemPress: DOUBLE_PRESS → rejectCall() (voip=$voipRinging, notif=$notifRinging)")
                     rejectCall(); return true
                 }
-                else -> return false
+                else -> {
+                    Log.d(TAG, "handleCallStemPress: unknown press type in ringing state → returning false")
+                    return false
+                }
             }
+        }
+        // Not ringing — must be an active call to proceed with mute/end.
+        if (!isInCall && !isVoIPCallActive && !notifActive) {
+            Log.d(TAG, "handleCallStemPress: not ringing and no active call → returning false")
+            return false
         }
         // CALL_MANAGEMENT_CONFIG byte[1]: 0x02 = mute on double press (flipped), 0x03 = mute on single press (default)
         val callConfig = aacpManager.getControlCommandStatus(
@@ -1852,24 +1893,41 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             (pressType == StemPressType.DOUBLE_PRESS && muteIsDoublePress)
         val isEndCallPress = (pressType == StemPressType.DOUBLE_PRESS && !muteIsDoublePress) ||
             (pressType == StemPressType.SINGLE_PRESS && muteIsDoublePress)
+        Log.d(TAG, "handleCallStemPress: active call mute/end, pressType=$pressType, muteIsDoublePress=$muteIsDoublePress, isMutePress=$isMutePress, isEndCallPress=$isEndCallPress")
         if (isMutePress) {
+            Log.d(TAG, "handleCallStemPress: toggling mute")
             toggleMicMute()
             return true
         }
         if (isEndCallPress) {
+            Log.d(TAG, "handleCallStemPress: ending call")
             rejectCall()
             return true
         }
         return false
     }
 
+    // Tracks our own stem-press mute toggle so the resulting notification-update
+    // echo doesn't double-chime. Some VoIP apps (Teams) post the active-call
+    // notification *multiple* times in rapid succession while toggling — the
+    // notification state can even flap mute→unmute→mute→unmute within 50 ms.
+    // We must suppress ALL chime/state-apply within the echo window after our
+    // own toggle, regardless of how many notification updates arrive.
+    @Volatile private var lastSelfMuteAtMs: Long = 0L
+    private val selfMuteEchoWindowMs = 2000L
+
     private fun toggleMicMute() {
         val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
         // Use the VoIP app's notification state as the canonical source of truth.
         // If the user muted from inside the app, isMicrophoneMute may still be false
         // and we'd get the wrong toggle direction without this.
-        val wasMuted = CallNotifListener.isTeamsMuted() ?: audioManager.isMicrophoneMute
+        val wasMuted = CallNotifListener.isMuteShownByAppNotif() ?: audioManager.isMicrophoneMute
         val nowMuted = !wasMuted
+
+        // Record the toggle timestamp BEFORE setting state — so any reactive
+        // notification update (which can fire on a different thread before this
+        // method returns) already sees the echo guard armed.
+        lastSelfMuteAtMs = SystemClock.elapsedRealtime()
 
         // Hardware-level system mic mute. Cuts mic input at the audio HAL so the
         // other party hears silence even if the VoIP app's own UI shows "unmuted".
@@ -1891,21 +1949,30 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         gestureDetector?.audio?.playConfirmation(!nowMuted)
     }
 
-    /** Called when the VoIP app's in-notification mute state changes (user pressed the
-     *  in-app button). Syncs the OS mic flag so the next stem press reads the right state,
-     *  and plays the same confirmation tone as a stem press would.
+    /** Called when the watched VoIP app's in-notification mute state changes (user
+     *  pressed the in-app Mute/Unmute button). Syncs the OS mic flag so the next stem
+     *  press reads the right state, and plays the same confirmation tone as a stem
+     *  press would.
      *
-     *  If the OS mic already matches [muted] the notification update was caused by our
-     *  own stem press firing CallNotifListener.setMuted() — not by the in-app button —
-     *  so we skip the sound to avoid playing it twice. */
-    private fun applyMuteStateFromTeams(muted: Boolean) {
+     *  If [lastSelfMuteAtMs] is within [selfMuteEchoWindowMs] of now, the notification
+     *  update was caused by our own stem press firing CallNotifListener.setMuted() —
+     *  so we skip both the OS mic write AND the chime to avoid playing it twice. The
+     *  guard suppresses *all* updates within the window (some apps post 5+ flapping
+     *  notification updates per toggle), not just the first matching one. */
+    private fun applyMuteStateFromAppNotif(muted: Boolean) {
+        val now = SystemClock.elapsedRealtime()
+        val age = now - lastSelfMuteAtMs
+        if (age < selfMuteEchoWindowMs) {
+            Log.d(TAG, "applyMuteStateFromAppNotif: echo from our own stem press (muted=$muted, age=${age}ms) — skipping")
+            return
+        }
         val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
         if (audioManager.isMicrophoneMute == muted) {
-            Log.d(TAG, "applyMuteStateFromTeams: OS already in sync ($muted), skipping (stem-press echo)")
+            Log.d(TAG, "applyMuteStateFromAppNotif: OS already in sync ($muted), skipping")
             return
         }
         audioManager.setMicrophoneMute(muted)
-        Log.d(TAG, "applyMuteStateFromTeams: OS mic muted=$muted (synced from in-app button)")
+        Log.d(TAG, "applyMuteStateFromAppNotif: OS mic muted=$muted (synced from in-app button)")
         initGestureDetector()
         gestureDetector?.audio?.playConfirmation(!muted)
         if (muted) startMutedReminder() else stopMutedReminder()
@@ -2435,9 +2502,36 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     private var callNumber: String? = null
 
     private fun isInAnyCall(): Boolean {
-        if (isInCall || isCallRinging || isVoIPCallActive) return true
+        val inCall = isInCall
+        val ringing = isCallRinging
+        val voip = isVoIPCallActive
         val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
-        return audioManager.mode == AudioManager.MODE_IN_COMMUNICATION
+        val audioMode = audioManager.mode
+        val telecomInCall = try {
+            (getSystemService(TELECOM_SERVICE) as TelecomManager).isInCall
+        } catch (_: SecurityException) { false }
+        val voipNotifRinging = CallNotifListener.isVoipNotifRinging
+        val voipNotifActive = CallNotifListener.isVoipNotifActive
+        Log.d(TAG, "isInAnyCall: isInCall=$inCall, isCallRinging=$ringing, isVoIPCallActive=$voip, audioMode=$audioMode, telecomInCall=$telecomInCall, voipNotifRinging=$voipNotifRinging, voipNotifActive=$voipNotifActive")
+        if (inCall || ringing || voip) {
+            Log.d(TAG, "isInAnyCall: true (cellular/Teams)")
+            return true
+        }
+        if (audioMode == AudioManager.MODE_IN_COMMUNICATION) {
+            Log.d(TAG, "isInAnyCall: true (MODE_IN_COMMUNICATION)")
+            return true
+        }
+        if (telecomInCall) {
+            Log.d(TAG, "isInAnyCall: true (TelecomManager.isInCall)")
+            return true
+        }
+        // VoIP apps that bypass Telecom (Viber) — rely on the call-notification cache.
+        if (voipNotifRinging || voipNotifActive) {
+            Log.d(TAG, "isInAnyCall: true (CallNotifListener: ringing=$voipNotifRinging active=$voipNotifActive)")
+            return true
+        }
+        Log.d(TAG, "isInAnyCall: false")
+        return false
     }
 
     private fun initGestureDetector() {
@@ -2691,7 +2785,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     it,
                     it.METADATA_UNTETHERED_CASE_CHARGING,
                     (if (batteryNotification.getBattery()
-                            .find { it.component == BatteryComponent.CASE }?.status == BatteryStatus.CHARGING
+                            .find { it.component == BatteryComponent.CASE }?.status.let { it == BatteryStatus.CHARGING || it == BatteryStatus.OPTIMIZED_CHARGING }
                     ) "1".toByteArray() else "0".toByteArray())
                 )
                 SystemApisUtils.setMetadata(
@@ -2705,7 +2799,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     it,
                     it.METADATA_UNTETHERED_LEFT_CHARGING,
                     (if (batteryNotification.getBattery()
-                            .find { it.component == BatteryComponent.LEFT }?.status == BatteryStatus.CHARGING
+                            .find { it.component == BatteryComponent.LEFT }?.status.let { it == BatteryStatus.CHARGING || it == BatteryStatus.OPTIMIZED_CHARGING }
                     ) "1".toByteArray() else "0".toByteArray())
                 )
                 SystemApisUtils.setMetadata(
@@ -2719,7 +2813,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     it,
                     it.METADATA_UNTETHERED_RIGHT_CHARGING,
                     (if (batteryNotification.getBattery()
-                            .find { it.component == BatteryComponent.RIGHT }?.status == BatteryStatus.CHARGING
+                            .find { it.component == BatteryComponent.RIGHT }?.status.let { it == BatteryStatus.CHARGING || it == BatteryStatus.OPTIMIZED_CHARGING }
                     ) "1".toByteArray() else "0".toByteArray())
                 )
             }
@@ -2733,13 +2827,13 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         val widgetIds = appWidgetManager.getAppWidgetIds(componentName)
 
         val remoteViews = RemoteViews(packageName, R.layout.battery_widget).also { it ->
-            val openActivityIntent = PendingIntent.getActivity(
+            val reconnectIntent = PendingIntent.getService(
                 this,
                 0,
-                Intent(this, MainActivity::class.java),
+                Intent(this, AirPodsService::class.java).setAction(ACTION_WIDGET_RECONNECT),
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
-            it.setOnClickPendingIntent(R.id.battery_widget, openActivityIntent)
+            it.setOnClickPendingIntent(R.id.battery_widget, reconnectIntent)
 
             val leftBattery =
                 batteryNotification.getBattery().find { it.component == BatteryComponent.LEFT }
@@ -2756,7 +2850,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             )
             it.setViewVisibility(
                 R.id.left_charging_icon,
-                if (leftBattery?.status == BatteryStatus.CHARGING) View.VISIBLE else View.GONE
+                if (leftBattery?.status == BatteryStatus.CHARGING || leftBattery?.status == BatteryStatus.OPTIMIZED_CHARGING) View.VISIBLE else View.GONE
             )
 
             it.setTextViewText(R.id.right_battery_widget, rightBattery?.let {
@@ -2767,7 +2861,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             )
             it.setViewVisibility(
                 R.id.right_charging_icon,
-                if (rightBattery?.status == BatteryStatus.CHARGING) View.VISIBLE else View.GONE
+                if (rightBattery?.status == BatteryStatus.CHARGING || rightBattery?.status == BatteryStatus.OPTIMIZED_CHARGING) View.VISIBLE else View.GONE
             )
 
             it.setTextViewText(R.id.case_battery_widget, caseBattery?.let {
@@ -2778,7 +2872,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             )
             it.setViewVisibility(
                 R.id.case_charging_icon,
-                if (caseBattery?.status == BatteryStatus.CHARGING) View.VISIBLE else View.GONE
+                if (caseBattery?.status == BatteryStatus.CHARGING || caseBattery?.status == BatteryStatus.OPTIMIZED_CHARGING) View.VISIBLE else View.GONE
             )
 
             it.setViewVisibility(
@@ -2889,6 +2983,9 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         val a2dpConnected = try { isA2dpConnected() } catch (_: Exception) { false }
         val socketReady = ::socket.isInitialized && socket.isConnected
         if (!::socket.isInitialized && !a2dpConnected) {
+            // Nothing is actually connected — cancel any stale "connected" notification
+            // left over from a previous session (e.g. on Xiaomi where A2DP silently drops).
+            notificationManager.cancel(2)
             return
         }
         if (connected && (config.bleOnlyMode || socketReady || a2dpConnected)) {
@@ -2896,7 +2993,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             val batteryText = """${
                 batteryList?.find { it.component == BatteryComponent.LEFT }?.let {
                     if (it.status != BatteryStatus.DISCONNECTED) {
-                        "L: ${if (it.status == BatteryStatus.CHARGING) "⚡" else ""} ${it.level}%"
+                        "L: ${if (it.status == BatteryStatus.CHARGING || it.status == BatteryStatus.OPTIMIZED_CHARGING) "⚡" else ""} ${it.level}%"
                     } else {
                         ""
                     }
@@ -2904,7 +3001,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             } ${
                 batteryList?.find { it.component == BatteryComponent.RIGHT }?.let {
                     if (it.status != BatteryStatus.DISCONNECTED) {
-                        "R: ${if (it.status == BatteryStatus.CHARGING) "⚡" else ""} ${it.level}%"
+                        "R: ${if (it.status == BatteryStatus.CHARGING || it.status == BatteryStatus.OPTIMIZED_CHARGING) "⚡" else ""} ${it.level}%"
                     } else {
                         ""
                     }
@@ -2912,7 +3009,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             } ${
                 batteryList?.find { it.component == BatteryComponent.CASE }?.let {
                     if (it.status != BatteryStatus.DISCONNECTED) {
-                        "Case: ${if (it.status == BatteryStatus.CHARGING) "⚡" else ""} ${it.level}%"
+                        "Case: ${if (it.status == BatteryStatus.CHARGING || it.status == BatteryStatus.OPTIMIZED_CHARGING) "⚡" else ""} ${it.level}%"
                     } else {
                         ""
                     }
@@ -2981,6 +3078,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     private var activeCallGestureLoopRunning = false
     private var mutedReminderJob: kotlinx.coroutines.Job? = null
     private var notifListenerWatchdogJob: kotlinx.coroutines.Job? = null
+    private var staleNotificationCleanupJob: kotlinx.coroutines.Job? = null
 
     private fun startMutedReminder() {
         mutedReminderJob?.cancel()
@@ -2988,7 +3086,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             while (true) {
                 delay(15_000)
                 val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
-                if (isInAnyCall() && (CallNotifListener.isTeamsMuted() ?: audioManager.isMicrophoneMute)) {
+                if (isInAnyCall() && (CallNotifListener.isMuteShownByAppNotif() ?: audioManager.isMicrophoneMute)) {
                     gestureDetector?.audio?.playMuteReminder()
                     Log.d(TAG, "Mute reminder beep played")
                 } else {
@@ -3030,6 +3128,29 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         }
     }
 
+    /**
+     * One-shot delayed check that cancels a stale "connected" notification
+     * if the AirPods aren't actually connected after service startup.
+     *
+     * Handles the Xiaomi scenario where the notification persists from a
+     * previous session because no AIRPODS_DISCONNECTED broadcast fires
+     * (the A2DP connection silently dropped without an ACL event).
+     */
+    private fun startStaleNotificationCleanup() {
+        staleNotificationCleanupJob?.cancel()
+        staleNotificationCleanupJob = CoroutineScope(Dispatchers.Default).launch {
+            delay(10_000L) // let connections establish
+            val a2dpConnected = try { isA2dpConnected() } catch (_: Exception) { false }
+            val socketReady = ::socket.isInitialized && socket.isConnected
+            val hasSavedMac = macAddress.isNotEmpty()
+            if (hasSavedMac && !socketReady && !a2dpConnected) {
+                val notificationManager = getSystemService(NotificationManager::class.java)
+                notificationManager.cancel(2)
+                Log.d(TAG, "Stale notification cleanup: cancelled (no active connection after startup)")
+            }
+        }
+    }
+
     fun handleActiveCall() {
         if (activeCallGestureLoopRunning) {
             Log.d(TAG, "handleActiveCall: already running, skip")
@@ -3050,7 +3171,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             Log.d(TAG, "Active-call gesture detected: accepted=$accepted, inAnyCall=${isInAnyCall()}")
             if (!isInAnyCall()) return@startDetection
             val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
-            val isMuted = CallNotifListener.isTeamsMuted() ?: audioManager.isMicrophoneMute
+            val isMuted = CallNotifListener.isMuteShownByAppNotif() ?: audioManager.isMicrophoneMute
             if (!accepted) {
                 if (!isMuted) {
                     audioManager.setMicrophoneMute(true)
@@ -3091,43 +3212,133 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         }
     }
 
+    /**
+     * Dispatch a media-button KeyEvent (DOWN+UP) directly to Telecom's
+     * HeadsetMediaButton MediaSession via MediaController.dispatchMediaButtonEvent.
+     *
+     * This is the ONLY third-party-viable path to reach Telecom's call MediaSession
+     * because:
+     *   - MediaSessionService.dispatchMediaKeyEvent drops third-party callers
+     *     when a FLAG_EXCLUSIVE_GLOBAL_PRIORITY session is active (Telecom's
+     *     HeadsetMediaButton session sets that flag during calls).
+     *   - MediaController.dispatchMediaButtonEvent goes session→session via its
+     *     own binder and bypasses the global-priority gatekeeping.
+     *   - MediaSessionManager.getActiveSessions(notificationListenerCn) returns
+     *     the Telecom session as element 0 when our NLS (CallNotifListener) is
+     *     enabled by the user.
+     *
+     * Telecom routes HEADSETHOOK to CallsManager.onMediaButton(SHORT_PRESS):
+     *   - Ringing  → answers the call (any ConnectionService, including self-managed)
+     *   - Active   → ends the call
+     *
+     * @return true if the event was successfully dispatched to Telecom's controller.
+     */
+    private fun dispatchHeadsethookToTelecom(keyCode: Int = KeyEvent.KEYCODE_HEADSETHOOK): Boolean {
+        return try {
+            val msm = getSystemService(MEDIA_SESSION_SERVICE) as MediaSessionManager
+            val nlsCn = android.content.ComponentName(this, CallNotifListener::class.java)
+
+            val controllers = try {
+                msm.getActiveSessions(nlsCn)
+            } catch (se: SecurityException) {
+                Log.e(TAG, "dispatchHeadsethookToTelecom: getActiveSessions SecurityException — NLS not enabled? ${se.message}")
+                return false
+            }
+
+            val telecom = controllers.firstOrNull {
+                it.packageName == "com.android.server.telecom" ||
+                    it.packageName == "android" ||
+                    it.tag == "HeadsetMediaButton"
+            }
+            if (telecom == null) {
+                Log.w(TAG, "dispatchHeadsethookToTelecom: no Telecom session in active sessions (${controllers.size} total)")
+                controllers.forEachIndexed { i, c ->
+                    Log.d(TAG, "  [$i] pkg=${c.packageName} tag=${c.tag}")
+                }
+                return false
+            }
+
+            val now = SystemClock.uptimeMillis()
+            val down = KeyEvent(now, now, KeyEvent.ACTION_DOWN, keyCode, 0)
+            val up = KeyEvent(now, now, KeyEvent.ACTION_UP, keyCode, 0)
+            val rDown = telecom.dispatchMediaButtonEvent(down)
+            val rUp = telecom.dispatchMediaButtonEvent(up)
+            Log.d(TAG, "dispatchHeadsethookToTelecom: keyCode=$keyCode pkg=${telecom.packageName} tag=${telecom.tag} DOWN=$rDown UP=$rUp")
+            rDown && rUp
+        } catch (e: Exception) {
+            Log.e(TAG, "dispatchHeadsethookToTelecom: EXCEPTION ${e.javaClass.simpleName}: ${e.message}")
+            false
+        }
+    }
+
     private fun answerCall() {
         Log.d(TAG, "answerCall called")
+
+        // Primary path: HEADSETHOOK → Telecom's HeadsetMediaButton session.
+        // Works for cellular calls AND self-managed VoIP (WhatsApp etc.).
+        // Telecom maps a SHORT_PRESS during RINGING → answer.
+        if (dispatchHeadsethookToTelecom()) {
+            Log.d(TAG, "answerCall: dispatched to Telecom session — call should be answered")
+            islandWindow?.close()
+            return
+        }
+
+        // Fallback 1: TelecomManager.acceptRingingCall() — works for non-self-managed.
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 val telecomManager = getSystemService(TELECOM_SERVICE) as TelecomManager
                 if (checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS) == PackageManager.PERMISSION_GRANTED) {
-                    telecomManager.acceptRingingCall() // TODO: Switch to InCallService (needs CDM association)
+                    telecomManager.acceptRingingCall()
+                    Log.d(TAG, "answerCall: TelecomManager.acceptRingingCall() called")
+                } else {
+                    Log.w(TAG, "answerCall: ANSWER_PHONE_CALLS permission not granted")
                 }
-            } else {
-                val telephonyService = getSystemService(TELEPHONY_SERVICE) as TelephonyManager
-                val telephonyClass = Class.forName(telephonyService.javaClass.name)
-                val method = telephonyClass.getDeclaredMethod("getITelephony")
-                method.isAccessible = true
-                val telephonyInterface = method.invoke(telephonyService)
-                val answerCallMethod =
-                    telephonyInterface.javaClass.getDeclaredMethod("answerRingingCall")
-                answerCallMethod.invoke(telephonyInterface)
             }
-
-            sendToast("Call answered via head gesture")
         } catch (e: Exception) {
-            e.printStackTrace()
-            sendToast("Failed to answer call: ${e.message}")
-        } finally {
-            islandWindow?.close()
+            Log.w(TAG, "answerCall: TelecomManager.acceptRingingCall failed: ${e.message}")
         }
+
+        // Fallback 2: notification "Answer" action PendingIntent. Self-managed VoIP
+        // apps don't always honor this (the answer PendingIntent often launches an
+        // Activity that gets blocked from a service context), but it's harmless.
+        CallNotifListener.answerCall()
+
+        islandWindow?.close()
     }
 
     private fun rejectCall() {
         Log.d(TAG, "rejectCall called")
+
+        // Determine ringing vs active. During ringing we want to DECLINE (don't
+        // answer the call); during an active call we want to END it.
+        val telecomInCall = try {
+            (getSystemService(TELECOM_SERVICE) as TelecomManager).isInCall
+        } catch (_: Exception) { false }
+        val ringing = isCallRinging
+        val active = !ringing && (isInCall || isVoIPCallActive || telecomInCall)
+        Log.d(TAG, "rejectCall: ringing=$ringing active=$active (isCallRinging=$isCallRinging isInCall=$isInCall isVoIPCallActive=$isVoIPCallActive telecomInCall=$telecomInCall)")
+
+        if (active) {
+            // For an active call, route HEADSETHOOK to Telecom's HeadsetMediaButton
+            // session. Telecom maps SHORT_PRESS during ACTIVE → end call. This is
+            // the only third-party path that ends self-managed VoIP calls in-progress
+            // (WhatsApp, Signal, etc.).
+            if (dispatchHeadsethookToTelecom()) {
+                Log.d(TAG, "rejectCall: dispatched to Telecom session — active call should end")
+                sendToast("Call ended")
+                islandWindow?.close()
+                return
+            }
+        }
+
+        // Cellular / non-self-managed fallback: TelecomManager.endCall().
         var telecomEnded = false
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 val telecomManager = getSystemService(TELECOM_SERVICE) as TelecomManager
                 if (checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS) == PackageManager.PERMISSION_GRANTED) {
-                    telecomEnded = telecomManager.endCall() // TODO: Switch to InCallService (needs CDM association)
-                    Log.d(TAG, "telecomManager.endCall() returned $telecomEnded")
+                    telecomEnded = telecomManager.endCall()
+                    Log.d(TAG, "rejectCall: TelecomManager.endCall() returned $telecomEnded")
                 }
             } else {
                 val telephonyService = getSystemService(TELEPHONY_SERVICE) as TelephonyManager
@@ -3139,24 +3350,25 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 endCallMethod.invoke(telephonyInterface)
             }
         } catch (e: Exception) {
-            Log.w(TAG, "telecomManager.endCall failed: ${e.message}")
+            Log.w(TAG, "rejectCall: TelecomManager.endCall failed: ${e.message}")
         }
 
-        // For VoIP calls (Teams/Zoom/Meet), telecomManager.endCall() returns false
-        // because the call isn't owned by the system telecom stack. Try Teams'
-        // own Hang up notification action first; fall back to a HEADSETHOOK media
-        // key event for other VoIP apps.
         if (!telecomEnded) {
-            val teamsHandled = CallNotifListener.hangUp()
-            if (teamsHandled) {
-                Log.d(TAG, "rejectCall: ended via Teams notification action")
-                sendToast("Teams call ended")
+            // Notification actions: hangUp (Teams etc., active call) or
+            // declineCall (incoming ringing). Both are Broadcast PendingIntents
+            // and work cross-process for most VoIP apps.
+            val handled = CallNotifListener.hangUp()
+            if (handled) {
+                Log.d(TAG, "rejectCall: ended via notification hang-up action")
+                sendToast("Call ended")
             } else {
-                val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
-                audioManager.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_HEADSETHOOK))
-                audioManager.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_HEADSETHOOK))
-                Log.d(TAG, "rejectCall: dispatched HEADSETHOOK as VoIP end-call fallback")
-                sendToast("End call (VoIP)")
+                val declined = CallNotifListener.declineCall()
+                if (declined) {
+                    Log.d(TAG, "rejectCall: declined via notification decline action")
+                    sendToast("Call declined")
+                } else {
+                    Log.w(TAG, "rejectCall: no method worked — call may remain active")
+                }
             }
         } else {
             sendToast("Call ended")
@@ -3216,6 +3428,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
     @Suppress("PrivatePropertyName")
     private val ACTION_ASI_UPDATE_BLUETOOTH_DATA = "batterywidget.impl.action.update_bluetooth_data"
+    private val ACTION_WIDGET_RECONNECT = "io.nikos.propods.WIDGET_RECONNECT"
 
     @SuppressLint("MissingPermission")
     fun broadcastBatteryInformation() {
@@ -3231,8 +3444,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         )
 
         // Check charging status
-        val isLeftCharging = leftBattery?.status == BatteryStatus.CHARGING
-        val isRightCharging = rightBattery?.status == BatteryStatus.CHARGING
+        val isLeftCharging = leftBattery?.status == BatteryStatus.CHARGING || leftBattery?.status == BatteryStatus.OPTIMIZED_CHARGING
+        val isRightCharging = rightBattery?.status == BatteryStatus.CHARGING || rightBattery?.status == BatteryStatus.OPTIMIZED_CHARGING
         isLeftCharging && isRightCharging
 
         // Create arguments for vendor-specific event
@@ -3576,6 +3789,11 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             takeOver("music", manualTakeOverAfterReversed = true)
         }
 
+        if (intent?.action == ACTION_WIDGET_RECONNECT) {
+            Log.d(TAG, "widget reconnect tapped")
+            reconnectFromSavedMac()
+        }
+
         return START_STICKY
     }
 
@@ -3594,9 +3812,15 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
      * (lid-closed, unconnectable) pods simply fails and audio stays on speaker.
      */
     fun isAnyPodInEar(): Boolean {
-        // Conservative default: if no BLE data is available, assume pods might be in use
-        // so the caller proceeds rather than blocking a legitimate handover.
-        val status = bleManager.getMostRecentStatus() ?: return true
+        // If we have fresh BLE data, trust it.
+        val status = bleManager.getMostRecentStatus() ?: run {
+            // No BLE data — check whether we actually have any connection.
+            // If neither the L2CAP socket nor A2DP is up, the AirPods cannot
+            // possibly be in ear with US. This prevents false handover popups
+            // on AACP-less devices (e.g. Xiaomi) when the peer claims the pods
+            // while they're in the case.
+            return (::socket.isInitialized && socket.isConnected) || isA2dpConnected()
+        }
         return status.isLeftInEar || status.isRightInEar
     }
 
@@ -3607,8 +3831,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         val left = batt.find { it.component == BatteryComponent.LEFT }
         val right = batt.find { it.component == BatteryComponent.RIGHT }
         if (left == null || right == null) return false
-        return left.status == BatteryStatus.CHARGING &&
-            right.status == BatteryStatus.CHARGING
+        return (left.status == BatteryStatus.CHARGING || left.status == BatteryStatus.OPTIMIZED_CHARGING) &&
+            (right.status == BatteryStatus.CHARGING || right.status == BatteryStatus.OPTIMIZED_CHARGING)
     }
 
     @RequiresApi(Build.VERSION_CODES.R)
@@ -4401,8 +4625,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         // issues kRequestDisconnect — without this veto the first requester blindly wins
         // even when this device is the one actually handling the call. Music-only requests
         // are unaffected (they never call disconnectForCD while isInCall/isCallRinging).
-        if (isCallRinging || isInCall) {
-            Log.d(TAG, "Call-hold veto: ignoring REQUEST_DISCONNECT (isCallRinging=$isCallRinging, isInCall=$isInCall)")
+        if (isInAnyCall()) {
+            Log.d(TAG, "Call-hold veto: ignoring REQUEST_DISCONNECT — active call detected")
             CrossDevice.notifyConnected()   // re-assert ownership so requester doesn't hang
             return
         }
@@ -4775,6 +4999,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         startupBatteryAlertArmed = false
         notifListenerWatchdogJob?.cancel()
         notifListenerWatchdogJob = null
+        staleNotificationCleanupJob?.cancel()
+        staleNotificationCleanupJob = null
         if (checkSelfPermission("android.permission.READ_PHONE_STATE") == PackageManager.PERMISSION_GRANTED) {
             telephonyManager.unregisterTelephonyCallback(phoneStateListener)
         }

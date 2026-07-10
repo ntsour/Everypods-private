@@ -43,6 +43,7 @@ import io.nikos.propods.data.AirPodsInstance
 import io.nikos.propods.data.AirPodsModels
 import io.nikos.propods.data.AirPodsNotifications
 import io.nikos.propods.data.Battery
+import io.nikos.propods.data.CustomEq
 import io.nikos.propods.data.BatteryComponent
 import io.nikos.propods.data.BatteryStatus
 import io.nikos.propods.data.Capability
@@ -89,6 +90,8 @@ data class AirPodsUiState(
     val headGesturesMuteCall: Boolean = true,
 
     val eqData: FloatArray = floatArrayOf(),
+
+    val customEq: CustomEq = CustomEq(state = 1, low = 50, mid = 50, high = 50),
 
     val automaticEarDetectionEnabled: Boolean = true,
     val automaticConnectionEnabled: Boolean = true,
@@ -295,6 +298,16 @@ class AirPodsViewModel(
                         }
                     }
 
+                    AirPodsNotifications.CUSTOM_EQ_DATA -> {
+                        val state = intent.getIntExtra("state", 1)
+                        val low   = intent.getIntExtra("low",   50)
+                        val mid   = intent.getIntExtra("mid",   50)
+                        val high  = intent.getIntExtra("high",  50)
+                        _uiState.update {
+                            it.copy(customEq = CustomEq(state, low, mid, high))
+                        }
+                    }
+
                     AirPodsNotifications.AIRPODS_INFORMATION_UPDATED -> {
                         loadName()
                         loadInstance()
@@ -308,6 +321,7 @@ class AirPodsViewModel(
             addAction(AirPodsNotifications.AIRPODS_DISCONNECTED)
             addAction(AirPodsNotifications.BATTERY_DATA)
             addAction(AirPodsNotifications.EQ_DATA)
+            addAction(AirPodsNotifications.CUSTOM_EQ_DATA)
             addAction(AirPodsNotifications.AIRPODS_INFORMATION_UPDATED)
         }
 
@@ -777,6 +791,20 @@ class AirPodsViewModel(
 
     fun sendPhoneMediaEQ(eq: FloatArray, phoneByte: Byte, mediaByte: Byte) {
         service.aacpManager.sendPhoneMediaEQ(eq, phoneByte, mediaByte)
+    }
+
+    fun setCustomEqEnabled(enabled: Boolean) {
+        val current = _uiState.value.customEq
+        val updated = current.copy(state = if (enabled) 2 else 1)
+        _uiState.update { it.copy(customEq = updated) }
+        service.aacpManager.sendCustomEqPacket(updated)
+    }
+
+    fun setCustomEq(low: Int, mid: Int, high: Int) {
+        val current = _uiState.value.customEq
+        val updated = current.copy(low = low, mid = mid, high = high)
+        _uiState.update { it.copy(customEq = updated) }
+        service.aacpManager.sendCustomEqPacket(updated)
     }
 
     fun setLongPressAction(side: String, action: StemAction) {
