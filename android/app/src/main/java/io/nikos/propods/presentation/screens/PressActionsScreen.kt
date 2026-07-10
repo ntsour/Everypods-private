@@ -115,12 +115,19 @@ fun PressActionsScreen(viewModel: AirPodsViewModel) {
                         }
                     }
                 }
+
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Voice Assistant behavior depends on the assistant app: some (e.g. ChatGPT) may not respond to this gesture, and some require the device to be unlocked first — this is an Android platform limitation, not a bug.",
+                    style = captionStyle(dark),
+                    modifier = Modifier.padding(horizontal = 4.dp)
+                )
             } else {
                 Column(Modifier.fillMaxWidth().background(cardColor, RoundedCornerShape(18.dp)).padding(16.dp)) {
                     Text("Stem controls not available on this model.", style = captionStyle(dark))
                 }
             }
-            
+
             Spacer(Modifier.height(bottomPadding))
         }
     }
