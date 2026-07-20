@@ -23,11 +23,11 @@ android {
             keyPassword = props["RELEASE_KEY_PASSWORD"] as String
         }
     }
-    namespace = "io.nikos.propods"
+    namespace = "io.nikos.everypods"
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "io.nikos.propods"
+        applicationId = "io.nikos.everypods"
         minSdk = 33
         targetSdk = 37
         versionCode = 50
@@ -172,13 +172,13 @@ fun registerRootModuleZipTask(
     duplicatesStrategy = DuplicatesStrategy.WARN
 
     from(layout.buildDirectory.file(apkPath)) {
-        into("system/priv-app/ProPods")
-        rename { "ProPods.apk" }
+        into("system/priv-app/EveryPods")
+        rename { "EveryPods.apk" }
     }
 
     delete(layout.buildDirectory.dir("outputs/rootModuleZips"))
 
-    archiveFileName.set("ProPods-FOSS-v$appVersionName-$buildType.zip")
+    archiveFileName.set("EveryPods-FOSS-v$appVersionName-$buildType.zip")
     destinationDirectory.set(layout.buildDirectory.dir("outputs/rootModuleZips"))
 }
 
@@ -198,12 +198,12 @@ val collect = tasks.register<Copy>("collectReleaseArtifacts") {
 
     from(layout.buildDirectory.dir("outputs/apk/release")) {
         include("*.apk")
-        rename(".*", "ProPods-FOSS-v$appVersionName-release.apk")
+        rename(".*", "EveryPods-FOSS-v$appVersionName-release.apk")
     }
 
     from(layout.buildDirectory.dir("outputs/apk/debug")) {
         include("*.apk")
-        rename(".*", "ProPods-FOSS-v$appVersionName-debug.apk")
+        rename(".*", "EveryPods-FOSS-v$appVersionName-debug.apk")
     }
 
     from(layout.buildDirectory.dir("outputs/bundle/playRelease")) {

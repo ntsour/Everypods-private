@@ -13,11 +13,11 @@
 >[!IMPORTANT]
 Development paused due to lack of time until 17th May 2026 (JEE Advanced). PRs and issues might not be responded to until then.
 
-![LibrePods Banner](./imgs/banner.png)
+![EveryPods Banner](./imgs/banner.png)
 
-# What is LibrePods?
+# What is EveryPods?
 
-LibrePods unlocks Apple's exclusive AirPods features on non-Apple devices. Get access to noise control modes, adaptive transparency, ear detection, hearing aid, customized transparency mode, battery status, and more - all the premium features you paid for but Apple locked to their ecosystem.
+EveryPods unlocks Apple's exclusive AirPods features on non-Apple devices. Get access to noise control modes, adaptive transparency, ear detection, hearing aid, customized transparency mode, battery status, and more - all the premium features you paid for but Apple locked to their ecosystem.
 
 # Device Compatibility
 
@@ -76,11 +76,11 @@ https://github.com/user-attachments/assets/43911243-0576-4093-8c55-89c1db5ea533
 
 ### Root Requirement
 
-LibrePods **may** require root depending on your device/OS and what features you want access to:
+EveryPods **may** require root depending on your device/OS and what features you want access to:
 
 - Features requiring the VendorID hook ([the features marked with an asterisk here](https://github.com/kavishdevar/librepods#key-features)) will always require root regardless of your device/OS.
-- On **ColorOS/OxygenOS 16** and **Pixel devices on Android 16 QPR3** (with the latest Google Play system update), LibrePods does not need root for most features (except those requiring the VendorID hook mentioned above).
-- On other devices, LibrePods needs root because of a bug in the Android Bluetooth stack Fluoride/non-compliance of Apple with Bluetooth standards. You must have Xposed installed for the app to workaround this bug and connect to AirPods. [This issue is being tracked here](https://issuetracker.google.com/issues/371713238). Please do not comment on the issue thread. The issue has already been resolved and should be available in **Android 17** for all devices.
+- On **ColorOS/OxygenOS 16** and **Pixel devices on Android 16 QPR3** (with the latest Google Play system update), EveryPods does not need root for most features (except those requiring the VendorID hook mentioned above).
+- On other devices, EveryPods needs root because of a bug in the Android Bluetooth stack Fluoride/non-compliance of Apple with Bluetooth standards. You must have Xposed installed for the app to workaround this bug and connect to AirPods. [This issue is being tracked here](https://issuetracker.google.com/issues/371713238). Please do not comment on the issue thread. The issue has already been resolved and should be available in **Android 17** for all devices.
 
 > [!IMPORTANT]
 > This workaround with Xposed is not guaranteed to work on all devices.
@@ -136,7 +136,7 @@ A huge thank you to everyone supporting the project!
 # Alternates for other platforms:
 - CAPod - A companion app for AirPods on Android. ([play store](https://play.google.com/store/apps/details?id=eu.darken.capod) | [source code](https://github.com/d4rken-org/capod)). Use this if you're using Android version 16 QPR3 or below and are not rooted.
 - MagicPods for Steam Deck ([website](https://magicpods.app/steamdeck/))
-- MagicPods - if you're looking for "LibrePods for Windows"  ([ms store](https://apps.microsoft.com/store/detail/9P6SKKFKSHKM) [installer](https://magicpods.app/installer/MagicPods.appinstaller) | [website](https://magicpods.app/))
+- MagicPods - if you're looking for "EveryPods for Windows"  ([ms store](https://apps.microsoft.com/store/detail/9P6SKKFKSHKM) [installer](https://magicpods.app/installer/MagicPods.appinstaller) | [website](https://magicpods.app/))
 
 # Nightly/Development Builds
 
@@ -171,8 +171,8 @@ Want to try the latest features before they're officially released? You can grab
 
 # License
 
-LibrePods - AirPods liberated from Apple’s ecosystem
-Copyright (C) 2025 LibrePods contributors
+EveryPods - AirPods liberated from Apple’s ecosystem
+Copyright (C) 2025 EveryPods contributors
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by

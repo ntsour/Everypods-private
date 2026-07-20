@@ -20,5 +20,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "ProPods"
+rootProject.name = "EveryPods"
 include(":app")

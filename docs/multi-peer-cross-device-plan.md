@@ -40,7 +40,7 @@ devices, deterministic restricted topology, and a UI to see/manage all peers.
 
 ## Single-peer breaking points (inventory)
 
-Files: `app/src/main/java/io/nikos/propods/utils/CrossDevice.kt`,
+Files: `app/src/main/java/io/nikos/everypods/utils/CrossDevice.kt`,
 `…/utils/CrossDeviceClient.kt`, `…/services/AirPodsService.kt`,
 `…/presentation/viewmodel/AirPodsViewModel.kt`,
 `…/presentation/components/ConnectionSettings.kt`.
@@ -202,7 +202,7 @@ peer without dropping the others.
 
 ## On-device test log (Pixel 10 / Samsung A52s / Xiaomi 24091RPADG)
 
-Real 3-device run (multi-peer build, applicationId `io.nikos.propods.multipeer`,
+Real 3-device run (multi-peer build, applicationId `io.nikos.everypods.multipeer`,
 installed alongside stable). Because the Phase 4 UI isn't built, each device's
 `cross_device_peers` (and the AirPods `mac_address`) were seeded manually via
 `adb run-as … tee shared_prefs/settings.xml` (SELinux blocks `sh`/`cp` redirects
@@ -211,18 +211,18 @@ into app data; `tee` works).
 **Results so far:**
 - **D1 — mesh + role election: PASS.** All 3 pairs elect exactly one client, both
   sides agree, 3 live links (one device holds 2 outbound, another 2 inbound). A stray
-  Windows ProPods client is correctly rejected by the inbound filter.
+  Windows EveryPods client is correctly rejected by the inbound filter.
 - **D2 — handover (Pixel→Samsung/Xiaomi): PASS.** Audio moves + resumes.
 - **D3 — 3-device courtesy filter: PASS.** Holder DENY blocks; toggle-on GRANT
   proceeds (`replies=2/2`). Non-holder does not mis-latch the holder's DENY.
 
 **Bugs found & fixed during this run (each only surfaced with 3 real devices):**
 
-1. **Parallel-install resource crash.** Hardcoded `android.resource://io.nikos.propods/…`
+1. **Parallel-install resource crash.** Hardcoded `android.resource://io.nikos.everypods/…`
    URIs (island/popup VideoView, `resToUri`) pointed at the *stable* app under the new
    applicationId → `AppsFilter` blocked it → `VideoView.onError` → `BadTokenException`
    crash loop on any connection event. Fixed to use the runtime `packageName`. (Other
-   hardcoded `io.nikos.propods` refs remain — FileProvider/companion metadata, log
+   hardcoded `io.nikos.everypods` refs remain — FileProvider/companion metadata, log
    collection, Xposed prefs — non-crashing, mostly Xposed/root paths; cleanup deferred.)
 2. **Limited-mode holder under-reported ownership.** The keep-alive status reply used
    `isConnected()` (AACP/L2CAP only → always false on a limited device), so a limited
@@ -282,7 +282,7 @@ the deferral for a single connect when in `holders`.
 restarted peer binds the `BluetoothA2dp` proxy and does an SDP/UUID query on the AirPods
 (`ACTION_UUID` → `ACL_CONNECTED` for `…97:86`), because that peer is **bonded** to the
 AirPods (policy ALLOWED). That pages the single-source AirPods over to the restarting
-peer and displaces the current holder. ProPods then correctly declines to grab
+peer and displaces the current holder. EveryPods then correctly declines to grab
 (`skip reconnect` on both sides) — so it is **not** a steal — but the OS-level page has
 already disrupted the holder. This is latent in *any* deployment: every multi-peer peer
 is bonded to the AirPods, so a service restart (OS kill / app reopen / reboot) on a

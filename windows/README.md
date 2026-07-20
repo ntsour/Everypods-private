@@ -30,7 +30,7 @@ The resulting binary is `build/Release/LibrePods.exe`.
 ## How it works
 LibrePods talks to Android's existing `1abbb9a4-10e4-…-5471342` RFCOMM service
 using the 4-byte `CrossDevicePackets` protocol (see
-[CrossDevice.kt](../android/app/src/main/java/io/nikos/propods/utils/CrossDevice.kt)).
+[CrossDevice.kt](../android/app/src/main/java/io/nikos/everypods/utils/CrossDevice.kt)).
 Windows does not speak AACP/L2CAP to the AirPods themselves — it relies on the
 OS A2DP/HFP profiles, so the AirPods appear as a normal Bluetooth headset.
 

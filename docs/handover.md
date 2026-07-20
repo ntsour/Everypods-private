@@ -29,9 +29,9 @@ accept Xiaomi. This is the same thing that happens when you go to your phone's
 Bluetooth settings and tap "Connect" — the AirPods always accept.
 
 **5. Music resumes automatically.**
-Once the AirPods switch over and audio is routing through Xiaomi, ProPods presses
+Once the AirPods switch over and audio is routing through Xiaomi, EveryPods presses
 play on your behalf. On Xiaomi specifically, some apps (like Pocket Casts) briefly
-pause themselves when the audio device changes — ProPods watches for this and
+pause themselves when the audio device changes — EveryPods watches for this and
 presses play again automatically, for up to 15 seconds after the switch, until it's
 confident the audio has settled.
 
@@ -137,7 +137,7 @@ without OEM relaxation it may fail.
 
 | Term | Meaning |
 |---|---|
-| **AACP** | Application-Agnostic Communication Protocol — the L2CAP socket ProPods opens to the AirPods for full feature access (ownership, ANC, battery, stem config). Requires Xposed + `l2c_fcr_hook`. |
+| **AACP** | Application-Agnostic Communication Protocol — the L2CAP socket EveryPods opens to the AirPods for full feature access (ownership, ANC, battery, stem config). Requires Xposed + `l2c_fcr_hook`. |
 | **Limited-mode** | Device has no AACP socket. Only standard Bluetooth (A2DP / HFP). No ownership callbacks. Non-rooted Xiaomi is limited-mode in this project. |
 | **`BLUETOOTH_PRIVILEGED`** | Android system permission required for forced `BluetoothA2dp.disconnect()` and the strict form of `connect()`. Granted only to rooted or priv-app installs. |
 | **RFCOMM channel** | A side-channel Bluetooth serial socket between the two Android peers (UUID `1abbb9a4-10e4-4000-a75c-8953c5471342`), used to send handover coordination packets. Independent of the AirPods connection. |
@@ -163,7 +163,7 @@ unprivileged `A2DP.connect()` attempt fires).
 
 **Inbound restriction (2-device hardening).** The server accepts an inbound socket
 only when its remote MAC equals the single configured peer (`configuredPeerMac`,
-set in `CrossDevice.init`); any other bonded ProPods device dialing in is rejected
+set in `CrossDevice.init`); any other bonded EveryPods device dialing in is rejected
 and closed. Because the cross-device state is currently single-valued
 (`isAvailable`, relayed battery/ANC), a stray third device connecting would clobber
 it — restricting the server keeps the topology deterministic. (Full N-peer support

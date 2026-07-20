@@ -1,12 +1,12 @@
 # Handover Design Principles (UX intent)
 
-These principles drive the cross-device handover behavior in ProPods. They apply
+These principles drive the cross-device handover behavior in EveryPods. They apply
 to all platforms in the project (Android: Pixel/Xiaomi, Windows PC) and to all
 interaction surfaces (music, podcast, video, phone calls, Teams/Zoom/Discord/VoIP).
 
 ## Principle 1 — Follow user attention on manual action
 
-When the user **manually initiates** something on any device, ProPods should
+When the user **manually initiates** something on any device, EveryPods should
 pull the AirPods to that device and keep them there:
 - Starts music/podcast/video playback
 - Answers an incoming phone call
@@ -61,7 +61,7 @@ Two refinements that keep handover polite rather than aggressive:
 - Users carry multiple devices simultaneously (phone + tablet + PC) and expect
   audio to follow their attention without manual Bluetooth switching.
 - Apple's own ecosystem provides this via iCloud "fast device switching" between
-  Apple devices; ProPods provides equivalent behavior for Android + Windows.
+  Apple devices; EveryPods provides equivalent behavior for Android + Windows.
 
 ## How to apply
 

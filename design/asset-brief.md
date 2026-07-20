@@ -145,13 +145,13 @@ The app currently uses the system default splash (no custom theme found). Adding
 1. Save as `drawable/splash_icon.xml` (vector) or `drawable-xxxhdpi/splash_icon.png`.
 2. Add to `values/themes.xml`:
    ```xml
-   <style name="Theme.ProPods.Splash" parent="Theme.SplashScreen">
+   <style name="Theme.EveryPods.Splash" parent="Theme.SplashScreen">
        <item name="windowSplashScreenBackground">@color/splash_background</item>
        <item name="windowSplashScreenAnimatedIcon">@drawable/splash_icon</item>
-       <item name="postSplashScreenTheme">@style/Theme.ProPods</item>
+       <item name="postSplashScreenTheme">@style/Theme.EveryPods</item>
    </style>
    ```
-3. Set `Theme.ProPods.Splash` as `MainActivity`'s theme in the manifest.
+3. Set `Theme.EveryPods.Splash` as `MainActivity`'s theme in the manifest.
 
 **AI prompt**:
 ```
