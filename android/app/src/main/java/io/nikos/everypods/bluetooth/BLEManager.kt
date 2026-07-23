@@ -316,7 +316,7 @@ class BLEManager(private val context: Context) {
                         Log.d(TAG, "Lid state ${if (parsedStatus.lidOpen) "opened" else "closed"} (detected from new device)")
                     }
                 } else {
-                    if (parsedStatus != previousStatus) {
+                    if (parsedStatus.copy(lastSeen = 0L) != previousStatus.copy(lastSeen = 0L)) {
                         listener.onDeviceStatusChanged(parsedStatus, previousStatus)
                     }
 

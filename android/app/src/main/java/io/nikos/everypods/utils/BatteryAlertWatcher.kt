@@ -46,6 +46,7 @@ object BatteryAlertWatcher {
     private const val CRITICAL_LEVEL = 10
     private const val REPEAT_LEVEL = 2          // repeat time-based at or below this level
     private const val REPEAT_INTERVAL_MS = 10 * 60_000L  // 10 minutes
+    private const val MIN_ALERT_INTERVAL_MS = 30_000L    // hard floor between any two spoken alerts, any tier
 
     // Per-component state (keyed by BatteryComponent Int constant)
     private data class ComponentState(
@@ -135,6 +136,9 @@ object BatteryAlertWatcher {
         forceSpeakIfLow: Boolean
     ): Boolean {
         if (forceSpeakIfLow) return level <= threshold
+
+        if (s.lastAlertedAt != 0L && now - s.lastAlertedAt < MIN_ALERT_INTERVAL_MS) return false
+
         if (level <= REPEAT_LEVEL) {
             return now - s.lastAlertedAt >= REPEAT_INTERVAL_MS
         }

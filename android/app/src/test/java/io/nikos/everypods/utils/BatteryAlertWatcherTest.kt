@@ -165,4 +165,34 @@ class BatteryAlertWatcherTest {
 
         verify { TtsEngine.speak(any(), any(), eq("es")) }
     }
+
+    @Test
+    fun `speak does not repeat within MIN_ALERT_INTERVAL_MS even when level drops by another step`() {
+        setSystemTtsEngine()
+        setBatteryAlertsEnabled(threshold = 50)
+
+        BatteryAlertWatcher.checkAndMaybeAlert(
+            context, listOf(Battery(BatteryComponent.LEFT, 30, BatteryStatus.NOT_CHARGING)), anyBudInEar = true
+        )
+        BatteryAlertWatcher.checkAndMaybeAlert(
+            context, listOf(Battery(BatteryComponent.LEFT, 20, BatteryStatus.NOT_CHARGING)), anyBudInEar = true
+        )
+
+        verify(exactly = 1) { TtsEngine.speak(any(), any(), any()) }
+    }
+
+    @Test
+    fun `rapid successive noisy levels below threshold produce only one alert in a burst`() {
+        setSystemTtsEngine()
+        setBatteryAlertsEnabled(threshold = 40)
+
+        val jitteringLevels = listOf(9, 7, 5, 3, 9, 7, 5, 3)
+        for (level in jitteringLevels) {
+            BatteryAlertWatcher.checkAndMaybeAlert(
+                context, listOf(Battery(BatteryComponent.LEFT, level, BatteryStatus.NOT_CHARGING)), anyBudInEar = true
+            )
+        }
+
+        verify(exactly = 1) { TtsEngine.speak(any(), any(), any()) }
+    }
 }
