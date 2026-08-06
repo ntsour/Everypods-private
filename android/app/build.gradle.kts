@@ -32,7 +32,6 @@ android {
         targetSdk = 37
         versionCode = 50
         versionName = appVersionName
-        buildConfigField("String", "FLAVOR", "\"\"")
     }
     buildTypes {
         release {
@@ -125,8 +124,6 @@ dependencies {
     implementation(libs.backdrop)
 //    implementation(libs.hilt)
 //    implementation(libs.hilt.compiler)
-    compileOnly(libs.libxposed.api)
-    implementation(libs.libxposed.service)
     add("playReleaseImplementation", libs.billing)
 
     androidTestImplementation(platform(libs.androidx.compose.bom))

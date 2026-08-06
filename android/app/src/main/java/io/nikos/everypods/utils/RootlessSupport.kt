@@ -29,9 +29,8 @@ import android.os.Build
 // We trust all SDK ≥ 37 devices wholesale.
 //
 // Android 16 (SDK 36): fix was available on Pixel and OnePlus/OPPO only.
-// If a future build breaks the hook, the Xposed module itself will fail to load
-// and `XposedState.bluetoothScopeEnabled` stays false — the UI then degrades
-// cleanly.
+// Devices outside these checks fall back to limited mode: the UI stays up but
+// AACP-controlled features are greyed out while BLE-based features still work.
 fun isAacpCapable(): Boolean {
     val mfr = Build.MANUFACTURER.lowercase()
     val sdk = Build.VERSION.SDK_INT

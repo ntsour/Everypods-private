@@ -103,7 +103,6 @@ import io.nikos.everypods.data.Battery
 import io.nikos.everypods.data.BatteryComponent
 import io.nikos.everypods.data.BatteryStatus
 import io.nikos.everypods.data.StemAction
-import io.nikos.everypods.data.XposedRemotePrefProvider
 import io.nikos.everypods.data.isHeadTrackingData
 import io.nikos.everypods.presentation.overlays.IslandType
 import io.nikos.everypods.presentation.overlays.IslandWindow
@@ -677,26 +676,6 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 val bluetoothManager = getSystemService(BluetoothManager::class.java)
                 val bluetoothAdapter = bluetoothManager.adapter
                 localMac = bluetoothAdapter.address
-            } else {
-                localMac = try {
-                    val process = Runtime.getRuntime().exec(
-                        arrayOf("su", "-c", "settings get secure bluetooth_address")
-                    )
-
-                    val exitCode = process.waitFor()
-
-                    if (exitCode == 0) {
-                        process.inputStream.bufferedReader().use { it.readLine()?.trim().orEmpty() }
-                    } else {
-                        ""
-                    }
-                } catch (e: Exception) {
-                    Log.e(
-                        TAG,
-                        "Error retrieving local MAC address: ${e.message}. We probably aren't rooted."
-                    )
-                    ""
-                }
             }
             config.selfMacAddress = localMac
             sharedPreferences.edit {
@@ -2676,13 +2655,6 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     @OptIn(ExperimentalMaterial3Api::class)
     private fun showSocketConnectionFailureNotification(errorMessage: String) {
         return // something causes too many notifications. turning off for now
-        if (BuildConfig.FLAVOR != "xposed") {
-            Log.w(
-                TAG,
-                "Not showing socket error notification to user, the service shouldn't be running if it isn't supported."
-            )
-            return
-        }
         val notificationManager = getSystemService(NotificationManager::class.java)
 
         val notificationIntent = Intent(this, MainActivity::class.java)
@@ -3863,8 +3835,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         // ── In-case gate ──────────────────────────────────────────────────────────
         // If both pods are sitting in the case, never force an A2DP connection —
         // that would yank audio off the phone speaker onto silent in-case pods and
-        // interrupt playback. Placed before the Xposed branch so it covers every
-        // takeOver path. Auto-move on wear is handled separately by
+        // interrupt playback. Auto-move on wear is handled separately by
         // processEarDetectionChange() once a pod is actually placed in an ear.
         if (takingOverFor != "reverse" && areBothPodsInCase()) {
             Log.d(TAG, "takeOver: both AirPods are in the case — staying on current output, no connect")
@@ -3883,72 +3854,6 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         // Reason-agnostic intent stamp (music, call, …) for the X1 autonomous-connect
         // guard. Distinct from lastMusicTakeoverMs so call takeovers are covered too.
         lastTakeoverIntentMs = System.currentTimeMillis()
-
-        // ── Local hijack via Xposed (power-user path) ─────────────────────────────
-        // Only kept for users with `vendor_id_hook` set — the hijack uses AACP-level
-        // OWNS_CONNECTION / HijackRequest, which requires the Xposed vendor-id spoof
-        // to be effective. The historical non-Xposed bail was the root cause of
-        // "press play 2-3 times before handover" — see plan: stale AACP sockets made
-        // every press silently no-op. Non-Xposed users now fall through to the
-        // pure-A2DP path below.
-        val socketReady = ::socket.isInitialized && socket.isConnected
-        val hasXposedHook = XposedRemotePrefProvider.create().getBoolean("vendor_id_hook", false)
-        if (socketReady && hasXposedHook && ownsConnection != 0) {
-            if (aacpManager.getControlCommandStatus(AACPManager.Companion.ControlCommandIdentifiers.OWNS_CONNECTION)?.value[0]?.toInt() != 1 || (aacpManager.audioSource?.mac != localMac && aacpManager.audioSource?.type != AACPManager.Companion.AudioSourceType.NONE)) {
-                if (disconnectedBecauseReversed) {
-                    if (manualTakeOverAfterReversed) {
-                        Log.d(TAG, "forcefully taking over despite reverse as user requested")
-                        disconnectedBecauseReversed = false
-                    } else {
-                        Log.d(TAG, "connected locally, but can not hijack as other device had reversed")
-                        return
-                    }
-                }
-
-                Log.d(TAG, "already connected locally, hijacking connection by asking AirPods")
-                aacpManager.sendControlCommand(
-                    AACPManager.Companion.ControlCommandIdentifiers.OWNS_CONNECTION.value, 1
-                )
-                aacpManager.sendMediaInformataion(localMac)
-                aacpManager.sendSmartRoutingShowUI(localMac)
-                aacpManager.sendHijackRequest(localMac)
-
-                if (takingOverFor == "music" && macAddress.isNotEmpty()) {
-                    MediaController.armPendingMusicTakeover(macAddress)
-                }
-                connectAudio(this, device)
-                showIsland(
-                    this,
-                    batteryNotification.getBattery()
-                        .find { it.component == BatteryComponent.LEFT }?.level!!.coerceAtMost(
-                            batteryNotification.getBattery()
-                                .find { it.component == BatteryComponent.RIGHT }?.level!!
-                        ),
-                    IslandType.CONNECTED
-                )
-
-                CoroutineScope(Dispatchers.IO).launch {
-                    delay(500)
-                    if (takingOverFor == "music") {
-                        Log.d(TAG, "Resuming music after taking control")
-                        MediaController.sendPlay(replayWhenPaused = true)
-                    } else if (startHeadTrackingAgain) {
-                        Log.d(TAG, "Starting head tracking again after taking control")
-                        Handler(Looper.getMainLooper()).postDelayed({
-                            startHeadTracking()
-                        }, 500)
-                    }
-                    delay(1000)
-                    if (takingOverFor == "music") {
-                        Log.d(TAG, "resuming again just in case")
-                        MediaController.sendPlay(force = true)
-                    }
-                }
-            } else {
-                Log.d(TAG, "Already connected locally and already own connection, skipping takeover")
-            }
-            return
-        }
 
         // ── Gates (ear detection, takeover toggles) ───────────────────────────────
         // These are the only "should we do anything" checks. Everything past this
@@ -4363,12 +4268,6 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             BluetoothConnectionManager.publishState(
                 io.nikos.everypods.bluetooth.connection.ConnectionState.Handshaking(attemptId)
             )
-
-            val xposedRemotePref = XposedRemotePrefProvider.create()
-            if (xposedRemotePref.getBoolean("vendor_id_hook", false)) {
-                attManager = ATTManager(adapter, device)
-                attManager!!.connect()
-            }
 
             // Create AirPodsInstance from stored config if available
             if (airpodsInstance == null && config.airpodsModelNumber.isNotEmpty()) {

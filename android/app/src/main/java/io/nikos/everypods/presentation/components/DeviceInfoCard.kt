@@ -28,7 +28,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.nikos.everypods.R
-import io.nikos.everypods.utils.XposedState
 
 @Composable
 fun DeviceInfoCard() {
@@ -166,62 +165,6 @@ fun DeviceInfoCard() {
                 Text(
                     text = Build.ID + " (${Build.VERSION.SDK_INT_FULL})",
                     style = TextStyle(
-                        fontSize = 16.sp,
-                        color = if (isDarkTheme) Color.White.copy(alpha = 0.6f) else Color.Black.copy(
-                            alpha = 0.8f
-                        ),
-                        fontFamily = FontFamily(Font(R.font.sf_pro))
-                    )
-                )
-            }
-            HorizontalDivider(
-                thickness = 1.dp,
-                color = Color(0x40888888),
-                modifier = Modifier.padding(horizontal = 12.dp)
-            )
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                Text(
-                    text = stringResource(R.string.xposed_available), style = TextStyle(
-                        fontSize = 16.sp,
-                        color = textColor,
-                        fontFamily = FontFamily(Font(R.font.sf_pro))
-                    )
-                )
-                Text(
-                    text = if (XposedState.isAvailable) stringResource(R.string.yes) else stringResource(R.string.no), style = TextStyle(
-                        fontSize = 16.sp,
-                        color = if (isDarkTheme) Color.White.copy(alpha = 0.6f) else Color.Black.copy(
-                            alpha = 0.8f
-                        ),
-                        fontFamily = FontFamily(Font(R.font.sf_pro))
-                    )
-                )
-            }
-            HorizontalDivider(
-                thickness = 1.dp,
-                color = Color(0x40888888),
-                modifier = Modifier.padding(horizontal = 12.dp)
-            )
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                Text(
-                    text = stringResource(R.string.app_enabled_in_xposed), style = TextStyle(
-                        fontSize = 16.sp,
-                        color = textColor,
-                        fontFamily = FontFamily(Font(R.font.sf_pro))
-                    )
-                )
-                Text(
-                    text = if (XposedState.bluetoothScopeEnabled) stringResource(R.string.yes) else stringResource(R.string.no), style = TextStyle(
                         fontSize = 16.sp,
                         color = if (isDarkTheme) Color.White.copy(alpha = 0.6f) else Color.Black.copy(
                             alpha = 0.8f

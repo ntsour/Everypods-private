@@ -199,40 +199,6 @@ fun PurchaseScreen(
                             )
                         )
                     }
-                    if (BuildConfig.FLAVOR == "xposed") {
-                        HorizontalDivider(
-                            thickness = 1.dp,
-                            color = Color(0x40888888),
-                            modifier = Modifier
-                                .padding(horizontal = 12.dp)
-                        )
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 4.dp),
-                            verticalArrangement = Arrangement.spacedBy(2.dp)
-                        ) {
-                            Text(
-                                text = stringResource(R.string.hearing_aid) + " (" + stringResource(
-                                    R.string.requires_xposed
-                                ) + ")",
-                                style = TextStyle(
-                                    fontSize = 16.sp,
-                                    fontWeight = FontWeight.Normal,
-                                    fontFamily = FontFamily(Font(R.font.sf_pro)),
-                                    color = textColor
-                                )
-                            )
-                            Text(
-                                text = stringResource(R.string.hearing_aid_description).split("\n\n")[0],
-                                style = TextStyle(
-                                    fontSize = 12.sp,
-                                    color = textColor.copy(0.6f),
-                                    fontFamily = FontFamily(Font(R.font.sf_pro)),
-                                )
-                            )
-                        }
-                    }
                 }
 
                 Spacer(modifier = Modifier.height(24.dp))

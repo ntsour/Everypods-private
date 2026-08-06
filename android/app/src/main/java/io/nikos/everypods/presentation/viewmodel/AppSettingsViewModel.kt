@@ -11,7 +11,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import io.nikos.everypods.billing.BillingManager
-import io.nikos.everypods.data.XposedRemotePrefProvider
 import io.nikos.everypods.services.ServiceManager
 import kotlin.math.roundToInt
 
@@ -32,7 +31,6 @@ data class AppSettingsUiState(
     val showCameraDialog: Boolean = false,
     val cameraPackageValue: String = "",
     val cameraPackageError: String? = null,
-    val vendorIdHook: Boolean = false,
     val isPremium: Boolean = false,
     val connectionSuccessful: Boolean = false,
     val showBottomSheetPopup: Boolean = false,
@@ -44,8 +42,6 @@ class AppSettingsViewModel(application: Application) : AndroidViewModel(applicat
 
     private val _uiState = MutableStateFlow(AppSettingsUiState())
     val uiState = _uiState.asStateFlow()
-
-    private val xposedRemotePref = XposedRemotePrefProvider.create()
 
     val sharedPrefListener = SharedPreferences.OnSharedPreferenceChangeListener { sharedPref, key ->
         if (key == "connection_successful") {
@@ -90,7 +86,6 @@ class AppSettingsViewModel(application: Application) : AndroidViewModel(applicat
                 useAlternateHeadTrackingPackets = sharedPreferences.getBoolean("use_alternate_head_tracking_packets", true),
                 conversationalAwarenessVolume = sharedPreferences.getInt("conversational_awareness_volume", 43).toFloat(),
                 cameraPackageValue = sharedPreferences.getString("custom_camera_package", "") ?: "",
-                vendorIdHook = xposedRemotePref.getBoolean("vendor_id_hook", false),
                 connectionSuccessful = sharedPreferences.getBoolean("connection_successful", false),
                 showBottomSheetPopup = sharedPreferences.getBoolean("show_bottom_sheet_popup", false),
                 showIslandPopup = sharedPreferences.getBoolean("show_island_popup", true)
@@ -183,11 +178,6 @@ class AppSettingsViewModel(application: Application) : AndroidViewModel(applicat
             sharedPreferences.edit { putString("custom_camera_package", _uiState.value.cameraPackageValue) }
         }
         setShowCameraDialog(false)
-    }
-
-    fun setVendorIdHook(enabled: Boolean) {
-        xposedRemotePref.putBoolean("vendor_id_hook", enabled)
-        _uiState.update { it.copy(vendorIdHook = enabled) }
     }
 
     fun setShowBottomSheetPopup(enabled: Boolean) {

@@ -120,7 +120,6 @@ import kotlinx.coroutines.launch
 import io.nikos.everypods.BuildConfig
 import io.nikos.everypods.R
 import io.nikos.everypods.bluetooth.AACPManager
-import io.nikos.everypods.bluetooth.ATTHandles
 import io.nikos.everypods.data.AirPodsPro3
 import io.nikos.everypods.data.Capability
 import io.nikos.everypods.data.StemAction
@@ -154,11 +153,9 @@ import io.nikos.everypods.presentation.viewmodel.AppSettingsViewModel
 import io.nikos.everypods.services.AppListenerService
 import io.nikos.everypods.utils.SleepTimer
 import io.nikos.everypods.utils.SmartFeaturesPrefs
-import io.nikos.everypods.utils.XposedState
 import kotlin.io.encoding.ExperimentalEncodingApi
 
 // ─── Design tokens ───────────────────────────────────────────────────────────
-internal val RootOrange          = Color(0xFFFF9500)
 internal const val DisabledAlpha = 0.45f
 internal val SfPro get()         = FontFamily(Font(R.font.sf_pro))
 
@@ -191,13 +188,10 @@ private fun buildSearchIndex(): List<SearchableItem> = listOf(
     SearchableItem("Gym Mode",                 "Smart Features", "smart", "category/smart", anchor = "gym_mode", keywords = listOf("workout", "fitness", "stem", "timer")),
     SearchableItem("Gym Press Actions",        "AirPods Controls", "controls", "gym_press_actions", keywords = listOf("workout", "fitness", "stem")),
     // AirPods Settings
-    SearchableItem("Customize Transparency Mode", "AirPods Settings", "settings", "transparency_customization", keywords = listOf("transparency", "customize", "anc", "adaptive")),
     SearchableItem("Device Name",              "AirPods Settings", "settings", "rename", keywords = listOf("rename", "bluetooth name")),
-    SearchableItem("Hearing Aid",              "AirPods Settings", "settings", "hearing_aid", keywords = listOf("amplification", "audiogram")),
     SearchableItem("Hearing Protection",       "AirPods Settings", "settings", "hearing_protection", keywords = listOf("ppe", "loud sound")),
-    SearchableItem("Loud Sound Reduction",     "AirPods Settings", "settings", "hearing_protection", keywords = listOf("volume limit", "ppe")),
     SearchableItem("Conversation Awareness",   "AirPods Settings", "settings", "conversation_awareness", keywords = listOf("speak", "talk", "auto pause", "auto volume")),
-    SearchableItem("Disconnect",               "AirPods Settings", "settings", "bluetooth_control", keywords = listOf("bluetooth", "root", "turn off")),
+    SearchableItem("Disconnect",               "AirPods Settings", "settings", "bluetooth_control", keywords = listOf("bluetooth", "turn off")),
     // Smart Features
     SearchableItem("Notification Announcements", "Smart Features", "smart", "notification_announcements", keywords = listOf("tts", "read", "speak", "siri")),
     SearchableItem("Find my Case",             "Smart Features", "smart", "proximity_finder", keywords = listOf("locate", "nearby", "radar")),
@@ -215,7 +209,6 @@ private fun buildSearchIndex(): List<SearchableItem> = listOf(
     SearchableItem("Pop-up Animations",        "App Settings", "appsettings", "popup_animations", keywords = listOf("animation", "connect")),
     SearchableItem("Bottom Sheet Popup",       "App Settings", "appsettings", "popup_animations", keywords = listOf("animation", "connect")),
     SearchableItem("Dynamic Island Popup",     "App Settings", "appsettings", "popup_animations", keywords = listOf("animation", "island", "connect")),
-    SearchableItem("Act as Apple Device",      "App Settings", "appsettings", "xposed_settings", keywords = listOf("xposed", "vendor id", "apple", "hook")),
     SearchableItem("Permissions",              "App Settings", "appsettings", "permissions", keywords = listOf("access", "grant")),
     SearchableItem("Background Activity",      "App Settings", "appsettings", "category/appsettings", keywords = listOf("battery", "optimization", "unrestricted", "background")),
     SearchableItem("Connect When Disconnected","App Settings", "appsettings", "app_settings", keywords = listOf("takeover", "auto connect", "airpods disconnected")),
@@ -234,7 +227,6 @@ private fun buildSearchIndex(): List<SearchableItem> = listOf(
     SearchableItem("Microphone Settings",      "Audio & Connection", "audio", "microphone_settings", keywords = listOf("mic", "microphone mode")),
     SearchableItem("Connection Settings",      "Audio & Connection", "audio", "connection_settings", keywords = listOf("auto connect", "bluetooth")),
     // Help
-    SearchableItem("Troubleshooting",          "Help & Troubleshooting", "help", "troubleshooting", keywords = listOf("fix", "debug", "problem")),
     SearchableItem("Open Source Licenses",     "Help & Troubleshooting", "help", "open_source_licenses", keywords = listOf("license", "credits")),
     SearchableItem("Version Info",             "Help & Troubleshooting", "help", "version_info", keywords = listOf("about", "app version")),
     SearchableItem("Email Support",            "Help & Troubleshooting", "help", "email_support", keywords = listOf("contact")),
@@ -312,34 +304,6 @@ internal fun MenuNavRow(
         Text("  ›", style = TextStyle(fontSize = 20.sp, fontFamily = SfPro,
             color = if (dark) Color.White.copy(0.35f) else Color.Black.copy(0.35f)))
     }
-}
-
-internal val XposedOrange = Color(0xFFFF9500)
-
-@Composable
-internal fun XposedRequiredBanner(dark: Boolean) = Row(
-    Modifier.fillMaxWidth()
-        .background(if (dark) Color(0xFF2C2C2E) else Color(0xFFFFF3E0), RoundedCornerShape(12.dp))
-        .padding(horizontal = 14.dp, vertical = 10.dp),
-    horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Top
-) {
-    Text("⚠", style = TextStyle(fontSize = 14.sp, fontFamily = SfPro, color = XposedOrange))
-    Text(
-        "Requires the Xposed module with \"Act as Apple device\" enabled in App Settings.",
-        style = TextStyle(fontSize = 13.sp, fontFamily = SfPro, color = XposedOrange)
-    )
-}
-
-@Composable
-internal fun RootRequiredBanner(dark: Boolean) = Row(
-    Modifier.fillMaxWidth()
-        .background(if (dark) Color(0xFF2C2C2E) else Color(0xFFFFF3E0), RoundedCornerShape(12.dp))
-        .padding(horizontal = 14.dp, vertical = 10.dp),
-    horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Top
-) {
-    Text("􀎠", style = TextStyle(fontSize = 15.sp, fontFamily = SfPro, color = RootOrange))
-    Text("Requires device root. Bluetooth profile switching is not available without it.",
-        style = TextStyle(fontSize = 13.sp, fontFamily = SfPro, color = RootOrange))
 }
 
 @Composable
@@ -568,9 +532,8 @@ fun AirPodsSettingsScreen(
                                 "\nMODEL: ${Build.MODEL} (${Build.PRODUCT})" +
                                 "\nDISPLAY: ${Build.DISPLAY}" +
                                 "\nSDK: ${Build.VERSION.SDK_INT_FULL}" +
-                                "\nXposed: ${XposedState.isAvailable}/${XposedState.bluetoothScopeEnabled}" +
                                 "\nVERSION: ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})" +
-                                "\nFLAVOR: ${BuildConfig.FLAVOR} ${BuildConfig.BUILD_TYPE}")
+                                "\nBUILD_TYPE: ${BuildConfig.BUILD_TYPE}")
                         }
                         context.startActivity(intent)
                         subjectState.clearText(); descriptionState.clearText()
@@ -690,12 +653,6 @@ private fun ConnectedScreen(
                     io.nikos.everypods.presentation.components.RequiresAacpIcon()
                 }
             }
-        }
-
-        // ── Transparency (Xposed-only) ────────────────────────────────────
-        if (capabilities.contains(Capability.LISTENING_MODE) && state.vendorIdHook) {
-            Spacer(Modifier.height(8.dp))
-            NavigationButton(to = "transparency_customization", name = stringResource(R.string.customize_transparency_mode), navController = navController)
         }
 
         // ── Upgrade banner ────────────────────────────────────────────────
@@ -975,18 +932,6 @@ private fun DisconnectedScreen(
                 Text("Locate your AirPods using Bluetooth signal proximity.", style = TextStyle(fontSize = 14.sp, fontFamily = SfPro, color = textColor.copy(0.55f)))
                 StyledButton(onClick = { navController.navigate("proximity_finder") }, backdrop = backdrop, modifier = Modifier.fillMaxWidth()) {
                     Text("Find Nearby", style = TextStyle(fontSize = 16.sp, fontWeight = FontWeight.Medium, fontFamily = SfPro, color = textColor))
-                }
-            }
-        }
-
-        if (!BuildConfig.PLAY_BUILD) {
-            item(key = "troubleshooting") {
-                Column(Modifier.fillMaxWidth().background(cardBg, RoundedCornerShape(18.dp)).padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text("Troubleshooting", style = TextStyle(fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = textColor.copy(0.6f), fontFamily = SfPro))
-                    Text("Can't reconnect? Get help with common connection issues.", style = TextStyle(fontSize = 14.sp, fontFamily = SfPro, color = textColor.copy(0.55f)))
-                    StyledButton(onClick = { navController.navigate("troubleshooting") }, backdrop = backdrop, modifier = Modifier.fillMaxWidth()) {
-                        Text(stringResource(R.string.troubleshooting), style = TextStyle(fontSize = 16.sp, fontWeight = FontWeight.Medium, fontFamily = SfPro, color = textColor))
-                    }
                 }
             }
         }

@@ -46,16 +46,12 @@ fun AudioSettingsScreen(
                 navController = navController,
                 adaptiveVolumeCapability = false,
                 conversationalAwarenessCapability = appState.isPremium,
-                loudSoundReductionCapability = state.capabilities.contains(io.nikos.everypods.data.Capability.LOUD_SOUND_REDUCTION),
                 adaptiveAudioCapability = state.capabilities.contains(io.nikos.everypods.data.Capability.ADAPTIVE_VOLUME),
                 customEqCapability = state.capabilities.contains(io.nikos.everypods.data.Capability.CUSTOM_EQ),
                 adaptiveVolumeChecked = false,
                 onAdaptiveVolumeCheckedChange = {},
                 conversationalAwarenessChecked = appState.conversationalAwarenessPauseMusicEnabled,
                 onConversationalAwarenessCheckedChange = appSettingsViewModel::setConversationalAwarenessPauseMusicEnabled,
-                loudSoundReductionChecked = state.loudSoundReductionEnabled,
-                onLoudSoundReductionCheckedChange = { if (it) viewModel.setATTCharacteristicValue(io.nikos.everypods.bluetooth.ATTHandles.LOUD_SOUND_REDUCTION, byteArrayOf(1)) else viewModel.setATTCharacteristicValue(io.nikos.everypods.bluetooth.ATTHandles.LOUD_SOUND_REDUCTION, byteArrayOf(0)) },
-                vendorIdHook = state.vendorIdHook,
                 isPremium = state.isPremium,
                 aacpAvailable = state.aacpAvailable
             )

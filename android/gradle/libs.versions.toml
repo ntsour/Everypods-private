@@ -17,7 +17,6 @@ materialIconsCore = "1.7.8"
 backdrop = "2.0.0-alpha03"
 billing = "8.3.0"
 hilt = "2.59.2"
-xposed = "101.0.0"
 lifecycleProcess = "2.10.0"
 
 [libraries]
@@ -46,8 +45,6 @@ backdrop = { group = "io.github.kyant0", name = "backdrop", version.ref = "backd
 billing = { group = "com.android.billingclient", name = "billing-ktx", version.ref = "billing" }
 hilt = { group = "com.google.dagger", name = "hilt-android", version.ref = "hilt" }
 hilt-compiler = { group = "com.google.dagger", name = "hilt-compiler", version.ref = "hilt" }
-libxposed-api = { group = "io.github.libxposed", name = "api", version.ref = "xposed" }
-libxposed-service = { group = "io.github.libxposed", name = "service", version.ref = "xposed" }
 androidx-lifecycle-process = { group = "androidx.lifecycle", name = "lifecycle-process", version.ref = "lifecycleProcess" }
 
 [plugins]

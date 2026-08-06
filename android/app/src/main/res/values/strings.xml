@@ -64,11 +64,6 @@
     <string name="ear_detection">Automatic Ear Detection</string>
     <string name="auto_play">Auto Play</string>
     <string name="auto_pause">Auto Pause</string>
-    <string name="troubleshooting">Troubleshooting</string>
-    <string name="troubleshooting_description">Collect logs to diagnose issues with AirPods connection</string>
-    <string name="collect_logs">Collect Logs</string>
-    <string name="saved_logs">Saved Logs</string>
-    <string name="no_logs_found">No saved logs found</string>
     <string name="takeover_header">Auto-Connect preferences</string>
     <string name="takeover_airpods_state">Allow your AirPods to move to another device when:</string>
     <string name="takeover_disconnected">Disconnected</string>
@@ -85,9 +80,6 @@
     <string name="takeover_media_start">Starting media playback</string>
     <string name="takeover_media_start_desc">Your phone starts playing media</string>
     <string name="undo">Undo</string>
-    <string name="customize_transparency_mode_description">You can customize Transparency mode for your AirPods Pro to help you hear what\'s around you.</string>
-    <string name="loud_sound_reduction_description">Loud Sound Reduction can actively reduce your exposure to loud environmental noises when in Transparency and Adaptive mode. Loud Sound Reduction is not active in Off mode.</string>
-    <string name="loud_sound_reduction">Loud Sound Reduction</string>
     <string name="call_controls">Call Controls</string>
     <string name="automatically_connect">Connect to this device automatically</string>
     <string name="automatically_connect_description">When enabled, AirPods will try to connect to this device automatically. Else, they will try to autoconnect only when last connected.</string>
@@ -104,12 +96,6 @@
     <string name="hang_up">Hang Up</string>
     <string name="press_once">Press Once</string>
     <string name="press_twice">Press Twice</string>
-    <string name="hearing_aid">Hearing Aid</string>
-    <string name="adjustments">Adjustments</string>
-    <string name="swipe_to_control_amplification">Swipe to control amplification</string>
-    <string name="swipe_amplification_description">When in Transparency and no media is playing, swipe up and down on the Touch controls of your AirPods Pro to increase or decrease the amplification of environmental sounds.</string>
-    <string name="transparency_mode">Transparency Mode</string>
-    <string name="customize_transparency_mode">Customize Transparency Mode</string>
     <string name="press_speed">Press Speed</string>
     <string name="press_speed_description">Adjust the speed required to press two or three times on your AirPods.</string>
     <string name="press_and_hold_duration">Press and Hold Duration</string>
@@ -122,30 +108,11 @@
      <string name="eq_bass">Bass</string>
      <string name="eq_mid">Mid</string>
      <string name="eq_treble">Treble</string>
-     <string name="apply_eq_to">Apply EQ to</string>
-    <string name="phone">Phone</string>
-    <string name="media">Media</string>
-    <string name="band_label">Band %d</string>
     <string name="default_option">Default</string>
     <string name="slower">Slower</string>
     <string name="slowest">Slowest</string>
     <string name="longer">Longer</string>
     <string name="longest">Longest</string>
-    <string name="darker">Darker</string>
-    <string name="brighter">Brighter</string>
-    <string name="less">Less</string>
-    <string name="more">More</string>
-    <string name="amplification">Amplification</string>
-    <string name="balance">Balance</string>
-    <string name="tone">Tone</string>
-    <string name="ambient_noise_reduction">Ambient Noise Reduction</string>
-    <string name="conversation_boost">Conversation Boost</string>
-    <string name="conversation_boost_description">Conversation Boost focuses your AirPods Pro on the person talking in front of you, making it easier to hear in a face-to-face conversation.</string>
-    <string name="hearing_aid_description">AirPods can use the results of a hearing test to make adjustments that improve the clarity of voices and sounds around you.\n\nHearing Aid is only intended for people with perceived mild to moderate hearing loss.</string>
-    <string name="media_assist">Media Assist</string>
-    <string name="media_assist_description">AirPods Pro can use the results of a hearing test to make adjustments that improve the clarity of music, video, and calls.</string>
-    <string name="adjust_media">Adjust Music and Video</string>
-    <string name="adjust_calls">Adjust Calls</string>
     <string name="widget">Widget</string>
     <string name="show_phone_battery_in_widget">Show phone battery in widget</string>
     <string name="show_phone_battery_in_widget_description">Display your phone\'s battery level in the widget alongside AirPods battery</string>
@@ -165,27 +132,8 @@
     <string name="advanced_options">Advanced Options</string>
     <string name="set_identity_resolving_key">Set Identity Resolving Key (IRK)</string>
     <string name="set_identity_resolving_key_description">Manually set the IRK value used for resolving BLE random addresses</string>
-    <string name="set_encryption_key">Set Encryption Key</string>
-    <string name="set_encryption_key_description">Manually set the ENC_KEY value used for decrypting BLE advertisements</string>
     <string name="use_alternate_head_tracking_packets">Use alternate head tracking packets</string>
     <string name="use_alternate_head_tracking_packets_description">Enable this if head tracking doesn\'t work for you. This sends different data to AirPods for requesting/stopping head tracking data.</string>
-    <string name="act_as_an_apple_device">Act as an Apple device</string>
-    <string name="act_as_an_apple_device_description">Enables multi-device connectivity and Accessibility features like customizing transparency mode (amplification, tone, ambient noise reduction, conversation boost, and EQ)</string>
-    <string name="act_as_an_apple_device_warning">Might be unstable!! A maximum of two devices can be connected to your AirPods. If you are using with an Apple device like an iPad or Mac, then please connect that device first and then your Android.</string>
-    <string name="reset_hook_offset">Reset Hook Offset</string>
-    <string name="reset_hook_offset_description">This will clear the current hook offset and require you to go through the setup process again. Are you sure you want to continue?</string>
-    <string name="reset">Reset</string>
-    <string name="hook_offset_reset_success">Hook offset has been reset. Redirecting to setup...</string>
-    <string name="hook_offset_reset_failure">Failed to reset hook offset</string>
-    <string name="irk_set_success">IRK has been set successfully</string>
-    <string name="encryption_key_set_success">Encryption key has been set successfully</string>
-    <string name="irk_hex_value">IRK Hex Value</string>
-    <string name="enc_key_hex_value">ENC_KEY Hex Value</string>
-    <string name="enter_irk_hex">Enter 16-byte IRK as hex string (32 characters):</string>
-    <string name="enter_enc_key_hex">Enter 16-byte ENC_KEY as hex string (32 characters):</string>
-    <string name="must_be_32_hex_chars">Must be exactly 32 hex characters</string>
-    <string name="error_converting_hex">Error converting hex:</string>
-    <string name="found_offset_restart_bluetooth">Please restart the Bluetooth process</string>
     <string name="digital_assistant">Digital Assistant</string>
     <string name="on">On</string>
     <string name="camera_remote">Camera Remote</string>
@@ -199,16 +147,8 @@
     <string name="app_listener_service_label">Camera listener</string>
     <string name="app_listener_service_description">Listener service for EveryPods to detect when the camera is active to activate camera control on AirPods.</string>
     <string name="open_source_licenses">Open Source Licenses</string>
-    <string name="hearing_test">Update Hearing Test</string>
-    <string name="update_hearing_test">Update Hearing Test Result</string>
-    <string name="att_manager_is_null_try_reconnecting">ATT Manager is null, Try reconnecting.</string>
     <string name="permissions_required">The following permissions are required to use the app. Please grant them to continue.</string>
     <string name="shake_your_head_or_nod">Shake your head or nod!</string>
-    <string name="root_access_required">Root Access Required</string>
-    <string name="this_app_needs_root_access_to_hook_onto_the_bluetooth_library">This app needs root access to hook onto the Bluetooth library</string>
-    <string name="root_access_denied">Root access was denied. Please grant root permissions.</string>
-    <string name="troubleshooting_steps">Troubleshooting Steps</string>
-    <string name="hearing_test_value_instruction">Please enter the loss values in dbHL</string>
     <string name="about">About</string>
     <string name="model_name">Model Name</string>
     <string name="model_number">Model Number</string>
@@ -246,31 +186,12 @@
     <string name="discord">Discord</string>
     <string name="github_issues">GitHub Issues</string>
     <string name="version_code">Version code</string>
-    <string name="flavor" translatable="false">Flavor</string>
     <string name="build_type">Build type</string>
     <string name="no">No</string>
     <string name="yes">Yes</string>
     <string name="settings">Settings</string>
-    <string name="requires_xposed">requires xposed</string>
-    <string name="bypass_compatibility_check">Bypass compatibility check</string>
-    <string name="bypass_compatiblity_check_confirmation">Are you sure your device is supported natively/you have Xposed module enabled?</string>
     <string name="not_supported">Not supported</string>
-    <string name="check_the_repository_for_more_info">
-        Many devices are not supported due to limitations in the Android Bluetooth stack.
-        \nOn these devices, root access with an Xposed framework is required for full functionality.
-        \n\nThis limitation has been addressed in newer Android versions. The following device configurations can run the app natively:
-        \n• Google Pixel® running Android 16 March update and later with the lateset Play system update
-        \n• Google Pixel® running 17 Beta 3 and above
-        \n• OnePlus devices running OxygenOS 16 or later
-        \n• Oppo devices running ColorOS 16 or later
-        \n\nFor details, see the project documentation.</string>
     <string name="name_your_own_price">(Name your own price)</string>
-    <string name="compatibility_play_dialog_confirmation">
-        This device may not be supported due to platform limitations and requires an Xposed framework. Tick the checkbox below and type OK to continue.
-    </string>
-    <string name="type_ok_to_continue">Type "%s" to continue</string>
-    <string name="proceed">Proceed</string>
-    <string name="read_compatibility_requirements">I have read compatibility requirements.</string>
     <string name="device_info">Device information</string>
     <string name="build_id">Build ID</string>
     <string name="manufacturer">Manufacturer</string>
@@ -279,8 +200,6 @@
     <string name="digital_assistant_on_long_press">Digital Assistant on Long Press</string>
     <string name="digital_assistant_on_long_press_description">Invoke Digital Assistant when long pressing the AirPods Pro stem.</string>
     <string name="customizations_unavailable">Customizations unavailable. Connect your AirPods at least once to access.</string>
-    <string name="xposed_available">Xposed available</string>
-    <string name="app_enabled_in_xposed">App enabled in Xposed</string>
     <string name="subject">Subject</string>
     <string name="describe_your_issue">Describe your issue</string>
     <string name="optimized_charging">Optimized Charge Limit</string>

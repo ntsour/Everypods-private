@@ -51,7 +51,6 @@ fun AudioSettings(
     navController: NavController,
     adaptiveVolumeCapability: Boolean,
     conversationalAwarenessCapability: Boolean,
-    loudSoundReductionCapability: Boolean,
     adaptiveAudioCapability: Boolean,
     customEqCapability: Boolean = false,
 
@@ -61,10 +60,6 @@ fun AudioSettings(
     conversationalAwarenessChecked: Boolean,
     onConversationalAwarenessCheckedChange: (Boolean) -> Unit,
 
-    loudSoundReductionChecked: Boolean,
-    onLoudSoundReductionCheckedChange: (Boolean) -> Unit,
-
-    vendorIdHook: Boolean,
     isPremium: Boolean,
     aacpAvailable: Boolean = true
 ) {
@@ -72,7 +67,7 @@ fun AudioSettings(
     val isDarkTheme = isSystemInDarkTheme()
     val textColor = if (isDarkTheme) Color.White else Color.Black
 
-    if (!adaptiveVolumeCapability && !conversationalAwarenessCapability && !loudSoundReductionCapability && !adaptiveAudioCapability && !customEqCapability) {
+    if (!adaptiveVolumeCapability && !conversationalAwarenessCapability && !adaptiveAudioCapability && !customEqCapability) {
         return
     }
     Box(
@@ -136,23 +131,6 @@ fun AudioSettings(
             )
         }
 
-        if (loudSoundReductionCapability && vendorIdHook){
-            StyledToggle(
-                label = stringResource(R.string.loud_sound_reduction),
-                description = stringResource(R.string.loud_sound_reduction_description),
-                independent = false,
-                checked = loudSoundReductionChecked,
-                onCheckedChange = onLoudSoundReductionCheckedChange,
-                enabled = effectiveEnabled
-            )
-            HorizontalDivider(
-                thickness = 1.dp,
-                color = Color(0x40888888),
-                modifier = Modifier
-                    .padding(horizontal = 12.dp)
-            )
-        }
-
         if (adaptiveAudioCapability) {
             NavigationButton(
                 to = "adaptive_strength",
@@ -186,16 +164,12 @@ fun AudioSettingsPreview() {
         navController = rememberNavController(),
         adaptiveVolumeCapability = true,
         conversationalAwarenessCapability = true,
-        loudSoundReductionCapability = true,
         adaptiveAudioCapability = true,
         customEqCapability = true,
         adaptiveVolumeChecked = true,
         onAdaptiveVolumeCheckedChange = { },
         conversationalAwarenessChecked = true,
         onConversationalAwarenessCheckedChange = { },
-        loudSoundReductionChecked = true,
-        onLoudSoundReductionCheckedChange = { },
-        vendorIdHook = true,
         isPremium = true
     )
 }

@@ -89,7 +89,6 @@ import io.nikos.everypods.presentation.components.StyledScaffold
 import io.nikos.everypods.presentation.components.StyledSlider
 import io.nikos.everypods.presentation.components.StyledToggle
 import io.nikos.everypods.presentation.viewmodel.AppSettingsViewModel
-import io.nikos.everypods.utils.XposedState
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -289,37 +288,6 @@ fun AppSettingsScreen(
                         modifier = Modifier
                     )
                 }
-            }
-
-            if (XposedState.isAvailable && XposedState.bluetoothScopeEnabled) {
-                val restartBluetoothText =
-                    stringResource(R.string.found_offset_restart_bluetooth)
-                StyledToggle(
-                    label = stringResource(R.string.act_as_an_apple_device) + " (${
-                        stringResource(
-                            R.string.requires_xposed
-                        )
-                    })",
-                    description = stringResource(R.string.act_as_an_apple_device_description),
-                    checked = state.vendorIdHook,
-                    onCheckedChange = { enabled ->
-                        Toast.makeText(context, restartBluetoothText, Toast.LENGTH_SHORT).show()
-                        viewModel.setVendorIdHook(enabled)
-                    },
-                    independent = true,
-                    enabled = state.isPremium
-                )
-            }
-
-            if (!BuildConfig.PLAY_BUILD) {
-                Spacer(modifier = Modifier.height(16.dp))
-                NavigationButton(
-                    to = "troubleshooting",
-                    name = stringResource(R.string.troubleshooting),
-                    navController = navController,
-                    independent = true,
-                    description = stringResource(R.string.troubleshooting_description)
-                )
             }
 
             Spacer(modifier = Modifier.height(8.dp))
@@ -543,11 +511,9 @@ fun AppSettingsScreen(
                                        "\nMODEL: ${Build.MODEL} (${Build.PRODUCT})" +
                                        "\nDISPLAY_VERSION: ${Build.DISPLAY}" +
                                        "\nID: ${Build.ID} (SDK ${Build.VERSION.SDK_INT_FULL})" +
-                                       "\nXposed enabled/active: ${XposedState.isAvailable}/${XposedState.bluetoothScopeEnabled}" +
                                        "\n\nApp details:" +
                                        "\nVERSION: ${BuildConfig.VERSION_NAME}" +
                                        "\nVERSION_CODE: ${BuildConfig.VERSION_CODE}" +
-                                       "\nFLAVOR: ${BuildConfig.FLAVOR}" +
                                        "\nBUILD_TYPE: ${BuildConfig.BUILD_TYPE}"
                                )
                            }

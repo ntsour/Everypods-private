@@ -38,7 +38,6 @@ import kotlinx.coroutines.launch
 import io.nikos.everypods.billing.BillingManager
 import io.nikos.everypods.bluetooth.AACPManager
 import io.nikos.everypods.bluetooth.AACPManager.Companion.ControlCommandIdentifiers
-import io.nikos.everypods.bluetooth.ATTHandles
 import io.nikos.everypods.data.AirPodsInstance
 import io.nikos.everypods.data.AirPodsModels
 import io.nikos.everypods.data.AirPodsNotifications
@@ -49,7 +48,6 @@ import io.nikos.everypods.data.BatteryStatus
 import io.nikos.everypods.data.Capability
 import io.nikos.everypods.data.ControlCommandRepository
 import io.nikos.everypods.data.StemAction
-import io.nikos.everypods.data.XposedRemotePrefProvider
 import io.nikos.everypods.services.AirPodsService
 import io.nikos.everypods.utils.CrossDevice
 import io.nikos.everypods.utils.CrossDeviceClient
@@ -101,18 +99,11 @@ data class AirPodsUiState(
     val leftAction: StemAction = StemAction.CYCLE_NOISE_CONTROL_MODES,
     val rightAction: StemAction = StemAction.CYCLE_NOISE_CONTROL_MODES,
 
-    val loudSoundReductionEnabled: Boolean = false,
-    val transparencyData: ByteArray = byteArrayOf(),
-    val hearingAidData: ByteArray = byteArrayOf(),
-
     val isPremium: Boolean = false,
-    val vendorIdHook: Boolean = false,
 
     val dynamicEndOfCharge: Boolean = true,
 
     val connectionSuccessful: Boolean = false,
-
-    val hasRootPermissions: Boolean = false,
 
     // True when the AirPods are connected to this device over standard
     // Bluetooth A2DP, independent of the AACP socket. Lets the UI show
@@ -125,9 +116,9 @@ data class AirPodsUiState(
     val hasSavedDevice: Boolean = false,
 
     // True when the device can in principle open the AACP L2CAP socket
-    // (privileged Pixel build OR LSPosed hook active). UI uses this to grey
-    // out AACP-only controls on limited-mode devices while keeping the same
-    // navigation surface.
+    // (privileged Pixel build or a supported OEM AACP-capable build). UI uses
+    // this to grey out AACP-only controls on limited-mode devices while
+    // keeping the same navigation surface.
     val aacpAvailable: Boolean = false
 )
 
@@ -146,16 +137,15 @@ class AirPodsViewModel(
     val uiState: StateFlow<AirPodsUiState> = _uiState
 
     private fun computeAacpAvailable(): Boolean =
-        io.nikos.everypods.utils.isAacpCapable() ||
-            io.nikos.everypods.utils.XposedState.bluetoothScopeEnabled
+        io.nikos.everypods.utils.isAacpCapable()
 
     /**
-     * Re-evaluate the AACP capability flag. `XposedState.bluetoothScopeEnabled`
-     * may flip from false → true asynchronously after the Xposed service binds
-     * — which can happen *after* the ViewModel constructor ran. Callers
-     * (MainActivity lifecycle observer, service connect, etc.) should call this
-     * whenever there's a reasonable chance the value changed so the UI un-greys
-     * AACP controls.
+     * Re-evaluate the AACP capability flag. AACP capability may become
+     * available asynchronously after the ViewModel constructor ran (e.g. the
+     * OEM companion app finishes its own setup). Callers (MainActivity
+     * lifecycle observer, service connect, etc.) should call this whenever
+     * there's a reasonable chance the value changed so the UI un-greys AACP
+     * controls.
      */
     fun refreshAacpAvailable() {
         val now = computeAacpAvailable()
@@ -169,8 +159,6 @@ class AirPodsViewModel(
 
     private val listeners =
         mutableMapOf<ControlCommandIdentifiers, AACPManager.ControlCommandListener>()
-
-    private val xposedRemotePref = XposedRemotePrefProvider.create()
 
     private lateinit var broadcastReceiver: BroadcastReceiver
 
@@ -193,21 +181,12 @@ class AirPodsViewModel(
         loadName()
         loadInstance()
         loadSharedPreferences()
-        checkRootPermissions()
         setupControlObservers()
         observeBilling()
         loadControlList()
-        observeATT()
         if (isDemoMode) activateDemoMode()
         refreshInitialData()
         pollCrossDeviceStatus()
-    }
-
-    private fun checkRootPermissions() {
-        val hasModifyPhoneState = appContext.checkSelfPermission("android.permission.MODIFY_PHONE_STATE") == PackageManager.PERMISSION_GRANTED
-        val hasInteractAcrossUsers = appContext.checkSelfPermission("android.permission.INTERACT_ACROSS_USERS") == PackageManager.PERMISSION_GRANTED
-        val hasRootPerms = hasModifyPhoneState && hasInteractAcrossUsers
-        _uiState.update { it.copy(hasRootPermissions = hasRootPerms) }
     }
 
     override fun onCleared() {
@@ -465,7 +444,6 @@ class AirPodsViewModel(
                 "CYCLE_NOISE_CONTROL_MODES"
             ) ?: "CYCLE_NOISE_CONTROL_MODES"
         )
-        val vendorIdHook = xposedRemotePref.getBoolean("vendor_id_hook", false)
         val dynamicEndOfCharge = sharedPreferences.getBoolean("dynamic_end_of_charge", true)
 
         val connectionSuccessful = sharedPreferences.getBoolean("connection_successful", false)
@@ -481,7 +459,6 @@ class AirPodsViewModel(
                 headGesturesMuteCall = headGesturesMuteCall,
                 leftAction = leftAction,
                 rightAction = rightAction,
-                vendorIdHook = vendorIdHook,
                 dynamicEndOfCharge = dynamicEndOfCharge,
                 connectionSuccessful = connectionSuccessful
             )
@@ -587,56 +564,6 @@ class AirPodsViewModel(
     fun stopHeadTracking() {
         service.stopHeadTracking()
         _uiState.update { it.copy(headTrackingActive = false) }
-    }
-
-    fun setATTCharacteristicValue(handle: ATTHandles, value: ByteArray) {
-        if (handle == ATTHandles.LOUD_SOUND_REDUCTION) {
-            _uiState.update { it.copy(loudSoundReductionEnabled = value[0].toInt() == 0x01) }
-        }
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                service.attManager?.connect()
-                while (service.attManager?.socket?.isConnected != true) {
-                    delay(250)
-                }
-                service.attManager?.write(handle, value)
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        }
-    }
-
-    fun refreshATT() {
-        viewModelScope.launch(Dispatchers.IO) {
-            val loudSoundReduction =
-                runCatching { service.attManager?.read(ATTHandles.LOUD_SOUND_REDUCTION) }.getOrNull()
-            val transparencyData =
-                runCatching { service.attManager?.read(ATTHandles.TRANSPARENCY) }.getOrNull()?: byteArrayOf()
-            val hearingAid =
-                runCatching { service.attManager?.read(ATTHandles.HEARING_AID) }.getOrNull()?: byteArrayOf()
-            _uiState.value = _uiState.value.copy(
-                loudSoundReductionEnabled = loudSoundReduction?.get(0)?.toInt() == 0x01,
-                transparencyData = transparencyData,
-                hearingAidData = hearingAid
-            )
-        }
-    }
-
-    fun observeATT() {
-        viewModelScope.launch(Dispatchers.IO) {
-            service.attManager?.connect()
-            while (service.attManager?.socket?.isConnected != true) {
-                delay(1000)
-            }
-            service.attManager?.enableNotifications(ATTHandles.LOUD_SOUND_REDUCTION)
-            service.attManager?.enableNotifications(ATTHandles.TRANSPARENCY)
-            service.attManager?.enableNotifications(ATTHandles.HEARING_AID)
-
-            while (true) {
-                refreshATT()
-                delay(15000)
-            }
-        }
     }
 
     fun setAutomaticEarDetectionEnabled(enabled: Boolean) {

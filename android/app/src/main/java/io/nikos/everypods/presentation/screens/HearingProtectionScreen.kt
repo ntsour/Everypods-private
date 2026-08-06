@@ -44,7 +44,6 @@ import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import io.nikos.everypods.R
 import io.nikos.everypods.bluetooth.AACPManager
-import io.nikos.everypods.bluetooth.ATTHandles
 import io.nikos.everypods.presentation.components.StyledButton
 import io.nikos.everypods.presentation.components.StyledScaffold
 import io.nikos.everypods.presentation.components.StyledToggle
@@ -85,23 +84,6 @@ fun HearingProtectionScreen(viewModel: AirPodsViewModel, navController: NavContr
                         ),
                     )
                 }
-            }
-            if (state.vendorIdHook) {
-                StyledToggle(
-                    title = stringResource(R.string.environmental_noise),
-                    label = stringResource(R.string.loud_sound_reduction),
-                    description = stringResource(R.string.loud_sound_reduction_description),
-                    checked = state.loudSoundReductionEnabled,
-                    onCheckedChange = {
-                        viewModel.setATTCharacteristicValue(
-                            ATTHandles.LOUD_SOUND_REDUCTION,
-                            byteArrayOf(if (it) 1.toByte() else 0.toByte())
-                        )
-                    },
-                    enabled = state.isPremium
-                )
-
-                Spacer(modifier = Modifier.height(12.dp))
             }
             StyledToggle(
                 title = stringResource(R.string.workspace_use),

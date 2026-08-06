@@ -43,7 +43,7 @@ import androidx.compose.ui.unit.dp
 fun RequiresAacpIcon(
     message: String =
         "This setting requires AirPods control commands (AACP). " +
-        "Your device cannot send them — needs a supported Pixel build or the LSPosed Xposed module."
+        "Your device cannot send them — this feature isn't available on this device."
 ) {
     var showInfo by remember { mutableStateOf(false) }
     val isDark = isSystemInDarkTheme()

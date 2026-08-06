@@ -17,7 +17,7 @@ Development paused due to lack of time until 17th May 2026 (JEE Advanced). PRs a
 
 # What is EveryPods?
 
-EveryPods unlocks Apple's exclusive AirPods features on non-Apple devices. Get access to noise control modes, adaptive transparency, ear detection, hearing aid, customized transparency mode, battery status, and more - all the premium features you paid for but Apple locked to their ecosystem.
+EveryPods unlocks Apple's exclusive AirPods features on non-Apple devices. Get access to noise control modes, adaptive transparency, ear detection, battery status, and more - all the premium features you paid for but Apple locked to their ecosystem.
 
 # Device Compatibility
 
@@ -37,16 +37,12 @@ Most features should work with any AirPods. Currently, I've only got AirPods Pro
 - **Battery Status**: Accurate battery levels
 - **Head Gestures**: Answer calls just by nodding your head
 - **Conversational Awareness**: Volume automatically lowers when you speak
-- **Hearing Aid\***
-- **Customize Transparency Mode\***
-- **Multi-device connectivity\*** (upto 2 devices)
+- **Multi-device connectivity** (upto 2 devices)
 - **Other customizations**:
   - Rename your AirPods
   - Customize long-press actions
   - All accessibility settings
   - And more!
-
-&ast; Features marked with an asterisk require the VendorID to be change to that of Apple.
 
 # Platform Support
 
@@ -66,29 +62,20 @@ new version in development ([#241](https://github.com/kavishdevar/librepods/pull
 | ![Settings 1](./android/imgs/settings-1.png)                                            | ![Settings 2](./android/imgs/settings-2.png)       | ![Debug Screen](./android/imgs/debug.png)                                    |
 | ![Battery Notification and QS Tile for NC Mode](./android/imgs/notification-and-qs.png) | ![Popup](./android/imgs/popup.png)                 | ![Head Tracking and Gestures](./android/imgs/head-tracking-and-gestures.png) |
 | ![Long Press Configuration](./android/imgs/long-press.png)                              | ![Widget](./android/imgs/widget.png)               | ![Customizations 1](./android/imgs/customizations-1.png)                     |
-| ![Customizations 2](./android/imgs/customizations-2.png)                                | ![accessibility](./android/imgs/accessibility.png) | ![transparency](./android/imgs/transparency.png)                             |
-| ![hearing-aid](./android/imgs/hearing-aid.png)                                          | ![hearing-test](./android/imgs/hearing-test.png)   | ![hearing-aid-adjustments](./android/imgs/hearing-aid-adjustments.png)       |
+| ![Customizations 2](./android/imgs/customizations-2.png)                                | ![accessibility](./android/imgs/accessibility.png) |                                                                                |
 
 
 here's a very unprofessional demo video
 
 https://github.com/user-attachments/assets/43911243-0576-4093-8c55-89c1db5ea533
 
-### Root Requirement
+### Device Requirement
 
-EveryPods **may** require root depending on your device/OS and what features you want access to:
+EveryPods does not require root. Full AACP control (noise control modes, accessibility settings, and more) needs a device where the Android Bluetooth stack supports opening an L2CAP channel to the AirPods:
 
-- Features requiring the VendorID hook ([the features marked with an asterisk here](https://github.com/kavishdevar/librepods#key-features)) will always require root regardless of your device/OS.
-- On **ColorOS/OxygenOS 16** and **Pixel devices on Android 16 QPR3** (with the latest Google Play system update), EveryPods does not need root for most features (except those requiring the VendorID hook mentioned above).
-- On other devices, EveryPods needs root because of a bug in the Android Bluetooth stack Fluoride/non-compliance of Apple with Bluetooth standards. You must have Xposed installed for the app to workaround this bug and connect to AirPods. [This issue is being tracked here](https://issuetracker.google.com/issues/371713238). Please do not comment on the issue thread. The issue has already been resolved and should be available in **Android 17** for all devices.
-
-> [!IMPORTANT]
-> This workaround with Xposed is not guaranteed to work on all devices.
-
-### Troubleshooting steps for common errors
-- Ensure the correct scope is set in LSPosed/Vector.
-- Ensure there is no root-hiding module preventing the hook from loading on the Bluetooth app.
-- Restart your phone after confirming the scope.
+- **Android 17 (SDK 37)** and above: supported on all OEMs.
+- **Android 16 (SDK 36)**: supported on Google Pixel and OnePlus/OPPO devices.
+- Other devices fall back to basic features (battery status, ear detection, standard Bluetooth audio) until their OEM ships the fix. [This issue is being tracked here](https://issuetracker.google.com/issues/371713238). Please do not comment on the issue thread.
 
 ### A few notes
 
@@ -98,23 +85,9 @@ EveryPods **may** require root depending on your device/OS and what features you
 
 - When renaming your AirPods through the app, you'll need to re-pair them with your phone for the name change to take effect. This is a limitation of how Bluetooth device naming works on Android.
 
-- If you want the AirPods icon and battery status to show in Android Settings app, install the app as a system app by using the root module.
-
-# Changing VendorID in the DID profile to that of Apple
-
-Turns out, if you change the VendorID in DID Profile to that of Apple, you get access to several special features!
-
-You can do this on Linux by editing the DeviceID in `/etc/bluetooth/main.conf`. Add this line to the config file `DeviceID = bluetooth:004C:0000:0000`. For android you can enable the `act as Apple device` setting in the app's settings.
-
 ## Multi-device Connectivity
 
 Upto two devices can be simultaneously connected to AirPods, for audio and control both. Seamless connection switching. The same notification shows up on Apple device when Android takes over the AirPods as if it were an Apple device ("Move to iPhone"). Android also shows a popup when the other device takes over.
-
-## Accessibility Settings and Hearing Aid
-
-Accessibility settings like customizing transparency mode (amplification, balance, tone, conversation boost, and ambient noise reduction), and loud sound reduction can be configured.
-
-All hearing aid customizations can be done from Android (linux soon), including setting the audiogram result. The app doesn't provide a way to take a hearing test because it requires much more precision. It is much better to use an already available audiogram result. 
 
 # Supporters
 
@@ -134,7 +107,7 @@ A huge thank you to everyone supporting the project!
 - @hackclub for hosting [High Seas](https://highseas.hackclub.com) and [Low Skies](https://low-skies.hackclub.com)!
 
 # Alternates for other platforms:
-- CAPod - A companion app for AirPods on Android. ([play store](https://play.google.com/store/apps/details?id=eu.darken.capod) | [source code](https://github.com/d4rken-org/capod)). Use this if you're using Android version 16 QPR3 or below and are not rooted.
+- CAPod - A companion app for AirPods on Android. ([play store](https://play.google.com/store/apps/details?id=eu.darken.capod) | [source code](https://github.com/d4rken-org/capod))
 - MagicPods for Steam Deck ([website](https://magicpods.app/steamdeck/))
 - MagicPods - if you're looking for "EveryPods for Windows"  ([ms store](https://apps.microsoft.com/store/detail/9P6SKKFKSHKM) [installer](https://magicpods.app/installer/MagicPods.appinstaller) | [website](https://magicpods.app/))
 

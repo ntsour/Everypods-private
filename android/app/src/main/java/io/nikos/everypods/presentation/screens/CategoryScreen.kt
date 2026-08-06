@@ -29,7 +29,6 @@ import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.provider.Settings
 import android.view.accessibility.AccessibilityManager
-import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -105,7 +104,6 @@ import kotlinx.coroutines.launch
 import io.nikos.everypods.BuildConfig
 import io.nikos.everypods.R
 import io.nikos.everypods.bluetooth.AACPManager
-import io.nikos.everypods.bluetooth.ATTHandles
 import io.nikos.everypods.data.AirPodsPro3
 import io.nikos.everypods.data.Capability
 import io.nikos.everypods.data.StemAction
@@ -132,7 +130,6 @@ import io.nikos.everypods.utils.GymModePrefs
 import io.nikos.everypods.utils.GymTimer
 import io.nikos.everypods.utils.SleepTimer
 import io.nikos.everypods.utils.SmartFeaturesPrefs
-import io.nikos.everypods.utils.XposedState
 
 // ─── Category metadata ────────────────────────────────────────────────────────
 internal val categoryTitles = mapOf(
@@ -485,32 +482,6 @@ internal fun ControlsConfigurationContent(
             enabled = state.isPremium && state.aacpAvailable
         )
 
-        if (state.capabilities.contains(Capability.LOUD_SOUND_REDUCTION) && state.vendorIdHook) {
-            MenuDivider()
-            StyledToggle(
-                label = stringResource(R.string.loud_sound_reduction),
-                description = stringResource(R.string.loud_sound_reduction_description),
-                checked = state.loudSoundReductionEnabled,
-                onCheckedChange = {
-                    viewModel.setATTCharacteristicValue(
-                        ATTHandles.LOUD_SOUND_REDUCTION,
-                        if (it) byteArrayOf(0x01) else byteArrayOf(0x00)
-                    )
-                },
-                enabled = state.isPremium && state.aacpAvailable
-            )
-        }
-
-        val hearingAidEnabled =
-            state.controlStates[AACPManager.Companion.ControlCommandIdentifiers.HEARING_AID]?.getOrNull(1)?.toInt() == 1 &&
-                state.controlStates[AACPManager.Companion.ControlCommandIdentifiers.HEARING_AID]?.getOrNull(0)?.toInt() == 1
-        if (!hearingAidEnabled && state.vendorIdHook) {
-            MenuDivider()
-            MenuNavRow(stringResource(R.string.customize_transparency_mode), dark) {
-                if (state.isPremium) navController.navigate("transparency_customization")
-            }
-        }
-
         val toneVolumeValue =
             state.controlStates[AACPManager.Companion.ControlCommandIdentifiers.CHIME_VOLUME]?.getOrNull(0)?.toFloat() ?: 75f
         MenuDivider()
@@ -583,12 +554,9 @@ private fun SettingsContent(
     dark: Boolean,
 ) {
     val capabilities = state.capabilities
-    val hasXposed = state.vendorIdHook
-    val hasRoot   = state.hasRootPermissions
     val cardColor = if (dark) Color(0xFF1C1C1E) else Color(0xFFFFFFFF)
 
     Column(Modifier.fillMaxWidth().background(cardColor, RoundedCornerShape(18.dp))) {
-        val hasHA  = state.instance?.model?.capabilities?.contains(Capability.HEARING_AID) == true
         val hasPPE = state.instance?.model?.capabilities?.contains(Capability.PPE) == true
 
         // ── Ungated ───────────────────────────────────────────────────────────
@@ -628,9 +596,8 @@ private fun SettingsContent(
                 independent = true, enabled = subEnabled)
         }
 
-        // ── ⚠ Xposed-gated ────────────────────────────────────────────────────
-        // Hearing Protection (PPE = ungated, Loud Sound Reduction = Xposed)
-        if (capabilities.contains(Capability.LOUD_SOUND_REDUCTION) || hasPPE) {
+        // Hearing Protection (PPE)
+        if (hasPPE) {
             MenuDivider()
             MenuSectionHeader("Hearing Protection", dark, requiresAacp = !state.aacpAvailable)
             Column(Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
@@ -639,42 +606,20 @@ private fun SettingsContent(
                     checked = state.controlStates[AACPManager.Companion.ControlCommandIdentifiers.PPE_TOGGLE_CONFIG]?.getOrNull(0)?.toInt() == 1,
                     onCheckedChange = { viewModel.setControlCommandBoolean(AACPManager.Companion.ControlCommandIdentifiers.PPE_TOGGLE_CONFIG, it) },
                     independent = true, enabled = state.isPremium && state.aacpAvailable)
-                Spacer(Modifier.height(4.dp))
-                Column(Modifier.alpha(if (hasXposed) 1f else DisabledAlpha.toFloat())) {
-                    StyledToggle(label = stringResource(R.string.loud_sound_reduction),
-                        description = stringResource(R.string.loud_sound_reduction_description),
-                        checked = state.loudSoundReductionEnabled,
-                        onCheckedChange = { if (hasXposed) viewModel.setATTCharacteristicValue(ATTHandles.LOUD_SOUND_REDUCTION, byteArrayOf(if (it) 1 else 0)) },
-                        independent = true, enabled = hasXposed && state.isPremium && state.aacpAvailable)
-                    if (!hasXposed) { Spacer(Modifier.height(4.dp)); XposedRequiredBanner(dark) }
-                }
             }
         }
 
-        // Hearing Aid (Xposed required)
-        if (hasHA || hasPPE) {
-            MenuDivider()
-            Column(Modifier.fillMaxWidth().alpha(if (hasXposed) 1f else DisabledAlpha.toFloat())) {
-                MenuNavRow("Hearing Aid", dark, subtitle = if (!hasXposed) "⚠ Requires Xposed" else null) {
-                    if (hasXposed) navController.navigate("hearing_aid")
-                }
-            }
-            if (!hasXposed) Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) { XposedRequiredBanner(dark) }
-        }
-
-        // ── 🔒 Root-gated — always last ───────────────────────────────────────
+        // ── Bluetooth Control ────────────────────────────────────────────────
         MenuDivider()
-        MenuSectionHeader("🔒  Bluetooth Control (Root Required)", dark)
-        Column(Modifier.fillMaxWidth().alpha(if (hasRoot) 1f else DisabledAlpha.toFloat()).padding(horizontal = 16.dp, vertical = 14.dp),
+        MenuSectionHeader("Bluetooth Control", dark)
+        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            if (!hasRoot) RootRequiredBanner(dark)
-            StyledButton(onClick = { if (hasRoot) viewModel.disconnect() },
-                backdrop = rememberLayerBackdrop(), isInteractive = hasRoot,
+            StyledButton(onClick = { viewModel.disconnect() },
+                backdrop = rememberLayerBackdrop(), isInteractive = true,
                 modifier = Modifier.fillMaxWidth().heightIn(min = 50.dp)) {
                 Text(stringResource(R.string.disconnect), style = TextStyle(fontSize = 16.sp,
                     fontWeight = FontWeight.Normal, fontFamily = SfPro, textAlign = TextAlign.Start,
-                    color = if (hasRoot) { if (dark) Color(0xFF0091FF) else Color(0xFF0088FF) }
-                           else { if (dark) Color.White.copy(0.35f) else Color.Black.copy(0.35f) }),
+                    color = if (dark) Color(0xFF0091FF) else Color(0xFF0088FF)),
                     modifier = Modifier.fillMaxWidth())
             }
         }
@@ -1000,18 +945,6 @@ private fun AppSettingsContent(
                 checked = appState.showIslandPopup,
                 onCheckedChange = appSettingsViewModel::setShowIslandPopup, independent = true)
         }
-        if (XposedState.isAvailable && XposedState.bluetoothScopeEnabled) {
-            MenuDivider()
-            val restartMsg = stringResource(R.string.found_offset_restart_bluetooth)
-            Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
-                StyledToggle(
-                    label = stringResource(R.string.act_as_an_apple_device) + " (${stringResource(R.string.requires_xposed)})",
-                    description = stringResource(R.string.act_as_an_apple_device_description),
-                    checked = appState.vendorIdHook,
-                    onCheckedChange = { Toast.makeText(context, restartMsg, Toast.LENGTH_SHORT).show(); appSettingsViewModel.setVendorIdHook(it) },
-                    independent = true, enabled = appState.isPremium)
-            }
-        }
         MenuDivider()
         // ── Background activity / battery optimization ───────────────────────
         // When the system applies battery optimization to EveryPods, the foreground
@@ -1113,16 +1046,13 @@ private fun AudioContent(
             AudioSettings(navController = navController,
                 adaptiveVolumeCapability = m.capabilities.contains(Capability.ADAPTIVE_VOLUME),
                 conversationalAwarenessCapability = m.capabilities.contains(Capability.CONVERSATION_AWARENESS),
-                loudSoundReductionCapability = m.capabilities.contains(Capability.LOUD_SOUND_REDUCTION),
                 adaptiveAudioCapability = m.capabilities.contains(Capability.ADAPTIVE_VOLUME),
                 customEqCapability = m.capabilities.contains(Capability.CUSTOM_EQ),
                 adaptiveVolumeChecked = state.controlStates[AACPManager.Companion.ControlCommandIdentifiers.ADAPTIVE_VOLUME_CONFIG]?.getOrNull(0) == 0x01.toByte(),
                 onAdaptiveVolumeCheckedChange = { viewModel.setControlCommandBoolean(AACPManager.Companion.ControlCommandIdentifiers.ADAPTIVE_VOLUME_CONFIG, it) },
                 conversationalAwarenessChecked = state.controlStates[AACPManager.Companion.ControlCommandIdentifiers.CONVERSATION_DETECT_CONFIG]?.getOrNull(0) == 0x01.toByte() && state.isPremium,
                 onConversationalAwarenessCheckedChange = { viewModel.setControlCommandBoolean(AACPManager.Companion.ControlCommandIdentifiers.CONVERSATION_DETECT_CONFIG, it) },
-                loudSoundReductionChecked = state.loudSoundReductionEnabled,
-                onLoudSoundReductionCheckedChange = { viewModel.setATTCharacteristicValue(ATTHandles.LOUD_SOUND_REDUCTION, byteArrayOf(if (it) 0x01.toByte() else 0x00.toByte())) },
-                vendorIdHook = state.vendorIdHook, isPremium = state.isPremium,
+                isPremium = state.isPremium,
                 aacpAvailable = state.aacpAvailable)
         }
         // Connection Settings — shown for both AACP and limited-mode devices.

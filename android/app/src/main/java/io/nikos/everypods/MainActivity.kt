@@ -143,16 +143,11 @@ import io.nikos.everypods.presentation.screens.AppSettingsScreen
 import io.nikos.everypods.presentation.screens.CameraControlScreen
 import io.nikos.everypods.presentation.screens.DebugScreen
 import io.nikos.everypods.presentation.screens.HeadTrackingScreen
-import io.nikos.everypods.presentation.screens.HearingAidAdjustmentsScreen
-import io.nikos.everypods.presentation.screens.HearingAidScreen
 import io.nikos.everypods.presentation.screens.HearingProtectionScreen
 import io.nikos.everypods.presentation.screens.LongPress
 import io.nikos.everypods.presentation.screens.OpenSourceLicensesScreen
 import io.nikos.everypods.presentation.screens.PurchaseScreen
 import io.nikos.everypods.presentation.screens.RenameScreen
-import io.nikos.everypods.presentation.screens.TransparencySettingsScreen
-import io.nikos.everypods.presentation.screens.TroubleshootingScreen
-import io.nikos.everypods.presentation.screens.UpdateHearingTestScreen
 
 import io.nikos.everypods.presentation.screens.AnnouncementAppPickerScreen
 import io.nikos.everypods.presentation.screens.AppPermissionsScreen
@@ -174,7 +169,6 @@ import io.nikos.everypods.presentation.screens.SmartAutomationScreen
 import io.nikos.everypods.presentation.screens.SleepTimerScreen
 import io.nikos.everypods.presentation.screens.PhoneBatteryScreen
 import io.nikos.everypods.presentation.screens.PopupAnimationsScreen
-import io.nikos.everypods.presentation.screens.XposedSettingsScreen
 import io.nikos.everypods.presentation.screens.EmailSupportScreen
 import io.nikos.everypods.presentation.screens.DiscordCommunityScreen
 import io.nikos.everypods.presentation.screens.GitHubIssuesScreen
@@ -186,7 +180,6 @@ import io.nikos.everypods.presentation.viewmodel.AppSettingsViewModel
 import io.nikos.everypods.presentation.viewmodel.PurchaseViewModel
 import io.nikos.everypods.services.AirPodsService
 import io.nikos.everypods.services.CallNotifListener
-import io.nikos.everypods.utils.XposedState
 import io.nikos.everypods.utils.isAacpCapable
 import kotlin.io.encoding.ExperimentalEncodingApi
 
@@ -196,14 +189,6 @@ lateinit var connectionStatusReceiver: BroadcastReceiver
 //@AndroidEntryPoint
 @ExperimentalMaterial3Api
 class MainActivity : ComponentActivity() {
-    companion object {
-        init {
-            if (XposedState.isAvailable && XposedState.bluetoothScopeEnabled) {
-                System.loadLibrary("l2c_fcr_hook")
-            }
-        }
-    }
-
     @ExperimentalHazeMaterialsApi
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -289,10 +274,9 @@ fun Main() {
         }
     }
 
-    // XposedState.bluetoothScopeEnabled may flip false → true asynchronously after
-    // the Xposed service binds — which can happen *after* the ViewModel was created.
-    // Re-evaluate every time the activity resumes so AACP controls un-grey once
-    // Xposed is actually online.
+    // AACP capability may become available asynchronously after the ViewModel was
+    // created (e.g. the OEM companion app finishes its own setup). Re-evaluate every
+    // time the activity resumes so AACP controls un-grey once it's actually available.
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner, airPodsViewModel) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
@@ -372,23 +356,11 @@ fun Main() {
                         // AppSettingsScreen content has been moved into the main screen menu.
                         // Route kept for backward-compatibility (deep links, etc.) but renders nothing.
                     }
-                    composable("troubleshooting") {
-                        TroubleshootingScreen(navController)
-                    }
                     composable("head_tracking") {
                         if (airPodsViewModel != null) HeadTrackingScreen(airPodsViewModel, navController)
                     }
                     composable("accessibility") {
                         if (airPodsViewModel != null) AccessibilitySettingsScreen(airPodsViewModel, navController)
-                    }
-                    composable("transparency_customization") {
-                        if (airPodsViewModel != null) TransparencySettingsScreen(airPodsViewModel)
-                    }
-                    composable("hearing_aid") {
-                        if (airPodsViewModel != null) HearingAidScreen(airPodsViewModel, navController)
-                    }
-                    composable("hearing_aid_adjustments") {
-                        if (airPodsViewModel != null) HearingAidAdjustmentsScreen(airPodsViewModel)
                     }
                      composable("adaptive_strength") {
                          if (airPodsViewModel != null) AdaptiveStrengthScreen(airPodsViewModel, navController)
@@ -401,9 +373,6 @@ fun Main() {
                     }
                     composable("open_source_licenses") {
                         OpenSourceLicensesScreen(navController)
-                    }
-                    composable("update_hearing_test") {
-                        if (airPodsViewModel != null) UpdateHearingTestScreen()
                     }
                     composable("version_info") {
                         if (airPodsViewModel != null) VersionScreen(airPodsViewModel)
@@ -493,9 +462,6 @@ fun Main() {
                     }
                     composable("popup_animations") {
                         PopupAnimationsScreen(viewModel())
-                    }
-                    composable("xposed_settings") {
-                        XposedSettingsScreen(viewModel())
                     }
                     composable("audio_settings") {
                         if (airPodsViewModel != null) AudioSettingsScreen(airPodsViewModel, viewModel(), navController)
