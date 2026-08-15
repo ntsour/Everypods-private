@@ -1,17 +1,10 @@
 <p align="center">
-  <img src="https://img.shields.io/github/stars/kavishdevar/librepods?style=for-the-badge&logoColor=white" />
-  <img src="https://img.shields.io/github/license/kavishdevar/librepods?style=for-the-badge" />
-  <img src="https://img.shields.io/github/v/release/kavishdevar/librepods?style=for-the-badge&logoColor=white&label=Release" />
-  <img src="https://img.shields.io/github/downloads/kavishdevar/librepods/total?style=for-the-badge&label=Downloads" />
-  <img src="https://img.shields.io/github/issues/kavishdevar/librepods?style=for-the-badge" />
-  
-  <a href="https://discord.gg/HhG4ycVum4">
-    <img src="https://img.shields.io/discord/1441416992027574375?style=for-the-badge&logoColor=white&color=5865F2&label=Discord" />
-  </a>
+  <img src="https://img.shields.io/github/stars/ntsour/Everypods?style=for-the-badge&logoColor=white" />
+  <img src="https://img.shields.io/github/license/ntsour/Everypods?style=for-the-badge" />
+  <img src="https://img.shields.io/github/v/release/ntsour/Everypods?style=for-the-badge&logoColor=white&label=Release" />
+  <img src="https://img.shields.io/github/downloads/ntsour/Everypods/total?style=for-the-badge&label=Downloads" />
+  <img src="https://img.shields.io/github/issues/ntsour/Everypods?style=for-the-badge" />
 </p>
-
->[!IMPORTANT]
-Development paused due to lack of time until 17th May 2026 (JEE Advanced). PRs and issues might not be responded to until then.
 
 ![EveryPods Banner](./imgs/banner.png)
 
@@ -49,7 +42,7 @@ Most features should work with any AirPods. Currently, I've only got AirPods Pro
 ## Linux
 for the old version see the [Linux README](./linux/README.md). (doesn't have many features, maintainer didn't have time to work on it)
 
-new version in development ([#241](https://github.com/kavishdevar/librepods/pull/241))
+new version in development ([#241](https://github.com/ntsour/Everypods/pull/241))
 
 ![new version](https://github.com/user-attachments/assets/86b3c871-89a8-4e49-861a-5119de1e1d28)
 
@@ -101,8 +94,8 @@ A huge thank you to everyone supporting the project!
 
 # Special thanks
 - @tyalie for making the first documentation on the protocol! ([tyalie/AAP-Protocol-Definition](https://github.com/tyalie/AAP-Protocol-Defintion))
-- @rithvikvibhu and folks over at lagrangepoint for helping with the hearing aid feature ([gist](https://gist.github.com/rithvikvibhu/45e24bbe5ade30125f152383daf07016))
-- @devnoname120 for helping with the first root patch
+- @rithvikvibhu and folks over at lagrangepoint for protocol research ([gist](https://gist.github.com/rithvikvibhu/45e24bbe5ade30125f152383daf07016))
+- @devnoname120 for early Bluetooth-stack research
 - @timgromeyer for making the first version of the linux app
 - @hackclub for hosting [High Seas](https://highseas.hackclub.com) and [Low Skies](https://low-skies.hackclub.com)!
 
@@ -116,7 +109,7 @@ A huge thank you to everyone supporting the project!
 Want to try the latest features before they're officially released? You can grab nightly builds from GitHub Actions:
 
 ### Android
-1. Go to the [Actions tab](https://github.com/kavishdevar/librepods/actions/workflows/ci-android.yml)
+1. Go to the [Actions tab](https://github.com/ntsour/Everypods/actions/workflows/ci-android.yml)
 2. Click on the most recent successful workflow run
 3. Scroll down to **Artifacts** and download the **Debug APK** zip file
 4. Extract the zip and install the `.apk` on your device
@@ -125,20 +118,20 @@ Want to try the latest features before they're officially released? You can grab
 > You need to be signed in to GitHub to download artifacts. Nightly builds are debug-signed and may not auto-update. You may need to uninstall the stable version first.
 
 ### Linux (Rust)
-1. Go to the [Actions tab](https://github.com/kavishdevar/librepods/actions/workflows/ci-linux-rust.yml)
+1. Go to the [Actions tab](https://github.com/ntsour/Everypods/actions/workflows/ci-linux-rust.yml)
 2. Click on the most recent successful workflow run
-3. Download the **librepods-x86_64.AppImage** or **librepods** binary from **Artifacts**
+3. Download the Linux binary from **Artifacts**
 
 > [!WARNING]
 > Nightly builds are unstable and may contain bugs. Use at your own risk.
 
 # Star History
 
-<a href="https://www.star-history.com/#kavishdevar/librepods&type=date&legend=top-left">
+<a href="https://www.star-history.com/#ntsour/Everypods&type=date&legend=top-left">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=kavishdevar/librepods&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=kavishdevar/librepods&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=kavishdevar/librepods&type=date&legend=top-left" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=ntsour/Everypods&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=ntsour/Everypods&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=ntsour/Everypods&type=date&legend=top-left" />
  </picture>
 </a>
 

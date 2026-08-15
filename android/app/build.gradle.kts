@@ -1,6 +1,6 @@
 import java.util.Properties
 
-val appVersionName = "0.2.9"
+val appVersionName = "1.0.0"
 
 plugins {
     alias(libs.plugins.android.application)
@@ -23,14 +23,14 @@ android {
             keyPassword = props["RELEASE_KEY_PASSWORD"] as String
         }
     }
-    namespace = "io.nikos.everypods"
+    namespace = "io.automated.ventures.everypods"
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "io.nikos.everypods"
+        applicationId = "io.automated.ventures.everypods"
         minSdk = 33
         targetSdk = 37
-        versionCode = 50
+        versionCode = 100
         versionName = appVersionName
     }
     buildTypes {
@@ -56,7 +56,6 @@ android {
         create("playRelease") {
             initWith(getByName("release"))
             buildConfigField("Boolean", "PLAY_BUILD", "true")
-            versionNameSuffix = "-play"
         }
         create("playDebug") {
             initWith(getByName("debug"))
@@ -116,7 +115,6 @@ dependencies {
     implementation(libs.androidx.dynamicanimation)
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.material.icons.core)
-    implementation(libs.billing)
     debugImplementation(libs.androidx.compose.ui.tooling)
     implementation(libs.androidx.compose.foundation.layout)
     implementation(libs.aboutlibraries)
@@ -124,7 +122,6 @@ dependencies {
     implementation(libs.backdrop)
 //    implementation(libs.hilt)
 //    implementation(libs.hilt.compiler)
-    add("playReleaseImplementation", libs.billing)
 
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")

@@ -40,7 +40,7 @@ devices, deterministic restricted topology, and a UI to see/manage all peers.
 
 ## Single-peer breaking points (inventory)
 
-Files: `app/src/main/java/io/nikos/everypods/utils/CrossDevice.kt`,
+Files: `app/src/main/java/io/automated/ventures/everypods/utils/CrossDevice.kt`,
 `…/utils/CrossDeviceClient.kt`, `…/services/AirPodsService.kt`,
 `…/presentation/viewmodel/AirPodsViewModel.kt`,
 `…/presentation/components/ConnectionSettings.kt`.
@@ -202,7 +202,7 @@ peer without dropping the others.
 
 ## On-device test log (Pixel 10 / Samsung A52s / Xiaomi 24091RPADG)
 
-Real 3-device run (multi-peer build, applicationId `io.nikos.everypods.multipeer`,
+Real 3-device run (multi-peer build, applicationId `io.automated.ventures.everypods.multipeer`,
 installed alongside stable). Because the Phase 4 UI isn't built, each device's
 `cross_device_peers` (and the AirPods `mac_address`) were seeded manually via
 `adb run-as … tee shared_prefs/settings.xml` (SELinux blocks `sh`/`cp` redirects
@@ -218,12 +218,12 @@ into app data; `tee` works).
 
 **Bugs found & fixed during this run (each only surfaced with 3 real devices):**
 
-1. **Parallel-install resource crash.** Hardcoded `android.resource://io.nikos.everypods/…`
+1. **Parallel-install resource crash.** Hardcoded `android.resource://io.automated.ventures.everypods/…`
    URIs (island/popup VideoView, `resToUri`) pointed at the *stable* app under the new
    applicationId → `AppsFilter` blocked it → `VideoView.onError` → `BadTokenException`
    crash loop on any connection event. Fixed to use the runtime `packageName`. (Other
-   hardcoded `io.nikos.everypods` refs remain — FileProvider/companion metadata, log
-   collection, Xposed prefs — non-crashing, mostly Xposed/root paths; cleanup deferred.)
+   hardcoded `io.automated.ventures.everypods` refs remain — FileProvider/companion metadata and
+   other non-crashing historical paths; cleanup deferred.)
 2. **Limited-mode holder under-reported ownership.** The keep-alive status reply used
    `isConnected()` (AACP/L2CAP only → always false on a limited device), so a limited
    holder kept telling peers `AIRPODS_DISCONNECTED` while actually holding the A2DP
@@ -248,7 +248,7 @@ into app data; `tee` works).
 - **Courtesy veto gap (confirmed, follow-on from D4) → RESOLVED by design change.**
   Xiaomi->Pixel takeover with the Pixel's "Playing media" toggle OFF: Xiaomi grabbed
   anyway. Pixel was client-side, deferred, invisible to Xiaomi; `REQUEST_TAKEOVER` only
-  reached Samsung; `expectedReplies=1`, waited 600ms, pulled anyway. Root: the veto is
+  reached Samsung; `expectedReplies=1`, waited 600ms, pulled anyway. Cause: the veto is
   structurally impossible when the holder is invisible to the requester. **Decision:**
   remove the veto entirely. Every takeover trigger is an explicit user action (media
   start / call) so the requester's intent is unambiguous — the holder should always yield.
@@ -258,7 +258,7 @@ into app data; `tee` works).
   See "Requester Always Wins" section in `handover.md`.
 
 **Phase 3 design item — holder reachability** (holder attribution only, veto no longer
-relevant). Root: the deferral heuristic + role election can leave a holder unreachable
+relevant). Cause: the deferral heuristic + role election can leave a holder unreachable
 by a server-only peer, so that peer's `holders` set misses the holder. The courtesy veto
 gap is now gone (requester always wins), but accurate `holders` attribution still matters
 for `isAvailable` ("are pods elsewhere?"). In steady state (all links established while

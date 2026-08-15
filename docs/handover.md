@@ -19,8 +19,8 @@ AirPods connection — a separate one). Xiaomi sends a short message through tha
 
 **3. Pixel pauses its music and releases.**
 Pixel hears the message, pauses whatever was playing, and tells the Bluetooth stack to
-let go of the AirPods. On a Pixel with Xposed (but without root), this is more of a
-polite request to the stack than a hard cut — but it's usually enough.
+let go of the AirPods. Without privileged Bluetooth APIs this is a polite request to
+the stack rather than a hard cut, but it is usually enough.
 
 **4. Xiaomi reaches out to the AirPods.**
 Xiaomi sends a Bluetooth connection request directly to the AirPods. Because AirPods
@@ -47,14 +47,14 @@ nothing to fight over.
 
 ---
 
-**What if neither phone is rooted?**
+**What if neither phone can force-disconnect?**
 
 The handover still works in the common case. The "Connect" request Xiaomi sends to
 the AirPods is the same request the system Bluetooth settings app sends — and
 AirPods always accept it from a paired device. The only scenario where it reliably
-fails is if both phones are non-rooted, in range, and the source phone is still
-holding the connection and hasn't dropped it yet. In that case the user would need
-to manually disconnect on the source phone.
+fails is if both phones are in range, the destination runs a strict Bluetooth stack,
+and the source phone is still holding the connection and has not dropped it yet. In
+that case the user would need to manually disconnect on the source phone.
 
 ---
 
@@ -83,20 +83,19 @@ the ability to force-disconnect A2DP are **independent capabilities**:
 
 | Tier | AACP (L2CAP socket) | `BLUETOOTH_PRIVILEGED` | Example |
 |---|---|---|---|
-| **Full** | ✓ | ✓ Rooted or system app | Rooted Pixel |
-| **AACP-only** | ✓ | ✗ Not rooted | Pixel 10 (Android 16 QPR3+) |
-| **Limited** | ✗ | ✗ | Non-rooted Xiaomi |
+| **Full** | ✓ | ✓ System/privileged app build | OEM/system-integrated build |
+| **AACP-only** | ✓ | ✗ Stock app | Pixel 10 (Android 16 QPR3+) |
+| **Limited** | ✗ | ✗ Stock app | Xiaomi without the platform AACP fix |
 
 **AACP** (the L2CAP socket to the AirPods) gives ownership callbacks and the
 ability to send `OWNS_CONNECTION` control commands to the AirPods. On
 **Android 16 QPR3+** (Pixel devices with the latest Google Play system update)
 and **ColorOS/OxygenOS 16**, the underlying Bluetooth stack bug that required
-an Xposed hook (`l2c_fcr_hook`) to open this socket was fixed — AACP works
-natively without root or Xposed. On older Android versions it still requires
-Xposed + an unlocked bootloader. The fix is expected to land for all devices
-in Android 17.
+out-of-app Bluetooth-stack patching to open this socket was fixed — AACP works
+natively in the stock app. Older Android versions remain limited-mode in the
+Play Store build. The fix is expected to land for all devices in Android 17.
 
-**`BLUETOOTH_PRIVILEGED`** requires root or system-app installation. It unlocks
+**`BLUETOOTH_PRIVILEGED`** requires system-app installation. It unlocks
 `BluetoothA2dp.disconnect()` and the privileged form of `BluetoothA2dp.connect()`.
 Without it, calling `connect()` still works on most OEM stacks (see below).
 
@@ -107,7 +106,7 @@ W/AirPodsService: disconnectForCD: no BLUETOOTH_PRIVILEGED, skipping A2DP discon
 ```
 The Pixel cannot actively force its A2DP link off. It relies on the destination's
 `connect()` displacing it, which the AirPods handle automatically. AACP itself
-works natively on this device (Android 16 QPR3) without Xposed.
+works natively on this device (Android 16 QPR3).
 
 ---
 
@@ -137,9 +136,9 @@ without OEM relaxation it may fail.
 
 | Term | Meaning |
 |---|---|
-| **AACP** | Application-Agnostic Communication Protocol — the L2CAP socket EveryPods opens to the AirPods for full feature access (ownership, ANC, battery, stem config). Requires Xposed + `l2c_fcr_hook`. |
-| **Limited-mode** | Device has no AACP socket. Only standard Bluetooth (A2DP / HFP). No ownership callbacks. Non-rooted Xiaomi is limited-mode in this project. |
-| **`BLUETOOTH_PRIVILEGED`** | Android system permission required for forced `BluetoothA2dp.disconnect()` and the strict form of `connect()`. Granted only to rooted or priv-app installs. |
+| **AACP** | Application-Agnostic Communication Protocol — the L2CAP socket EveryPods opens to the AirPods for full feature access (ownership, ANC, battery, stem config). Available when the Android Bluetooth stack supports the AirPods L2CAP channel natively. |
+| **Limited-mode** | Device has no AACP socket. Only standard Bluetooth (A2DP / HFP). No ownership callbacks. Xiaomi without the platform AACP fix is limited-mode in this project. |
+| **`BLUETOOTH_PRIVILEGED`** | Android system permission required for forced `BluetoothA2dp.disconnect()` and the strict form of `connect()`. Granted only to system/priv-app installs. |
 | **RFCOMM channel** | A side-channel Bluetooth serial socket between the two Android peers (UUID `1abbb9a4-10e4-4000-a75c-8953c5471342`), used to send handover coordination packets. Independent of the AirPods connection. |
 | **RouteLandPoller** | A 15 s watchdog in `MediaController.kt` that re-issues `sendPlay(force=true)` whenever `audioManager.isMusicActive` drops after a takeover. Handles apps (e.g. Pocket Casts on HyperOS) that auto-pause when the audio device changes. |
 
@@ -244,7 +243,7 @@ on this device?" toggles, not holder veto toggles.
 
 ### Handover Scenarios
 
-#### 1. AACP → AACP (both Xposed + rooted)
+#### 1. Full → Full
 
 Both devices have AACP open and `BLUETOOTH_PRIVILEGED`.
 
@@ -273,7 +272,7 @@ Both devices have AACP open and `BLUETOOTH_PRIVILEGED`.
 
 ---
 
-#### 2. AACP-only → Limited (e.g. Pixel w/ Xposed → Xiaomi)
+#### 2. AACP-only → Limited (e.g. Pixel 10 → Xiaomi)
 
 Source has AACP but no `BLUETOOTH_PRIVILEGED`. Destination is limited-mode.
 
@@ -302,7 +301,7 @@ Source has AACP but no `BLUETOOTH_PRIVILEGED`. Destination is limited-mode.
 
 ---
 
-#### 3. Limited → AACP-only (e.g. Xiaomi → Pixel w/ Xposed)
+#### 3. Limited → AACP-only (e.g. Xiaomi → Pixel 10)
 
 Source is limited-mode. Destination has AACP but no `BLUETOOTH_PRIVILEGED`.
 
@@ -333,7 +332,7 @@ Source is limited-mode. Destination has AACP but no `BLUETOOTH_PRIVILEGED`.
 
 ---
 
-#### 4. Limited → Limited (both non-rooted, no Xposed)
+#### 4. Limited → Limited
 
 Neither device has `BLUETOOTH_PRIVILEGED`.
 
@@ -530,18 +529,13 @@ target audience for this app.
 
 **Mitigation options for strict stacks:**
 
-1. **Xposed hook on the permission check** — `KotlinModule` already runs inside
-   `BluetoothManagerService` on Xposed devices. Hooking
-   `enforceBluetoothPrivilegedPermission()` in `BluetoothA2dpService` would bypass the
-   check on any device running LSPosed, covering the same population that gets AACP.
-
-2. **Source-drops-first protocol** — if the source reliably drops its A2DP link via
+1. **Source-drops-first protocol** — if the source reliably drops its A2DP link via
    `setConnectionPolicy(FORBIDDEN)` before the destination attempts `connect()`, there
    is nothing to fight over and the call succeeds on all stacks (equivalent to the
    out-of-range path). The weakness today is that the source drop is not guaranteed
    without `BLUETOOTH_PRIVILEGED`.
 
-3. **User fallback** — on strict-AOSP devices, tapping Connect in system Bluetooth
+2. **User fallback** — on strict-AOSP devices, tapping Connect in system Bluetooth
    settings makes the identical API call with `BLUETOOTH_PRIVILEGED` and always works.
 
 ---
