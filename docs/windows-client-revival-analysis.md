@@ -290,9 +290,15 @@ The remaining PC → phone time is the phone connecting its own audio.
   always server-only. After the fix: 0 dial attempts.
 - The rest are radio supervision timeouts (HCI reason 0x08). Before restarting the
   Pixel's Bluetooth: every 30–55 s. After the restart: none in 7 min without the
-  AirPods on the PC; 2 in 10 min with the PC holding/streaming to them. A full HCI
-  capture of one is in progress. Main suspect: the PC radio serving the AirPods, the
-  phone link and Propods' continuous LE scan at once.
+  AirPods on the PC; 2 in 10 min with the PC holding/streaming to them (22:37, 22:41).
+  After a second Bluetooth restart (to enable the full HCI snoop log, 22:44), the link
+  then held for **20+ minutes with the PC holding and streaming to the AirPods: 0
+  drops**, 60 status replies all "holding". No drop was captured, so the cause of the
+  earlier timeouts is not proven; the working explanation is a degraded Bluetooth state
+  on the Pixel that a restart clears, made worse by the needless dialing. Treated as
+  resolved for now.
+- Precaution, built but not deployed or tested: Propods pauses its continuous active LE
+  scan while the PC holds the AirPods (`e26341d`).
 - After each reconnect the Pixel briefly tries HFP/A2DP to the PC (Android treating the
   PC as an audio device). Turning off "Phone calls" and "Media audio" for the PC in the
   Pixel's Bluetooth settings stops it.
