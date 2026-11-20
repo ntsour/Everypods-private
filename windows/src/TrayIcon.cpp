@@ -183,6 +183,9 @@ void TrayIcon::showContextMenu(HWND hwnd) {
     InsertMenuW(menu, static_cast<UINT>(-1), autoStartFlags,
         static_cast<UINT_PTR>(kCmdAutoStart), L"Start with Windows");
 
+    InsertMenuW(menu, static_cast<UINT>(-1), MF_BYPOSITION | MF_STRING,
+        static_cast<UINT_PTR>(kCmdOpenTraces), L"Open traces folder");
+
     InsertMenuW(menu, static_cast<UINT>(-1), MF_BYPOSITION | MF_SEPARATOR, 0u, nullptr);
     InsertMenuW(menu, static_cast<UINT>(-1), MF_BYPOSITION | MF_STRING,
         static_cast<UINT_PTR>(kCmdQuit), L"Quit");

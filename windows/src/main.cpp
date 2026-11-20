@@ -1,4 +1,5 @@
 ﻿#include <windows.h>
+#include <shellapi.h>
 
 #include <winrt/base.h>
 #include <winrt/Windows.Devices.Bluetooth.h>
@@ -154,6 +155,9 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
 
     winrt::init_apartment(winrt::apartment_type::multi_threaded);
 
+    log::traceFile();  // open now so tracePath() is set (still single-threaded here)
+    log::info("Durable trace: {}", log::toUtf8(log::tracePath().wstring()));
+
     SettingsStore store;
     Settings settings = store.load();
 
@@ -295,6 +299,11 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
                     airpods.setAddress(*a);
                 }
                 break;
+            case TrayIcon::kCmdOpenTraces: {
+                const auto dir = log::traceDir();
+                ShellExecuteW(nullptr, L"open", dir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                break;
+            }
             case TrayIcon::kCmdConnectAirPods:
                 // Blocking operation — run on a detached thread so the UI stays responsive.
                 std::thread([&airpods]() {

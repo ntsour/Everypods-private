@@ -44,6 +44,7 @@ private:
 
     std::atomic<bool> m_running{false};
     std::atomic<bool> m_connected{false};
+    std::atomic<std::uint64_t> m_peerAddress{0};
     std::thread m_worker;
 
     std::mutex m_socketMutex;

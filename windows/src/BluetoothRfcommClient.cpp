@@ -61,6 +61,7 @@ BluetoothRfcommClient::~BluetoothRfcommClient() {
 
 void BluetoothRfcommClient::start(std::uint64_t peerAddress) {
     if (m_running.exchange(true)) return;
+    m_peerAddress.store(peerAddress);
     m_worker = std::thread([this, peerAddress]() {
         winrt::init_apartment(winrt::apartment_type::multi_threaded);
         runLoop(peerAddress);
@@ -83,17 +84,17 @@ void BluetoothRfcommClient::stop() {
 void BluetoothRfcommClient::sendPacket(std::span<const std::uint8_t> bytes) {
     std::scoped_lock lk{m_socketMutex};
     if (!m_writer) {
-        log::warn("RFCOMM not connected; dropping send of {} bytes", bytes.size());
+        log::warn("RFCOMM {:012X} not connected; dropping send of {} bytes", m_peerAddress.load(), bytes.size());
         return;
     }
     try {
         std::string hex;
         for (auto b : bytes) { char tmp[4]; std::snprintf(tmp, sizeof(tmp), "%02X ", b); hex += tmp; }
-        log::debug("RFCOMM send {} bytes: {}", bytes.size(), hex);
+        log::debug("RFCOMM {:012X} send {} bytes: {}", m_peerAddress.load(), bytes.size(), hex);
         m_writer.WriteBytes(winrt::array_view<const std::uint8_t>(bytes.data(), bytes.data() + bytes.size()));
         m_writer.StoreAsync().get();
     } catch (const winrt::hresult_error& e) {
-        log::warn("RFCOMM send failed: {}", winrt::to_string(e.message()));
+        log::warn("RFCOMM {:012X} send failed: 0x{:08X} {}", m_peerAddress.load(), (std::uint32_t)e.code().value, winrt::to_string(e.message()));
     }
 }
 
@@ -162,9 +163,9 @@ void BluetoothRfcommClient::runLoop(std::uint64_t peerAddress) {
                         std::snprintf(tmp, sizeof(tmp), "%02X ", buf[i]);
                         hex += tmp;
                     }
-                    log::debug("RFCOMM recv {} bytes: {}", read, hex);
+                    log::debug("RFCOMM {:012X} recv {} bytes: {}", peerAddress, read, hex);
                 } else {
-                    log::debug("RFCOMM recv {} bytes", read);
+                    log::debug("RFCOMM {:012X} recv {} bytes", peerAddress, read);
                 }
                 if (m_onPacket) m_onPacket(std::span<const std::uint8_t>(buf.data(), read));
             }
