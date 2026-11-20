@@ -36,6 +36,10 @@ jobs:
         working-directory: windows
         run: cmake --build build --config Release --parallel
 
+      - name: Run peer protocol v2 unit tests
+        working-directory: windows
+        run: .\build\Release\peer_v2_tests.exe
+
       - name: Upload executable
         uses: actions/upload-artifact@v5
         with:
