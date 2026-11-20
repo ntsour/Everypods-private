@@ -19,7 +19,9 @@
 //   ks_connect_spike disconnect <name-substring>
 //   ks_connect_spike cycle      <name-substring> <count> [pauseSeconds=5]
 //   ks_connect_spike watch      <name-substring> <minutes>
-// Output goes to stdout and is appended to ks_connect_spike.log in the cwd.
+// Output goes to stdout, is appended to ks_connect_spike.log in the cwd, and is
+// copied to %LOCALAPPDATA%\EveryPods\traces\windows-<date>-<time>-pid<n>.log
+// (lines prefixed "SPIKE") so the Propods tray can send it to the phone.
 
 #include <initguid.h>  // single TU: makes PKEY_* / KS GUIDs real definitions (selectany)
 #include <windows.h>
@@ -48,6 +50,7 @@
 #include <ctime>
 #include <exception>
 #include <format>
+#include <filesystem>
 #include <fstream>
 #include <map>
 #include <mutex>
@@ -73,6 +76,23 @@ using Clock = std::chrono::steady_clock;
 // ---------------------------------------------------------------- logging
 std::mutex g_logMu;
 std::ofstream g_logFile;
+// Second copy in the Propods traces folder, named like a Propods trace so the
+// tray's "Send traces to phone" uploads it and the Mac can adb-pull it.
+std::ofstream g_traceFile;
+
+void openTraceCopy() {
+    wchar_t buf[MAX_PATH] = {};
+    const DWORD len = GetEnvironmentVariableW(L"LOCALAPPDATA", buf, MAX_PATH);
+    if (len == 0 || len >= MAX_PATH) return;
+    const auto dir = std::filesystem::path{buf} / L"EveryPods" / L"traces";
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    SYSTEMTIME st{};
+    GetLocalTime(&st);
+    const auto name = std::format(L"windows-{:04}{:02}{:02}-{:02}{:02}{:02}-pid{}.log",
+        st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, GetCurrentProcessId());
+    g_traceFile.open(dir / name, std::ios::app | std::ios::binary);
+}
 
 std::string wallStamp() {
     using namespace std::chrono;
@@ -93,6 +113,10 @@ void logLine(const std::string& msg) {
     if (g_logFile.is_open()) {
         g_logFile << line << '\n';
         g_logFile.flush();
+    }
+    if (g_traceFile.is_open()) {
+        g_traceFile << "SPIKE " << line << '\n';
+        g_traceFile.flush();
     }
 }
 
@@ -603,6 +627,7 @@ void usage() {
 int wmain(int argc, wchar_t** argv) {
     try {
         g_logFile.open("ks_connect_spike.log", std::ios::app);
+        openTraceCopy();
         if (argc < 2) { usage(); return 2; }
         HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
         if (FAILED(hr)) { logLine("CoInitializeEx failed " + hrs(hr)); return 1; }
