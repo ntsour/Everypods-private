@@ -42,6 +42,7 @@ set(SRC
     src/PeerRegistry.cpp
     src/BleProximityWatcher.cpp
     src/TraceUploader.cpp
+    src/PlaybackSilencer.cpp
     src/v2/PeerV2Json.cpp
     src/v2/PeerV2Frame.cpp
     src/v2/PeerV2Identity.cpp
@@ -63,6 +64,7 @@ set(HDR
     src/PeerRegistry.hpp
     src/BleProximityWatcher.hpp
     src/TraceUploader.hpp
+    src/PlaybackSilencer.hpp
     src/BtHandoverSetup.hpp
     src/Logger.hpp
 )

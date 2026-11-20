@@ -21,6 +21,8 @@ public:
     static constexpr int kCmdToggleAutoRoute = 1006;
     static constexpr int kCmdOpenTraces      = 1007;
     static constexpr int kCmdSendTraces      = 1008;
+    static constexpr int kCmdTogglePause     = 1009;
+    static constexpr int kCmdUnmuteApps      = 1010;
     // kCmdRemovePeer+i removes the peer at index i in the StatusInfo::peers list.
     static constexpr int kCmdRemovePeer      = 2000;
 
@@ -35,6 +37,8 @@ public:
     struct StatusInfo {
         bool                    airpodsConnected{false};
         bool                    autoRouteEnabled{true};
+        bool                    pauseOnRelease{true};
+        bool                    hasMutedApps{false};
         std::vector<PeerStatus> peers;
     };
 
