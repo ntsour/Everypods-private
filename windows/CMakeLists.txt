@@ -46,6 +46,7 @@ set(SRC
     src/v2/PeerV2Frame.cpp
     src/v2/PeerV2Identity.cpp
     src/v2/PeerV2Message.cpp
+    src/v2/PeerV2Mesh.cpp
     src/BtHandoverSetup.cpp
     src/Propods.rc
 )
