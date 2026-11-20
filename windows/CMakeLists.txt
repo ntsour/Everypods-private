@@ -42,6 +42,11 @@ set(SRC
     src/PeerRegistry.cpp
     src/BleProximityWatcher.cpp
     src/TraceUploader.cpp
+    src/v2/PeerV2Json.cpp
+    src/v2/PeerV2Frame.cpp
+    src/v2/PeerV2Identity.cpp
+    src/v2/PeerV2Message.cpp
+    src/v2/PeerV2Mesh.cpp
     src/BtHandoverSetup.cpp
     src/Propods.rc
 )
@@ -78,3 +83,14 @@ target_link_libraries(Propods PRIVATE
     Shlwapi.lib
     Bthprops.lib
 )
+
+# Peer protocol v2 building blocks: unit tests, run in CI (no Bluetooth needed).
+add_executable(peer_v2_tests
+    tools/peer_v2_tests.cpp
+    src/v2/PeerV2Json.cpp
+    src/v2/PeerV2Frame.cpp
+    src/v2/PeerV2Identity.cpp
+    src/v2/PeerV2Message.cpp
+)
+target_include_directories(peer_v2_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(peer_v2_tests PRIVATE bcrypt.lib)

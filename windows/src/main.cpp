@@ -18,6 +18,8 @@
 #include "SettingsStore.hpp"
 #include "TeamsCallWatcher.hpp"
 #include "BtHandoverSetup.hpp"
+#include "v2/PeerV2Identity.hpp"
+#include "v2/PeerV2Mesh.hpp"
 #include "TraceUploader.hpp"
 #include "TrayIcon.hpp"
 #include "crossdevice_protocol.hpp"
@@ -196,7 +198,34 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     // in their case (would otherwise hijack audio from a Jabra/Dell headset the
     // user is actively on). Fails open if BLE is unavailable.
     bleWatcher.start();
-    controller.setAvailabilityProbe([&bleWatcher]() {
+
+    // Peer protocol v2: publishes this PC's AirPods ownership to every phone and
+    // answers their automatic-reconnect requests (see PeerV2Mesh.hpp). Audio use
+    // comes from the existing media/Teams events, never from polling audio
+    // sessions (polling made Windows drop idle AirPods in June).
+    std::atomic<bool> mediaPlaying{false};
+    std::atomic<bool> callActive{false};
+    v2::PeerV2Mesh peerV2([&]() {
+        v2::LocalState st;
+        const std::uint64_t addr = airpods.address();
+        if (addr == 0) return st;  // headset unknown -> ownership unknown
+        st.headsetId = v2::headsetIdFromAddress(addr);
+        const bool held = airpods.isClassicallyConnectedWinRT();
+        st.ownership = held ? v2::Ownership::Held : v2::Ownership::Released;
+        st.audioUse = !held ? v2::AudioUse::Idle
+                    : callActive.load() ? v2::AudioUse::Call
+                    : mediaPlaying.load() ? v2::AudioUse::Media
+                    : v2::AudioUse::Idle;
+        return st;
+    });
+
+    // Don't take the AirPods while a phone holds a v2 reservation on us: it is
+    // in the middle of connecting them after a case-open.
+    controller.setAvailabilityProbe([&bleWatcher, &peerV2]() {
+        if (peerV2.reservationActive()) {
+            log::handover("SKIP    takeover: a phone is mid-connect (v2 reservation active)");
+            return false;
+        }
         return bleWatcher.airpodsAvailable();
     });
 
@@ -235,6 +264,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
         addrs.push_back(phone);
         store.save(settings);
         peers.addPeer(phone);
+        peerV2.addPeer(phone);
         log::info("Added Android peer {} after it enabled BT handover",
             SettingsStore::formatBluetoothAddress(phone));
     });
@@ -247,8 +277,10 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
         controller.onPeerConnectionChanged(connected);
     });
 
-    media.setCallback([&controller](bool playing) {
+    media.setCallback([&controller, &mediaPlaying, &peerV2](bool playing) {
+        mediaPlaying.store(playing);
         controller.onMediaPlayingChanged(playing);
+        peerV2.refreshLocalState();
     });
 
     // WASAPI-based trigger (Teams calls, VLC, …) feeds the handover path via
@@ -256,14 +288,18 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     // the standard debounce and anti-pingpong guards. This prevents an ongoing
     // Teams call from re-triggering a claim after Windows voluntarily released
     // AirPods to a peer.
-    teamsWatcher.setOnTriggered([&controller]() {
+    teamsWatcher.setOnTriggered([&controller, &callActive, &peerV2]() {
+        callActive.store(true);
         controller.onCallActive();
+        peerV2.refreshLocalState();
     });
 
     // When the Teams audio session expires (call ended), clear the voluntary-release
     // gate so the next new call can trigger a fresh claim.
-    teamsWatcher.setOnSessionEnded([&controller]() {
+    teamsWatcher.setOnSessionEnded([&controller, &callActive, &peerV2]() {
+        callActive.store(false);
         controller.onTeamsCallEnded();
+        peerV2.refreshLocalState();
     });
 
     tray.setMenuHandler([&](int cmd) {
@@ -312,6 +348,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
                     if (res == IDYES) {
                         addrs.push_back(p.address);
                         peers.addPeer(p.address);
+                        peerV2.addPeer(p.address);
                         log::info("Added new Android peer: {} ({})",
                             to_string(p.name),
                             SettingsStore::formatBluetoothAddress(p.address));
@@ -387,6 +424,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
                     if (idx >= 0 && idx < (int)addrs.size()) {
                         std::uint64_t addr = addrs[idx];
                         peers.removePeer(addr);
+                        peerV2.removePeer(addr);
                         addrs.erase(addrs.begin() + idx);
                         store.save(settings);
                         log::info("Removed Android peer: {}",
@@ -406,10 +444,13 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
         log::warn("No Android peers configured. Use tray menu \"Add Android peer...\" once a device is paired in Windows.");
     }
 
+    peerV2.start(settings.androidAddresses);
     media.start();
     teamsWatcher.start();
 
     tray.runMessageLoop();
+
+    peerV2.stop();
 
     teamsWatcher.stop();
     bleWatcher.stop();
