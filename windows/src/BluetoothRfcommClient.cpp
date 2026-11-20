@@ -146,6 +146,7 @@ void BluetoothRfcommClient::runLoop(std::uint64_t peerAddress) {
 
             std::vector<std::uint8_t> buf;
             buf.resize(1024);
+            crossdevice::StreamDecoder decoder;  // fresh per connection
 
             while (m_running.load()) {
                 std::uint32_t read = reader.LoadAsync(1024).get();
@@ -167,7 +168,9 @@ void BluetoothRfcommClient::runLoop(std::uint64_t peerAddress) {
                 } else {
                     log::debug("RFCOMM {:012X} recv {} bytes", peerAddress, read);
                 }
-                if (m_onPacket) m_onPacket(std::span<const std::uint8_t>(buf.data(), read));
+                for (const auto& packet : decoder.feed(std::span<const std::uint8_t>(buf.data(), read))) {
+                    if (m_onPacket) m_onPacket(std::span<const std::uint8_t>(packet.data(), packet.size()));
+                }
             }
         } catch (const winrt::hresult_error& e) {
             log::warn("RFCOMM connection error: 0x{:08X} {}",
