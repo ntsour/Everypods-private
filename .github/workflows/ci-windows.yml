@@ -3,7 +3,9 @@ name: Windows CI
 on:
   push:
     branches:
-      - '*'
+      # '**' (not '*'): a single '*' does not match '/', so it skipped branches
+      # like chore/windows-ci-build.
+      - '**'
     paths:
       - 'windows/**'
       - '.github/workflows/ci-windows.yml'
