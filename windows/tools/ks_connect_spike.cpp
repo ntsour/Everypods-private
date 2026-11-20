@@ -183,7 +183,45 @@ std::wstring friendlyName(IMMDevice* dev) {
     return out;
 }
 
-// Walk: endpoint -> IDeviceTopology -> connector 0 -> connected-to connector -> IPart -> IKsControl.
+// IKsControl over a raw handle to the KS filter's device interface, for when
+// COM will not hand out IKsControl. Sends IOCTL_KS_PROPERTY directly.
+class HandleKsControl final : public IKsControl {
+public:
+    explicit HandleKsControl(HANDLE h) : m_h(h) {}
+    ~HandleKsControl() { if (m_h != INVALID_HANDLE_VALUE) CloseHandle(m_h); }
+    STDMETHODIMP QueryInterface(REFIID riid, void** ppv) override {
+        if (!ppv) return E_POINTER;
+        if (riid == __uuidof(IUnknown) || riid == __uuidof(IKsControl)) {
+            *ppv = static_cast<IKsControl*>(this);
+            AddRef();
+            return S_OK;
+        }
+        *ppv = nullptr;
+        return E_NOINTERFACE;
+    }
+    STDMETHODIMP_(ULONG) AddRef() override { return ++m_refs; }
+    STDMETHODIMP_(ULONG) Release() override {
+        const ULONG r = --m_refs;
+        if (r == 0) delete this;
+        return r;
+    }
+    STDMETHODIMP KsProperty(PKSPROPERTY Property, ULONG PropertyLength, LPVOID PropertyData,
+                            ULONG DataLength, ULONG* BytesReturned) override {
+        DWORD bytes = 0;
+        const BOOL ok = DeviceIoControl(m_h, IOCTL_KS_PROPERTY, Property, PropertyLength,
+                                        PropertyData, DataLength, &bytes, nullptr);
+        if (BytesReturned) *BytesReturned = bytes;
+        return ok ? S_OK : HRESULT_FROM_WIN32(GetLastError());
+    }
+    STDMETHODIMP KsMethod(PKSMETHOD, ULONG, LPVOID, ULONG, ULONG*) override { return E_NOTIMPL; }
+    STDMETHODIMP KsEvent(PKSEVENT, ULONG, LPVOID, ULONG, ULONG*) override { return E_NOTIMPL; }
+
+private:
+    HANDLE m_h;
+    std::atomic<ULONG> m_refs{1};
+};
+
+// Walk: endpoint -> IDeviceTopology -> connector 0 -> connected-to connector -> KS filter -> IKsControl.
 HRESULT acquireKs(IMMDevice* dev, ComPtr<IKsControl>& ks, std::wstring& key, std::string& note) {
     ComPtr<IDeviceTopology> topo;
     HRESULT hr = dev->Activate(__uuidof(IDeviceTopology), CLSCTX_ALL, nullptr,
@@ -204,13 +242,64 @@ HRESULT acquireKs(IMMDevice* dev, ComPtr<IKsControl>& ks, std::wstring& key, std
     hr = conn->GetConnectedTo(&other);
     if (FAILED(hr)) { note = "GetConnectedTo failed " + hrs(hr); return hr; }
 
+    // 1) IKsControl straight from the connected part (works for some drivers).
     ComPtr<IPart> part;
     hr = other.As(&part);
-    if (FAILED(hr)) { note = "QI(IPart) failed " + hrs(hr); return hr; }
+    HRESULT partHr = FAILED(hr) ? hr
+        : part->Activate(CLSCTX_ALL, __uuidof(IKsControl), reinterpret_cast<void**>(ks.GetAddressOf()));
+    if (SUCCEEDED(partHr)) { note = "via IPart::Activate"; return S_OK; }
 
-    hr = part->Activate(CLSCTX_ALL, __uuidof(IKsControl), reinterpret_cast<void**>(ks.GetAddressOf()));
-    if (FAILED(hr)) { note = "IPart::Activate(IKsControl) failed " + hrs(hr); return hr; }
-    return S_OK;
+    // 2) Open the KS filter device itself by the id the connector reports and
+    //    activate IKsControl on that IMMDevice (the documented route).
+    ComPtr<IMMDeviceEnumerator> en = makeEnumerator();
+    HRESULT idHr = E_FAIL;
+    if (en && !key.empty()) {
+        ComPtr<IMMDevice> filter;
+        idHr = en->GetDevice(key.c_str(), &filter);
+        if (SUCCEEDED(idHr))
+            idHr = filter->Activate(__uuidof(IKsControl), CLSCTX_ALL, nullptr,
+                                    reinterpret_cast<void**>(ks.GetAddressOf()));
+        if (SUCCEEDED(idHr)) { note = "via GetDevice(connected id)"; return S_OK; }
+    }
+
+    // 3) Same, but with the id of the topology object that owns the part.
+    HRESULT topoHr = E_FAIL;
+    if (part && en) {
+        ComPtr<IDeviceTopology> filterTopo;
+        topoHr = part->GetTopologyObject(&filterTopo);
+        LPWSTR filterId = nullptr;
+        if (SUCCEEDED(topoHr)) topoHr = filterTopo->GetDeviceId(&filterId);
+        if (SUCCEEDED(topoHr) && filterId) {
+            ComPtr<IMMDevice> filter;
+            topoHr = en->GetDevice(filterId, &filter);
+            if (SUCCEEDED(topoHr))
+                topoHr = filter->Activate(__uuidof(IKsControl), CLSCTX_ALL, nullptr,
+                                          reinterpret_cast<void**>(ks.GetAddressOf()));
+            if (SUCCEEDED(topoHr)) { key = filterId; note = "via GetDevice(topology id)"; }
+        }
+        if (filterId) CoTaskMemFree(filterId);
+        if (SUCCEEDED(topoHr)) return S_OK;
+    }
+
+    // 4) The connected id is usually "{2}.\\?\<device interface path>": open the
+    //    filter's device interface and send IOCTL_KS_PROPERTY ourselves.
+    HRESULT fileHr = E_FAIL;
+    if (const auto dot = key.find(L".\\\\?\\"); dot != std::wstring::npos) {
+        const std::wstring path = key.substr(dot + 1);
+        HANDLE h = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+        if (h != INVALID_HANDLE_VALUE) {
+            ks.Attach(new HandleKsControl(h));
+            note = "via CreateFile(device interface) + IOCTL_KS_PROPERTY";
+            return S_OK;
+        }
+        fileHr = HRESULT_FROM_WIN32(GetLastError());
+    }
+
+    note = std::format("no IKsControl: IPart::Activate {}, GetDevice(connected id) {}, "
+                       "GetDevice(topology id) {}, CreateFile {}; connected id={}",
+                       hrs(partHr), hrs(idHr), hrs(topoHr), hrs(fileHr), narrow(key));
+    return partHr;
 }
 
 HRESULT ksCall(IKsControl* ks, ULONG id, ULONG flags) {
