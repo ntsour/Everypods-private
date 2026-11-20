@@ -7,10 +7,12 @@
 //     playing (browsers per tab, Spotify, media apps...) gets TryPauseAsync.
 //     A real pause that keeps the position. Never sends media keys (they
 //     toggle and can start playback) and never resumes anything.
-//  2. Mute: ~1.5 s later, any WASAPI audio session on any active output that
-//     is still producing sound (peak meter above silence) is muted: games,
-//     players without media controls, web audio. System sounds and this
-//     process are skipped.
+//  2. ~1.5 s later, any WASAPI audio session on any active output that is
+//     still producing sound (peak meter above silence) gets one play/pause
+//     command to its app's main window (for players outside the media
+//     controls, e.g. VLC 3; it is playing, so the toggle pauses). Whatever is
+//     still audible after that is muted: games, web audio. System sounds and
+//     this process are skipped.
 //
 // Only sessions this class muted are unmuted, by restoreMutes(): when the
 // AirPods come back, when media starts playing on the PC, or from the tray.
@@ -66,6 +68,7 @@ private:
     std::vector<MutedSession> m_muted;
     DoneCallback m_onDone;
     std::function<bool()> m_stillReleased;
+    int m_commandPaused = 0;  // set by muteAudibleSessions during one run
 };
 
 }

@@ -320,7 +320,14 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     // the standard debounce and anti-pingpong guards. This prevents an ongoing
     // Teams call from re-triggering a claim after Windows voluntarily released
     // AirPods to a peer.
-    teamsWatcher.setOnTriggered([&controller, &callActive, &peerV2]() {
+    teamsWatcher.setOnTriggered([&controller, &callActive, &peerV2, &silencer]() {
+        // An app we muted for the phone keeps its audio session active; that is
+        // not the user asking for the AirPods back (seen with VLC: it pulled them
+        // back from the Pixel a minute later). Real media starts still trigger.
+        if (silencer.hasMuted()) {
+            log::handover("SKIP    audio-session trigger: apps are muted for the phone");
+            return;
+        }
         callActive.store(true);
         controller.onCallActive();
         peerV2.refreshLocalState();

@@ -81,6 +81,21 @@ std::wstring instanceId(IAudioSessionControl2* c) {
     return id;
 }
 
+// Main window of a process: first visible, unowned top-level window with a title.
+HWND mainWindowOf(DWORD pid) {
+    struct Ctx { DWORD pid; HWND found; } ctx{pid, nullptr};
+    EnumWindows([](HWND hwnd, LPARAM lp) -> BOOL {
+        auto* c = reinterpret_cast<Ctx*>(lp);
+        DWORD owner = 0;
+        GetWindowThreadProcessId(hwnd, &owner);
+        if (owner != c->pid || !IsWindowVisible(hwnd) || GetWindow(hwnd, GW_OWNER) != nullptr) return TRUE;
+        if (GetWindowTextLengthW(hwnd) == 0) return TRUE;
+        c->found = hwnd;
+        return FALSE;
+    }, reinterpret_cast<LPARAM>(&ctx));
+    return ctx.found;
+}
+
 void addName(std::vector<std::wstring>& names, const std::wstring& name) {
     if (std::find(names.begin(), names.end(), name) == names.end()) names.push_back(name);
 }
@@ -121,7 +136,9 @@ PlaybackSilencer::Result PlaybackSilencer::silence(const char* reason) {
     log::handover("SILENCE {}: pausing playing media sessions", reason);
     r.paused = pausePlayingSessions(r.names);
     std::this_thread::sleep_for(kSettleBeforeMute);
+    m_commandPaused = 0;
     r.muted = muteAudibleSessions(r.names);
+    r.paused += m_commandPaused;
     log::handover("SILENCE done: {} paused, {} muted", r.paused, r.muted);
     return r;
 }
@@ -150,6 +167,7 @@ int PlaybackSilencer::pausePlayingSessions(std::vector<std::wstring>& names) {
 int PlaybackSilencer::muteAudibleSessions(std::vector<std::wstring>& names) {
     struct Candidate {
         std::wstring endpointId, instance, name;
+        DWORD pid = 0;
         ComPtr<IAudioMeterInformation> meter;
         ComPtr<ISimpleAudioVolume> volume;
         float peak = 0.0f;
@@ -171,6 +189,7 @@ int PlaybackSilencer::muteAudibleSessions(std::vector<std::wstring>& names) {
         cand.endpointId = endpointId;
         cand.instance = instanceId(c);
         cand.name = processName(pid);
+        cand.pid = pid;
         candidates.push_back(std::move(cand));
     });
 
@@ -181,6 +200,40 @@ int PlaybackSilencer::muteAudibleSessions(std::vector<std::wstring>& names) {
             if (SUCCEEDED(cand.meter->GetPeakValue(&peak))) cand.peak = std::max(cand.peak, peak);
         }
         std::this_thread::sleep_for(std::chrono::milliseconds{100});
+    }
+
+    // Apps outside the media controls (e.g. VLC 3) that are measurably playing
+    // get one play/pause command to their main window. They are playing, so
+    // the toggle can only pause; one window per process so it is never sent
+    // twice. Anything still audible afterwards is muted.
+    std::vector<DWORD> commanded;
+    for (auto& cand : candidates) {
+        if (cand.peak < kAudiblePeak) continue;
+        if (std::find(commanded.begin(), commanded.end(), cand.pid) != commanded.end()) continue;
+        commanded.push_back(cand.pid);
+        if (HWND hwnd = mainWindowOf(cand.pid)) {
+            PostMessageW(hwnd, WM_APPCOMMAND, reinterpret_cast<WPARAM>(hwnd),
+                MAKELPARAM(0, APPCOMMAND_MEDIA_PLAY_PAUSE | FAPPCOMMAND_KEY));
+            log::handover("SILENCE play/pause command to '{}' (not in media controls)", log::toUtf8(cand.name));
+        }
+    }
+    if (!commanded.empty()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{900});
+        for (auto& cand : candidates) cand.peak = 0.0f;
+        for (int sample = 0; sample < 4; ++sample) {
+            for (auto& cand : candidates) {
+                float peak = 0.0f;
+                if (SUCCEEDED(cand.meter->GetPeakValue(&peak))) cand.peak = std::max(cand.peak, peak);
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds{100});
+        }
+        for (auto& cand : candidates) {
+            if (std::find(commanded.begin(), commanded.end(), cand.pid) != commanded.end() && cand.peak < kAudiblePeak) {
+                log::handover("SILENCE '{}' paused by command", log::toUtf8(cand.name));
+                addName(names, cand.name);
+                ++m_commandPaused;
+            }
+        }
     }
 
     int muted = 0;
