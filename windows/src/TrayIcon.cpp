@@ -98,6 +98,16 @@ void TrayIcon::setStatus(const std::wstring& text) {
     Shell_NotifyIconW(NIM_MODIFY, &m_nid);
 }
 
+void TrayIcon::notify(const std::wstring& title, const std::wstring& text) {
+    if (!m_hwnd) return;
+    NOTIFYICONDATAW nid = m_nid;  // copy: only the balloon fields change
+    nid.uFlags = NIF_INFO;
+    nid.dwInfoFlags = NIIF_INFO;
+    StringCchCopyW(nid.szInfoTitle, ARRAYSIZE(nid.szInfoTitle), title.c_str());
+    StringCchCopyW(nid.szInfo, ARRAYSIZE(nid.szInfo), text.c_str());
+    Shell_NotifyIconW(NIM_MODIFY, &nid);
+}
+
 LRESULT CALLBACK TrayIcon::wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (g_instance) return g_instance->handleMessage(hwnd, msg, wp, lp);
     return DefWindowProcW(hwnd, msg, wp, lp);
@@ -182,6 +192,11 @@ void TrayIcon::showContextMenu(HWND hwnd) {
     if (isAutoStartEnabled()) autoStartFlags |= MF_CHECKED;
     InsertMenuW(menu, static_cast<UINT>(-1), autoStartFlags,
         static_cast<UINT_PTR>(kCmdAutoStart), L"Start with Windows");
+
+    InsertMenuW(menu, static_cast<UINT>(-1), MF_BYPOSITION | MF_STRING,
+        static_cast<UINT_PTR>(kCmdOpenTraces), L"Open traces folder");
+    InsertMenuW(menu, static_cast<UINT>(-1), MF_BYPOSITION | MF_STRING,
+        static_cast<UINT_PTR>(kCmdSendTraces), L"Send traces to phone");
 
     InsertMenuW(menu, static_cast<UINT>(-1), MF_BYPOSITION | MF_SEPARATOR, 0u, nullptr);
     InsertMenuW(menu, static_cast<UINT>(-1), MF_BYPOSITION | MF_STRING,

@@ -3,6 +3,7 @@
 #include "Logger.hpp"
 
 #include <windows.h>
+#include <winioctl.h>  // IOCTL_KS_PROPERTY (excluded by WIN32_LEAN_AND_MEAN)
 #include <bluetoothapis.h>
 #pragma comment(lib, "Bthprops.lib")
 
@@ -15,13 +16,18 @@
 
 #include <mmreg.h>
 #include <mmdeviceapi.h>
+#include <devicetopology.h>
+#include <ks.h>
+#include <ksmedia.h>
 #include <audiopolicy.h>
 #include <functiondiscoverykeys_devpkey.h>
 #include <propvarutil.h>
 #include <wrl/client.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <format>
 #include <memory>
 #include <mutex>
 #include <regex>
@@ -234,6 +240,13 @@ bool toggleProfile(std::uint64_t address, const GUID& profile, DWORD state,
 
 }
 
+namespace {
+// Defined further down, next to the endpoint enumeration it uses.
+constexpr ULONG kKsOneshotReconnect = 0;  // KSPROPERTY_ONESHOT_RECONNECT
+constexpr ULONG kKsOneshotDisconnect = 1; // KSPROPERTY_ONESHOT_DISCONNECT
+int sendBtAudioOneshot(ULONG propertyId, const char* label);
+}
+
 bool AirPodsConnector::connect() {
     if (m_address == 0) {
         log::warn("AirPods address not configured; use tray menu \"Select AirPods...\"");
@@ -280,6 +293,35 @@ bool AirPodsConnector::connect() {
     // After this returns, the IMMNotificationClient is responsible for finishing
     // the routing when (if) the audio endpoint transitions to DEVICE_STATE_ACTIVE.
     // This function no longer waits for that — it just kicks the OS.
+
+    // Preferred path: ask the Bluetooth audio driver itself to connect, the same
+    // request Settings -> Bluetooth -> Connect makes (KSPROPERTY_ONESHOT_RECONNECT
+    // on the AirPods' A2DP and hands-free filters). On the test PC
+    // (ks_connect_spike, 2026-11-20) this brought audio ACTIVE in ~5 s median
+    // versus ~16 s for the SDP/RFCOMM wake below, and the link then stayed up
+    // through 5 idle minutes. The SDP/RFCOMM wake remains as a fallback for
+    // drivers that do not expose the property.
+    {
+        const auto t0 = std::chrono::steady_clock::now();
+        const int sent = sendBtAudioOneshot(kKsOneshotReconnect, "RECONNECT");
+        if (sent > 0) {
+            constexpr auto kLinkWait = std::chrono::seconds{10};
+            while (std::chrono::steady_clock::now() - t0 < kLinkWait) {
+                bool up = false;
+                try { up = device.ConnectionStatus() == BluetoothConnectionStatus::Connected; } catch (...) {}
+                if (up) {
+                    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - t0).count();
+                    log::handover("CONNECT driver-level connect: link up after {} ms", ms);
+                    return true;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+            log::handover("CONNECT driver-level connect: no link within 10 s");
+            return false;
+        }
+        log::handover("CONNECT driver-level connect unavailable — falling back to SDP/RFCOMM wake");
+    }
 
     // Step 1: bring up the BT classical link via uncached SDP / RFCOMM.
     bool socketOpened = false;
@@ -1150,23 +1192,163 @@ bool AirPodsConnector::disconnect() {
         return true;
     }
 
-    // DO NOT disable the A2DP/HFP profiles here. BluetoothSetServiceState(DISABLE)
-    // is persisted by Windows in the BT registry — so a release leaves the AirPods'
-    // A2DP service DISABLED, and the next time they connect the audio endpoint is
-    // NOTPRESENT (no sound) until something re-enables it. Re-enabling, in turn, can
-    // only be done on a cold link (doing it on a live link disrupts A2DP). That
-    // disable/enable cycle was the root cause of "AirPods connect to Windows but no
-    // audio" — and is exactly why quitting the app (which stops touching profile
-    // state) made audio work.
+    // Release with the Bluetooth audio driver's own disconnect
+    // (KSPROPERTY_ONESHOT_DISCONNECT), the same request as Settings ->
+    // Disconnect. It frees the AirPods for the phone right away instead of
+    // leaving the phone to win a page race against a PC that still holds them.
+    // It does not change any persisted profile state.
     //
-    // Releasing to a phone does not require us to forcibly disable A2DP: A2DP sink is
-    // single-holder, so when the phone grabs the AirPods (its takeOver connects A2DP)
-    // the link moves off Windows on its own. We simply stop holding it and let the
-    // peer take over. Ownership/state is tracked separately by HandoverController.
-    log::info("AirPods release for {:012X} — leaving BT profile state untouched "
-              "(peer's A2DP grab moves the link; avoids persistent A2DP disable)",
-        m_address);
+    // NEVER use BluetoothSetServiceState(DISABLE) here: Windows persists it, so
+    // the next connection comes up with A2DP NOTPRESENT (no sound) until it is
+    // re-enabled on a cold link. That was the "connects but no audio" bug.
+    const int sent = sendBtAudioOneshot(kKsOneshotDisconnect, "DISCONNECT");
+    if (sent == 0) {
+        log::info("AirPods release for {:012X}: driver-level disconnect unavailable; "
+                  "leaving the link for the peer's A2DP grab", m_address);
+    }
     return true;
 }
+
+
+namespace {
+
+// KSPROPSETID_BtAudio {7FA06C40-B8F6-4C7E-8556-E8C33A12E54D} (ksmedia.h).
+constexpr GUID kBtAudioSet = {0x7fa06c40, 0xb8f6, 0x4c7e, {0x85, 0x56, 0xe8, 0xc3, 0x3a, 0x12, 0xe5, 0x4d}};
+
+// IKsControl over a raw handle to a KS filter's device interface, for drivers
+// whose topology does not hand out IKsControl through COM (the test PC).
+class HandleKsControl final : public IKsControl {
+public:
+    explicit HandleKsControl(HANDLE h) : m_h(h) {}
+    ~HandleKsControl() { if (m_h != INVALID_HANDLE_VALUE) CloseHandle(m_h); }
+    STDMETHODIMP QueryInterface(REFIID riid, void** ppv) override {
+        if (!ppv) return E_POINTER;
+        if (riid == __uuidof(IUnknown) || riid == __uuidof(IKsControl)) {
+            *ppv = static_cast<IKsControl*>(this);
+            AddRef();
+            return S_OK;
+        }
+        *ppv = nullptr;
+        return E_NOINTERFACE;
+    }
+    STDMETHODIMP_(ULONG) AddRef() override { return ++m_refs; }
+    STDMETHODIMP_(ULONG) Release() override {
+        const ULONG r = --m_refs;
+        if (r == 0) delete this;
+        return r;
+    }
+    STDMETHODIMP KsProperty(PKSPROPERTY Property, ULONG PropertyLength, LPVOID PropertyData,
+                            ULONG DataLength, ULONG* BytesReturned) override {
+        DWORD bytes = 0;
+        const BOOL ok = DeviceIoControl(m_h, IOCTL_KS_PROPERTY, Property, PropertyLength,
+                                        PropertyData, DataLength, &bytes, nullptr);
+        if (BytesReturned) *BytesReturned = bytes;
+        return ok ? S_OK : HRESULT_FROM_WIN32(GetLastError());
+    }
+    STDMETHODIMP KsMethod(PKSMETHOD, ULONG, LPVOID, ULONG, ULONG*) override { return E_NOTIMPL; }
+    STDMETHODIMP KsEvent(PKSEVENT, ULONG, LPVOID, ULONG, ULONG*) override { return E_NOTIMPL; }
+
+private:
+    HANDLE m_h;
+    std::atomic<ULONG> m_refs{1};
+};
+
+// endpoint -> topology connector 0 -> connected filter -> IKsControl. Tries
+// the COM routes first, then opens the filter's device interface directly
+// (the route that worked on the test PC). `key` receives the filter id.
+HRESULT acquireBtAudioKs(IMMDeviceEnumerator* en, IMMDevice* dev, ComPtr<IKsControl>& ks,
+                         std::wstring& key, std::string& note) {
+    ComPtr<IDeviceTopology> topo;
+    HRESULT hr = dev->Activate(__uuidof(IDeviceTopology), CLSCTX_ALL, nullptr,
+                               reinterpret_cast<void**>(topo.GetAddressOf()));
+    if (FAILED(hr)) { note = std::format("Activate(IDeviceTopology) 0x{:08X}", (std::uint32_t)hr); return hr; }
+    ComPtr<IConnector> conn;
+    hr = topo->GetConnector(0, &conn);
+    if (FAILED(hr)) { note = std::format("GetConnector(0) 0x{:08X}", (std::uint32_t)hr); return hr; }
+    LPWSTR connId = nullptr;
+    if (SUCCEEDED(conn->GetDeviceIdConnectedTo(&connId)) && connId) {
+        key = connId;
+        CoTaskMemFree(connId);
+    }
+    ComPtr<IConnector> other;
+    hr = conn->GetConnectedTo(&other);
+    if (FAILED(hr)) { note = std::format("GetConnectedTo 0x{:08X}", (std::uint32_t)hr); return hr; }
+
+    ComPtr<IPart> part;
+    if (SUCCEEDED(other.As(&part)) &&
+        SUCCEEDED(part->Activate(CLSCTX_ALL, __uuidof(IKsControl), reinterpret_cast<void**>(ks.GetAddressOf())))) {
+        note = "IPart";
+        return S_OK;
+    }
+    if (!key.empty()) {
+        ComPtr<IMMDevice> filter;
+        if (SUCCEEDED(en->GetDevice(key.c_str(), &filter)) &&
+            SUCCEEDED(filter->Activate(__uuidof(IKsControl), CLSCTX_ALL, nullptr,
+                                       reinterpret_cast<void**>(ks.GetAddressOf())))) {
+            note = "GetDevice";
+            return S_OK;
+        }
+        // "{2}.\\?\<device interface path>"
+        if (const auto dot = key.find(L".\\\\?\\"); dot != std::wstring::npos) {
+            const std::wstring path = key.substr(dot + 1);
+            HANDLE h = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE,
+                                   FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+            if (h != INVALID_HANDLE_VALUE) {
+                ks.Attach(new HandleKsControl(h));
+                note = "device interface";
+                return S_OK;
+            }
+            hr = HRESULT_FROM_WIN32(GetLastError());
+            note = std::format("CreateFile 0x{:08X}", (std::uint32_t)hr);
+            return hr;
+        }
+    }
+    note = "no IKsControl route";
+    return E_NOINTERFACE;
+}
+
+// Sends one KSPROPSETID_BtAudio one-shot request (reconnect/disconnect) to
+// every distinct Bluetooth audio filter behind the AirPods' render and capture
+// endpoints (A2DP and hands-free). Returns how many filters accepted it.
+// Success only means the driver started the operation; the link and endpoint
+// state confirm the result.
+int sendBtAudioOneshot(ULONG propertyId, const char* label) {
+    ComPtr<IMMDeviceEnumerator> en;
+    if (FAILED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, IID_PPV_ARGS(&en)))) {
+        log::warn("KS {}: cannot create the audio device enumerator", label);
+        return 0;
+    }
+    std::vector<Endpoint> endpoints = findAirPodsEndpoints(en.Get(), eRender);
+    for (auto& e : findAirPodsEndpoints(en.Get(), eCapture)) endpoints.push_back(e);
+
+    std::vector<std::wstring> done;
+    int accepted = 0;
+    for (const auto& ep : endpoints) {
+        ComPtr<IMMDevice> dev;
+        if (FAILED(en->GetDevice(ep.id.c_str(), &dev))) continue;
+        ComPtr<IKsControl> ks;
+        std::wstring key;
+        std::string note;
+        if (FAILED(acquireBtAudioKs(en.Get(), dev.Get(), ks, key, note))) {
+            log::debug("KS {}: '{}' has no Bluetooth audio control ({})", label,
+                winrt::to_string(ep.name), note);
+            continue;
+        }
+        if (std::find(done.begin(), done.end(), key) != done.end()) continue;
+        done.push_back(key);
+        KSPROPERTY prop{};
+        prop.Set = kBtAudioSet;
+        prop.Id = propertyId;
+        prop.Flags = KSPROPERTY_TYPE_GET;
+        ULONG bytes = 0;
+        const HRESULT hr = ks->KsProperty(&prop, sizeof(prop), nullptr, 0, &bytes);
+        log::handover("KS      ONESHOT_{} '{}' via {}: 0x{:08X}", label,
+            winrt::to_string(ep.name), note, (std::uint32_t)hr);
+        if (SUCCEEDED(hr)) ++accepted;
+    }
+    return accepted;
+}
+
+}  // namespace
 
 }

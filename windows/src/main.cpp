@@ -1,4 +1,5 @@
 ﻿#include <windows.h>
+#include <shellapi.h>
 
 #include <winrt/base.h>
 #include <winrt/Windows.Devices.Bluetooth.h>
@@ -16,12 +17,18 @@
 #include "PeerRegistry.hpp"
 #include "SettingsStore.hpp"
 #include "TeamsCallWatcher.hpp"
+#include "BtHandoverSetup.hpp"
+#include "TraceUploader.hpp"
 #include "TrayIcon.hpp"
 #include "crossdevice_protocol.hpp"
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <format>
+#include <thread>
 #include <memory>
+#include <mutex>
 #include <optional>
 
 using namespace winrt;
@@ -154,6 +161,9 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
 
     winrt::init_apartment(winrt::apartment_type::multi_threaded);
 
+    log::traceFile();  // open now so tracePath() is set (still single-threaded here)
+    log::info("Durable trace: {}", log::toUtf8(log::tracePath().wstring()));
+
     SettingsStore store;
     Settings settings = store.load();
 
@@ -193,8 +203,9 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     if (!tray.create(hInstance)) return 1;
     tray.setStatus(stateLabel(controller.state()));
 
-    controller.setOnStateChanged([&tray](OwnershipState s) {
+    controller.setOnStateChanged([&tray, &bleWatcher](OwnershipState s) {
         tray.setStatus(stateLabel(s));
+        bleWatcher.setPaused(s == OwnershipState::LocalPc);
     });
 
     // Provide live status to the tray menu (queried each time the menu opens).
@@ -206,6 +217,28 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
             info.peers.push_back({p.address, p.name, p.connected});
         return info;
     });
+
+    // Answer the phone's "add BT handover device" exchange. Without this the
+    // phone keeps the PC pending and refuses its CrossDevice connection.
+    // When a phone enables handover with this PC, start coordinating with it.
+    std::mutex settingsMutex;
+    BtHandoverSetupServer handoverSetup;
+    handoverSetup.setOnChange([&](std::uint64_t phone, bool enabled) {
+        if (!enabled) {
+            log::info("Phone {} removed BT handover with this PC (peer kept; remove it from the tray if wanted)",
+                SettingsStore::formatBluetoothAddress(phone));
+            return;
+        }
+        std::scoped_lock lk{settingsMutex};
+        auto& addrs = settings.androidAddresses;
+        if (std::find(addrs.begin(), addrs.end(), phone) != addrs.end()) return;
+        addrs.push_back(phone);
+        store.save(settings);
+        peers.addPeer(phone);
+        log::info("Added Android peer {} after it enabled BT handover",
+            SettingsStore::formatBluetoothAddress(phone));
+    });
+    handoverSetup.start();
 
     peers.setOnPacket([&controller](std::span<const std::uint8_t> data) {
         controller.onIncomingPacket(data);
@@ -295,6 +328,35 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
                     airpods.setAddress(*a);
                 }
                 break;
+            case TrayIcon::kCmdOpenTraces: {
+                const auto dir = log::traceDir();
+                ShellExecuteW(nullptr, L"open", dir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                break;
+            }
+            case TrayIcon::kCmdSendTraces: {
+                // Bluetooth transfer of a few MB takes seconds to minutes; keep it off
+                // the UI thread and refuse overlapping sends.
+                static std::atomic<bool> sending{false};
+                if (sending.exchange(true)) break;
+                tray.notify(L"Sending traces to phone",
+                            L"Only new or changed trace files are sent. You'll get a summary when done.");
+                std::thread([&tray, infos = peers.peerInfos()]() {
+                    winrt::init_apartment(winrt::apartment_type::multi_threaded);
+                    std::wstring summary;
+                    for (const auto& info : infos) {
+                        const auto r = uploadTraces(info.address, std::chrono::hours{72});
+                        summary += info.name + L": ";
+                        summary += r.error.empty()
+                            ? std::format(L"{} sent, {} unchanged, {} rejected", r.stored, r.skipped, r.rejected)
+                            : L"failed: " + std::wstring(winrt::to_hstring(r.error));
+                        summary += L"\n";
+                    }
+                    if (infos.empty()) summary = L"No Android peers configured.";
+                    tray.notify(L"Trace upload finished", summary);
+                    sending.store(false);
+                }).detach();
+                break;
+            }
             case TrayIcon::kCmdConnectAirPods:
                 // Blocking operation — run on a detached thread so the UI stays responsive.
                 std::thread([&airpods]() {

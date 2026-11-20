@@ -19,6 +19,8 @@ public:
     static constexpr int kCmdAutoStart       = 1004;
     static constexpr int kCmdConnectAirPods  = 1005;
     static constexpr int kCmdToggleAutoRoute = 1006;
+    static constexpr int kCmdOpenTraces      = 1007;
+    static constexpr int kCmdSendTraces      = 1008;
     // kCmdRemovePeer+i removes the peer at index i in the StatusInfo::peers list.
     static constexpr int kCmdRemovePeer      = 2000;
 
@@ -46,6 +48,8 @@ public:
 
     bool create(HINSTANCE hInstance);
     void setStatus(const std::wstring& text);
+    // Windows notification from the tray icon (safe to call from any thread).
+    void notify(const std::wstring& title, const std::wstring& text);
     void setMenuHandler(MenuHandler h)       { m_menuHandler    = std::move(h); }
     void setStatusProvider(StatusProvider p) { m_statusProvider = std::move(p); }
 

@@ -64,6 +64,19 @@ void BleProximityWatcher::stop() {
     log::info("BleProximityWatcher: stopped");
 }
 
+void BleProximityWatcher::setPaused(bool paused) {
+    std::scoped_lock lk{m_toggleMutex};
+    if (paused == m_paused) return;
+    m_paused = paused;
+    if (paused) {
+        log::info("BleProximityWatcher: pausing scan while this PC holds the AirPods");
+        stop();
+    } else {
+        log::info("BleProximityWatcher: resuming scan");
+        start();
+    }
+}
+
 bool BleProximityWatcher::airpodsAvailable() const {
     // Fail-open when the watcher isn't running (BLE unsupported / failed to start).
     if (!m_running.load()) return true;
