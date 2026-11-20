@@ -74,3 +74,10 @@ target_link_libraries(Propods PRIVATE
     Shlwapi.lib
     Bthprops.lib
 )
+
+# Standalone spike: driver-level Bluetooth audio connect/disconnect (KSPROPSETID_BtAudio).
+add_executable(ks_connect_spike tools/ks_connect_spike.cpp)
+target_link_libraries(ks_connect_spike PRIVATE
+    Ole32.lib
+    windowsapp.lib
+)
