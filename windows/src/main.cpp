@@ -17,6 +17,7 @@
 #include "PeerRegistry.hpp"
 #include "SettingsStore.hpp"
 #include "TeamsCallWatcher.hpp"
+#include "BtHandoverSetup.hpp"
 #include "TraceUploader.hpp"
 #include "TrayIcon.hpp"
 #include "crossdevice_protocol.hpp"
@@ -27,6 +28,7 @@
 #include <format>
 #include <thread>
 #include <memory>
+#include <mutex>
 #include <optional>
 
 using namespace winrt;
@@ -215,6 +217,28 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
         return info;
     });
 
+    // Answer the phone's "add BT handover device" exchange. Without this the
+    // phone keeps the PC pending and refuses its CrossDevice connection.
+    // When a phone enables handover with this PC, start coordinating with it.
+    std::mutex settingsMutex;
+    BtHandoverSetupServer handoverSetup;
+    handoverSetup.setOnChange([&](std::uint64_t phone, bool enabled) {
+        if (!enabled) {
+            log::info("Phone {} removed BT handover with this PC (peer kept; remove it from the tray if wanted)",
+                SettingsStore::formatBluetoothAddress(phone));
+            return;
+        }
+        std::scoped_lock lk{settingsMutex};
+        auto& addrs = settings.androidAddresses;
+        if (std::find(addrs.begin(), addrs.end(), phone) != addrs.end()) return;
+        addrs.push_back(phone);
+        store.save(settings);
+        peers.addPeer(phone);
+        log::info("Added Android peer {} after it enabled BT handover",
+            SettingsStore::formatBluetoothAddress(phone));
+    });
+    handoverSetup.start();
+
     peers.setOnPacket([&controller](std::span<const std::uint8_t> data) {
         controller.onIncomingPacket(data);
     });
@@ -313,18 +337,18 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
                 // the UI thread and refuse overlapping sends.
                 static std::atomic<bool> sending{false};
                 if (sending.exchange(true)) break;
-                std::thread([addresses = peers.addresses()]() {
+                std::thread([infos = peers.peerInfos()]() {
                     winrt::init_apartment(winrt::apartment_type::multi_threaded);
                     std::wstring summary;
-                    for (auto addr : addresses) {
-                        const auto r = uploadTraces(addr, std::chrono::hours{72});
-                        summary += std::format(L"{:012X}: ", addr);
+                    for (const auto& info : infos) {
+                        const auto r = uploadTraces(info.address, std::chrono::hours{72});
+                        summary += info.name + L": ";
                         summary += r.error.empty()
                             ? std::format(L"{} file(s) sent, {} rejected", r.stored, r.rejected)
                             : L"failed: " + std::wstring(winrt::to_hstring(r.error));
                         summary += L"\n";
                     }
-                    if (addresses.empty()) summary = L"No Android peers configured.";
+                    if (infos.empty()) summary = L"No Android peers configured.";
                     MessageBoxW(nullptr, summary.c_str(), L"EveryPods trace upload",
                                 MB_OK | MB_ICONINFORMATION | MB_TOPMOST);
                     sending.store(false);

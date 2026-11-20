@@ -42,6 +42,7 @@ set(SRC
     src/PeerRegistry.cpp
     src/BleProximityWatcher.cpp
     src/TraceUploader.cpp
+    src/BtHandoverSetup.cpp
     src/Propods.rc
 )
 
@@ -57,6 +58,7 @@ set(HDR
     src/PeerRegistry.hpp
     src/BleProximityWatcher.hpp
     src/TraceUploader.hpp
+    src/BtHandoverSetup.hpp
     src/Logger.hpp
 )
 

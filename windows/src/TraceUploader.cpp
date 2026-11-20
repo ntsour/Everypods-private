@@ -59,7 +59,8 @@ TraceUploadResult uploadTraces(std::uint64_t peerAddress, std::chrono::hours max
         auto services = device.GetRfcommServicesForIdAsync(
             RfcommServiceId::FromUuid(kTraceUploadService), BluetoothCacheMode::Uncached).get();
         if (services.Services().Size() == 0) {
-            result.error = "trace upload not offered; turn on \"Full handover trace\" in the phone's Debug screen";
+            result.error = "doesn't offer EveryPods trace upload (not running EveryPods, or "
+                           "\"Full handover trace\" is off in its Debug screen)";
             return result;
         }
         auto service = services.Services().GetAt(0);
