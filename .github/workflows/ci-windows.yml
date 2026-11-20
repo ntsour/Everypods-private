@@ -1,0 +1,44 @@
+name: Windows CI
+
+on:
+  push:
+    branches:
+      # '**' (not '*'): a single '*' does not match '/', so it skipped branches
+      # like chore/windows-ci-build.
+      - '**'
+    paths:
+      - 'windows/**'
+      - '.github/workflows/ci-windows.yml'
+  pull_request:
+    paths:
+      - 'windows/**'
+      - '.github/workflows/ci-windows.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Configure
+        working-directory: windows
+        # No -G: CMake picks the newest Visual Studio on the runner image, so the
+        # job keeps working when windows-latest moves to a newer VS release.
+        run: cmake -S . -B build -A x64
+
+      - name: Build
+        working-directory: windows
+        run: cmake --build build --config Release --parallel
+
+      - name: Upload executable
+        uses: actions/upload-artifact@v5
+        with:
+          name: everypods-windows-x64
+          path: windows/build/Release/*.exe
+          if-no-files-found: error
