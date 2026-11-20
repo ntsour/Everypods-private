@@ -25,6 +25,7 @@
 
 #include <initguid.h>  // single TU: makes PKEY_* / KS GUIDs real definitions (selectany)
 #include <windows.h>
+#include <winioctl.h>  // CTL_CODE / FILE_DEVICE_* for IOCTL_KS_PROPERTY (excluded by WIN32_LEAN_AND_MEAN)
 #include <objbase.h>
 #include <propidl.h>
 #include <mmdeviceapi.h>
