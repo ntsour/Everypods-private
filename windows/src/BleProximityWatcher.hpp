@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <mutex>
 #include <cstdint>
 
 #include <winrt/Windows.Devices.Bluetooth.Advertisement.h>
@@ -34,6 +35,14 @@ public:
 
     void start();
     void stop();
+
+    // Pause scanning while this PC holds the AirPods: the result only gates
+    // taking them, and a continuous active scan competes for the radio with
+    // the AirPods stream and the phone link. On 2026-11-20 the Pixel-PC link
+    // timed out (HCI 0x08) about every 4-5 min only while the PC held the
+    // AirPods. While paused, airpodsAvailable() fails open (returns true), and
+    // resuming restarts the warm-up grace. Safe to call from any thread.
+    void setPaused(bool paused);
 
     // True if it is reasonable to attempt a takeover. The gate is deliberately
     // conservative: it returns false ONLY when we have positive, fresh evidence
@@ -77,6 +86,8 @@ private:
     winrt::event_token m_receivedToken{};
 
     std::atomic<bool> m_running{false};
+    std::mutex m_toggleMutex;   // serialises setPaused() start/stop
+    bool m_paused = false;      // guarded by m_toggleMutex
     // steady_clock milliseconds; 0 = never. We track the latest in-case and
     // out-of-case observations separately; the gate blocks only when the most
     // recent fresh reading is in-case.

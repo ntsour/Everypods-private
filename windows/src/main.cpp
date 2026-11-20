@@ -203,8 +203,9 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     if (!tray.create(hInstance)) return 1;
     tray.setStatus(stateLabel(controller.state()));
 
-    controller.setOnStateChanged([&tray](OwnershipState s) {
+    controller.setOnStateChanged([&tray, &bleWatcher](OwnershipState s) {
         tray.setStatus(stateLabel(s));
+        bleWatcher.setPaused(s == OwnershipState::LocalPc);
     });
 
     // Provide live status to the tray menu (queried each time the menu opens).
