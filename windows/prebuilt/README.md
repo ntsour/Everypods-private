@@ -7,7 +7,7 @@ built from this folder; rebuild with CMake or take a newer artifact from
 
 | File | What it is | Built from |
 |---|---|---|
-| `Propods.exe` | Windows tray client: everything on `main` (trace, setup answer, driver-level connect, framing, scan pausing, peer protocol v2) plus **pause/mute PC audio when the AirPods leave** | `feat/windows-pause-on-release` @ `5759ca3`, [CI run 44831419080](https://github.com/ntsour/Everypods-private/actions/runs/44831419080) |
+| `Propods.exe` | Windows tray client: everything on `main` (trace, setup answer, driver-level connect, framing, scan pausing, peer protocol v2) plus **pause/mute PC audio when the AirPods leave** | `feat/windows-pause-on-release` @ `161f81f`, [CI run 44833565022](https://github.com/ntsour/Everypods-private/actions/runs/44833565022) |
 | `ks_connect_spike.exe` | Driver-level Bluetooth audio connect/disconnect test tool (`list`, `connect`, `disconnect`, `cycle`, `watch`) | `feat/windows-ks-connect-spike` @ `0e75e54`, [CI run 44805511397](https://github.com/ntsour/Everypods-private/actions/runs/44805511397); also writes its log to the traces folder |
 
 Both are unsigned Release x64 builds; SmartScreen may ask for "More info → Run anyway".
