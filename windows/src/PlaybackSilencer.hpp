@@ -51,6 +51,12 @@ public:
 
     bool hasMuted();
 
+    // Unmute sessions of apps this class muted in an earlier run (recorded in
+    // %APPDATA%\Propods\muted-apps.txt), e.g. after Propods was quit while
+    // apps were muted. Windows remembers per-app mute, so they would otherwise
+    // stay muted. Call once at startup.
+    int restoreLeftovers();
+
 private:
     Result silence(const char* reason);
     int pausePlayingSessions(std::vector<std::wstring>& names);
@@ -60,7 +66,9 @@ private:
         std::wstring endpointId;
         std::wstring instanceId;
         std::wstring name;
+        std::wstring path;  // executable, to find the app again after a restart
     };
+    void saveMutedApps();  // m_mutex held
 
     std::atomic<bool> m_enabled{true};
     std::atomic<bool> m_running{false};

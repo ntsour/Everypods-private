@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <thread>
 
 namespace Propods {
@@ -28,6 +29,27 @@ using namespace winrt::Windows::Media::Control;
 constexpr GUID kEventContext = {0x5b1e3c2a, 0x7d41, 0x4f0e, {0x9a, 0x3b, 0x61, 0x2c, 0x8e, 0x0d, 0x44, 0x17}};
 constexpr auto kSettleBeforeMute = std::chrono::milliseconds{1500};
 constexpr float kAudiblePeak = 0.001f;  // about -60 dBFS
+
+std::wstring processPath(DWORD pid) {
+    HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!h) return {};
+    wchar_t path[MAX_PATH] = {};
+    DWORD len = MAX_PATH;
+    std::wstring out;
+    if (QueryFullProcessImageNameW(h, 0, path, &len)) out.assign(path, len);
+    CloseHandle(h);
+    return out;
+}
+
+std::filesystem::path mutedAppsFile() {
+    wchar_t buf[MAX_PATH] = {};
+    const DWORD len = GetEnvironmentVariableW(L"APPDATA", buf, MAX_PATH);
+    std::filesystem::path dir = (len > 0 && len < MAX_PATH)
+        ? std::filesystem::path{buf} / L"Propods" : std::filesystem::current_path();
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    return dir / L"muted-apps.txt";
+}
 
 std::wstring processName(DWORD pid) {
     HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
@@ -244,9 +266,37 @@ int PlaybackSilencer::muteAudibleSessions(std::vector<std::wstring>& names) {
         addName(names, cand.name);
         log::handover("SILENCE mute '{}' (peak {:.3f})", log::toUtf8(cand.name), cand.peak);
         std::scoped_lock lk{m_mutex};
-        m_muted.push_back({cand.endpointId, cand.instance, cand.name});
+        m_muted.push_back({cand.endpointId, cand.instance, cand.name, processPath(cand.pid)});
+        saveMutedApps();
     }
     return muted;
+}
+
+void PlaybackSilencer::saveMutedApps() {
+    std::vector<std::wstring> paths;
+    for (const auto& m : m_muted)
+        if (!m.path.empty() && std::find(paths.begin(), paths.end(), m.path) == paths.end()) paths.push_back(m.path);
+    std::error_code ec;
+    if (paths.empty()) { std::filesystem::remove(mutedAppsFile(), ec); return; }
+    std::wofstream out{mutedAppsFile(), std::ios::trunc};
+    for (const auto& p : paths) out << p << L'\n';
+}
+
+int PlaybackSilencer::restoreLeftovers() {
+    std::vector<std::wstring> paths;
+    {
+        std::wifstream in{mutedAppsFile()};
+        std::wstring line;
+        while (std::getline(in, line)) if (!line.empty()) paths.push_back(line);
+    }
+    if (paths.empty()) return 0;
+    {
+        std::scoped_lock lk{m_mutex};
+        for (const auto& p : paths) m_muted.push_back({L"", L"", std::filesystem::path(p).filename().wstring(), p});
+    }
+    const int n = restoreMutes("left muted by an earlier run");
+    log::info("Silencer: restored {} session(s) left muted by an earlier run", n);
+    return n;
 }
 
 bool PlaybackSilencer::hasMuted() {
@@ -259,13 +309,18 @@ int PlaybackSilencer::restoreMutes(const char* reason) {
     {
         std::scoped_lock lk{m_mutex};
         toRestore.swap(m_muted);
+        saveMutedApps();
     }
     if (toRestore.empty()) return 0;
     int restored = 0;
     forEachSession([&](const std::wstring& endpointId, IAudioSessionControl2* c) {
         const std::wstring id = instanceId(c);
+        DWORD pid = 0;
+        c->GetProcessId(&pid);
+        const std::wstring path = pid ? processPath(pid) : std::wstring{};
         const auto it = std::find_if(toRestore.begin(), toRestore.end(), [&](const MutedSession& m) {
-            return m.endpointId == endpointId && m.instanceId == id;
+            return (m.endpointId == endpointId && m.instanceId == id) ||
+                   (!m.path.empty() && _wcsicmp(m.path.c_str(), path.c_str()) == 0);
         });
         if (it == toRestore.end()) return;
         ComPtr<ISimpleAudioVolume> volume;

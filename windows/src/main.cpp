@@ -239,6 +239,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     // media starts on the PC, or from the tray.
     PlaybackSilencer silencer;
     silencer.setEnabled(settings.pauseOnRelease);
+    silencer.restoreLeftovers();
     silencer.setStillReleased([&controller]() { return controller.state() != OwnershipState::LocalPc; });
     silencer.setOnDone([&tray](const PlaybackSilencer::Result& r) {
         std::wstring apps;
@@ -256,12 +257,20 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     };
 
     std::atomic<OwnershipState> lastOwnership{OwnershipState::Unknown};
-    controller.setOnStateChanged([&tray, &bleWatcher, &silencer, &lastOwnership, restoreAsync](OwnershipState s) {
+    // When the AirPods leave, Windows moves output to the speakers and apps'
+    // audio sessions reappear there as "active". That is not the user asking
+    // for the AirPods back (on 2026-11-21 VLC did exactly this and pulled them
+    // back from the Pixel within 5 s), so audio-session triggers are ignored
+    // for a short while after losing ownership.
+    std::atomic<std::int64_t> lostOwnershipAtMs{0};
+    controller.setOnStateChanged([&tray, &bleWatcher, &silencer, &lastOwnership, &lostOwnershipAtMs, restoreAsync](OwnershipState s) {
         tray.setStatus(stateLabel(s));
         bleWatcher.setPaused(s == OwnershipState::LocalPc);
         const OwnershipState previous = lastOwnership.exchange(s);
-        if (previous == OwnershipState::LocalPc && s != OwnershipState::LocalPc)
+        if (previous == OwnershipState::LocalPc && s != OwnershipState::LocalPc) {
+            lostOwnershipAtMs.store(static_cast<std::int64_t>(GetTickCount64()));
             silencer.silenceAsync("AirPods left this PC");
+        }
         if (s == OwnershipState::LocalPc)
             restoreAsync("AirPods back on this PC");
     });
@@ -320,7 +329,12 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     // the standard debounce and anti-pingpong guards. This prevents an ongoing
     // Teams call from re-triggering a claim after Windows voluntarily released
     // AirPods to a peer.
-    teamsWatcher.setOnTriggered([&controller, &callActive, &peerV2, &silencer]() {
+    teamsWatcher.setOnTriggered([&controller, &callActive, &peerV2, &silencer, &lostOwnershipAtMs]() {
+        const std::int64_t sinceLost = static_cast<std::int64_t>(GetTickCount64()) - lostOwnershipAtMs.load();
+        if (lostOwnershipAtMs.load() != 0 && sinceLost < 15'000) {
+            log::handover("SKIP    audio-session trigger {} ms after the AirPods left (output moved to speakers)", sinceLost);
+            return;
+        }
         // An app we muted for the phone keeps its audio session active; that is
         // not the user asking for the AirPods back (seen with VLC: it pulled them
         // back from the Pixel a minute later). Real media starts still trigger.
