@@ -337,20 +337,21 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
                 // the UI thread and refuse overlapping sends.
                 static std::atomic<bool> sending{false};
                 if (sending.exchange(true)) break;
-                std::thread([infos = peers.peerInfos()]() {
+                tray.notify(L"Sending traces to phone",
+                            L"Only new or changed trace files are sent. You'll get a summary when done.");
+                std::thread([&tray, infos = peers.peerInfos()]() {
                     winrt::init_apartment(winrt::apartment_type::multi_threaded);
                     std::wstring summary;
                     for (const auto& info : infos) {
                         const auto r = uploadTraces(info.address, std::chrono::hours{72});
                         summary += info.name + L": ";
                         summary += r.error.empty()
-                            ? std::format(L"{} file(s) sent, {} rejected", r.stored, r.rejected)
+                            ? std::format(L"{} sent, {} unchanged, {} rejected", r.stored, r.skipped, r.rejected)
                             : L"failed: " + std::wstring(winrt::to_hstring(r.error));
                         summary += L"\n";
                     }
                     if (infos.empty()) summary = L"No Android peers configured.";
-                    MessageBoxW(nullptr, summary.c_str(), L"EveryPods trace upload",
-                                MB_OK | MB_ICONINFORMATION | MB_TOPMOST);
+                    tray.notify(L"Trace upload finished", summary);
                     sending.store(false);
                 }).detach();
                 break;

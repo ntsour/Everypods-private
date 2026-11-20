@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <map>
 #include <stdexcept>
 #include <vector>
 
@@ -46,6 +47,24 @@ std::vector<std::filesystem::path> recentTraces(std::chrono::hours maxAge) {
     return files;
 }
 
+std::filesystem::path sentManifest(std::uint64_t peer) {
+    return log::traceDir() / std::format(L"sent-{:012X}.txt", peer);
+}
+
+std::map<std::string, std::uintmax_t> loadSent(std::uint64_t peer) {
+    std::map<std::string, std::uintmax_t> sent;
+    std::ifstream in{sentManifest(peer)};
+    std::string name;
+    std::uintmax_t size = 0;
+    while (in >> name >> size) sent[name] = size;
+    return sent;
+}
+
+void saveSent(std::uint64_t peer, const std::map<std::string, std::uintmax_t>& sent) {
+    std::ofstream out{sentManifest(peer), std::ios::trunc};
+    for (const auto& [name, size] : sent) out << name << ' ' << size << '\n';
+}
+
 }  // namespace
 
 TraceUploadResult uploadTraces(std::uint64_t peerAddress, std::chrono::hours maxAge) {
@@ -69,8 +88,17 @@ TraceUploadResult uploadTraces(std::uint64_t peerAddress, std::chrono::hours max
         DataWriter writer{socket.OutputStream()};  // ByteOrder defaults to big-endian
         DataReader reader{socket.InputStream()};
 
-        const auto files = recentTraces(maxAge);
-        log::info("Trace upload to {:012X}: {} file(s)", peerAddress, files.size());
+        auto sent = loadSent(peerAddress);
+        std::vector<std::filesystem::path> files;
+        for (const auto& path : recentTraces(maxAge)) {
+            std::error_code sizeEc;
+            const auto size = std::filesystem::file_size(path, sizeEc);
+            const auto it = sent.find(log::toUtf8(path.filename().wstring()));
+            if (!sizeEc && it != sent.end() && it->second == size) { ++result.skipped; continue; }
+            files.push_back(path);
+        }
+        log::info("Trace upload to {:012X}: {} new or grown file(s), {} unchanged skipped",
+            peerAddress, files.size(), result.skipped);
         std::vector<std::uint8_t> buffer(64 * 1024);
         for (const auto& path : files) {
             std::error_code ec;
@@ -104,6 +132,8 @@ TraceUploadResult uploadTraces(std::uint64_t peerAddress, std::chrono::hours max
             if (reader.LoadAsync(1).get() != 1) throw std::runtime_error("phone closed the connection");
             if (reader.ReadByte() == 1) {
                 ++result.stored;
+                sent[name] = size;
+                saveSent(peerAddress, sent);
                 log::info("Trace upload: {} ({} bytes) stored", name, size);
             } else {
                 ++result.rejected;

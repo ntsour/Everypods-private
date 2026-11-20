@@ -48,6 +48,8 @@ public:
 
     bool create(HINSTANCE hInstance);
     void setStatus(const std::wstring& text);
+    // Windows notification from the tray icon (safe to call from any thread).
+    void notify(const std::wstring& title, const std::wstring& text);
     void setMenuHandler(MenuHandler h)       { m_menuHandler    = std::move(h); }
     void setStatusProvider(StatusProvider p) { m_statusProvider = std::move(p); }
 
