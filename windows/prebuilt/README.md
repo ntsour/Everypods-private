@@ -7,7 +7,7 @@ built from this folder; rebuild with CMake or take a newer artifact from
 
 | File | What it is | Built from |
 |---|---|---|
-| `Propods.exe` | Windows tray client with the durable trace, **Send traces to phone**, the answer to the phone's BT handover setup, and driver-level AirPods connect/disconnect | `feat/windows-handover-trace` @ `f010372`, [CI run 44816059918](https://github.com/ntsour/Everypods-private/actions/runs/44816059918) |
+| `Propods.exe` | Windows tray client with the durable trace, **Send traces to phone**, the answer to the phone's BT handover setup, and driver-level AirPods connect/disconnect | `feat/windows-handover-trace` @ `28cbac3`, [CI run 44824658836](https://github.com/ntsour/Everypods-private/actions/runs/44824658836) |
 | `ks_connect_spike.exe` | Driver-level Bluetooth audio connect/disconnect test tool (`list`, `connect`, `disconnect`, `cycle`, `watch`) | `feat/windows-ks-connect-spike` @ `0e75e54`, [CI run 44805511397](https://github.com/ntsour/Everypods-private/actions/runs/44805511397); also writes its log to the traces folder |
 
 Both are unsigned Release x64 builds; SmartScreen may ask for "More info → Run anyway".
