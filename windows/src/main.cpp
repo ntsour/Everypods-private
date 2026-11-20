@@ -17,11 +17,15 @@
 #include "PeerRegistry.hpp"
 #include "SettingsStore.hpp"
 #include "TeamsCallWatcher.hpp"
+#include "TraceUploader.hpp"
 #include "TrayIcon.hpp"
 #include "crossdevice_protocol.hpp"
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <format>
+#include <thread>
 #include <memory>
 #include <optional>
 
@@ -302,6 +306,29 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
             case TrayIcon::kCmdOpenTraces: {
                 const auto dir = log::traceDir();
                 ShellExecuteW(nullptr, L"open", dir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                break;
+            }
+            case TrayIcon::kCmdSendTraces: {
+                // Bluetooth transfer of a few MB takes seconds to minutes; keep it off
+                // the UI thread and refuse overlapping sends.
+                static std::atomic<bool> sending{false};
+                if (sending.exchange(true)) break;
+                std::thread([addresses = peers.addresses()]() {
+                    winrt::init_apartment(winrt::apartment_type::multi_threaded);
+                    std::wstring summary;
+                    for (auto addr : addresses) {
+                        const auto r = uploadTraces(addr, std::chrono::hours{72});
+                        summary += std::format(L"{:012X}: ", addr);
+                        summary += r.error.empty()
+                            ? std::format(L"{} file(s) sent, {} rejected", r.stored, r.rejected)
+                            : L"failed: " + std::wstring(winrt::to_hstring(r.error));
+                        summary += L"\n";
+                    }
+                    if (addresses.empty()) summary = L"No Android peers configured.";
+                    MessageBoxW(nullptr, summary.c_str(), L"EveryPods trace upload",
+                                MB_OK | MB_ICONINFORMATION | MB_TOPMOST);
+                    sending.store(false);
+                }).detach();
                 break;
             }
             case TrayIcon::kCmdConnectAirPods:

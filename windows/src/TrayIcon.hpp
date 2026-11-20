@@ -20,6 +20,7 @@ public:
     static constexpr int kCmdConnectAirPods  = 1005;
     static constexpr int kCmdToggleAutoRoute = 1006;
     static constexpr int kCmdOpenTraces      = 1007;
+    static constexpr int kCmdSendTraces      = 1008;
     // kCmdRemovePeer+i removes the peer at index i in the StatusInfo::peers list.
     static constexpr int kCmdRemovePeer      = 2000;
 

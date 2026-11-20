@@ -41,6 +41,7 @@ set(SRC
     src/TeamsCallWatcher.cpp
     src/PeerRegistry.cpp
     src/BleProximityWatcher.cpp
+    src/TraceUploader.cpp
     src/Propods.rc
 )
 
@@ -55,6 +56,7 @@ set(HDR
     src/TeamsCallWatcher.hpp
     src/PeerRegistry.hpp
     src/BleProximityWatcher.hpp
+    src/TraceUploader.hpp
     src/Logger.hpp
 )
 
