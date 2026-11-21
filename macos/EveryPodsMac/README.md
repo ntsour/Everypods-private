@@ -47,3 +47,16 @@ flag lingers 10-15 s (browsers keep the stream open), so "started" is a good tri
 - No handling of the phone's AirPods data frames (battery, ear detection, AACP control).
 - Not notarized; not yet tested across sleep/wake or a long soak.
 - The menu pause key goes to whichever app owns the system media session.
+
+## Out of scope: AirPods control
+
+The app does not talk to the AirPods' control channel (battery, ear detection, listening modes). macOS's
+own Bluetooth daemon holds it (AACP, L2CAP 0x1001) and the AirPods serve one client only; opening it from
+this app got no replies and disturbed the system's session. macOS has native support for those features.
+
+## Stem press during calls
+
+Checked with AirPods Pro in a Google Meet call in Chrome: a stem press does not mute the call, and it
+reaches this app through none of the usual paths (no system media key, no event on the AirPods' HID
+collections, nothing in the Bluetooth daemon's log). macOS handles it internally, so only apps that adopt
+Apple's system mute API respond. There is nothing for this app to hook.

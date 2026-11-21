@@ -71,6 +71,12 @@ final class PeerLink: NSObject, IOBluetoothRFCOMMChannelDelegate {
         guard running, token == generation else { return }
         _ = channel?.close()
         channel = nil
+        // A timed-out open usually means the Mac's Bluetooth session with the phone is wedged (for example
+        // after the app was killed with a channel open). Dropping the baseband link makes the next try start clean.
+        if reason.contains("timed out"), let device {
+            let status = device.closeConnection()
+            Log.write("PeerLink: dropped baseband link to reset (\(status == kIOReturnSuccess ? "ok" : "error \(status)"))")
+        }
         Log.write("PeerLink: retry in \(Int(retryDelay))s (\(reason))")
         let delay = retryDelay
         retryDelay = min(retryDelay * 2, 30)

@@ -66,6 +66,7 @@ final class SetupAuthorizer: NSObject, IOBluetoothRFCOMMChannelDelegate {
         self.lookup = lookup
         lookup.find { [weak self] channelID in
             guard let self else { return }
+            Log.write("Authorize: setup service channel \(channelID.map(String.init) ?? "not found")")
             guard let channelID else { return self.finish(.failure(Failure.serviceNotFound)) }
             var opened: IOBluetoothRFCOMMChannel?
             let status = self.device.openRFCOMMChannelAsync(&opened, withChannelID: channelID, delegate: self)
@@ -78,12 +79,17 @@ final class SetupAuthorizer: NSObject, IOBluetoothRFCOMMChannelDelegate {
     private func finish(_ result: Result<String, Error>) {
         guard let handler = onReply else { return }
         onReply = nil
+        switch result {
+        case .success(let text): Log.write("Authorize: reply \(text)")
+        case .failure(let error): Log.write("Authorize: failed (\(error.localizedDescription))")
+        }
         _ = channel?.close()
         channel = nil
         handler(result)
     }
 
     func rfcommChannelOpenComplete(_ rfcommChannel: IOBluetoothRFCOMMChannel!, status error: IOReturn) {
+        Log.write("Authorize: channel open status \(String(format: "0x%08X", UInt32(bitPattern: error)))")
         guard error == kIOReturnSuccess else { return finish(.failure(Failure.openFailed)) }
         var bytes = [UInt8](payload)
         _ = rfcommChannel.writeSync(&bytes, length: UInt16(bytes.count))
