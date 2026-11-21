@@ -1218,8 +1218,9 @@ bool AirPodsConnector::disconnect() {
     // returns in ~0.25 s, before the link is down; a phone page that lands
     // during the teardown goes unanswered until Android's 30 s page timeout
     // (2026-11-21: PC -> Pixel took 28 s). So wait, bounded, for the link to
-    // actually drop before returning.
-    constexpr auto kLinkDownWait = std::chrono::seconds{3};
+    // actually drop before returning. 3 s was not always enough while VLC
+    // was streaming (2026-11-21); the phone waits 6 s for this ack.
+    constexpr auto kLinkDownWait = std::chrono::seconds{5};
     try {
         using namespace winrt::Windows::Devices::Bluetooth;
         auto device = BluetoothDevice::FromBluetoothAddressAsync(m_address).get();
@@ -1232,7 +1233,7 @@ bool AirPodsConnector::disconnect() {
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
-        log::handover("DISCONNECT link still up after 3 s; releasing anyway");
+        log::handover("DISCONNECT link still up after 5 s; releasing anyway");
     } catch (const winrt::hresult_error& e) {
         log::handover("DISCONNECT link-down wait failed (0x{:08X}); releasing anyway",
                       static_cast<uint32_t>(e.code()));
