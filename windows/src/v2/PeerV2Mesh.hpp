@@ -118,7 +118,7 @@ private:
     bool m_stateInitialised = false;
     std::optional<Reservation> m_reservation;
 
-    winrt::Windows::Devices::Bluetooth::Rfcomm::RfcommServiceProvider m_provider{nullptr};
+    winrt::Windows::Devices::Bluetooth::Rfcomm::RfcommServiceProvider m_serviceProvider{nullptr};
     winrt::Windows::Networking::Sockets::StreamSocketListener m_listener{nullptr};
 
     std::atomic<bool> m_running{false};

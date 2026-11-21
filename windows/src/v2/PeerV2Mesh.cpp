@@ -212,30 +212,30 @@ bool PeerV2Mesh::reservationActive() {
 
 bool PeerV2Mesh::startServer() {
     try {
-        m_provider = RfcommServiceProvider::CreateAsync(RfcommServiceId::FromUuid(kV2Service)).get();
+        m_serviceProvider = RfcommServiceProvider::CreateAsync(RfcommServiceId::FromUuid(kV2Service)).get();
         m_listener = StreamSocketListener{};
         m_listener.ConnectionReceived([this](StreamSocketListener const&,
                                              StreamSocketListenerConnectionReceivedEventArgs const& args) {
             try { onInboundSocket(args.Socket()); } catch (...) {}
         });
-        m_listener.BindServiceNameAsync(m_provider.ServiceId().AsString(),
+        m_listener.BindServiceNameAsync(m_serviceProvider.ServiceId().AsString(),
             SocketProtectionLevel::BluetoothEncryptionWithAuthentication).get();
-        m_provider.StartAdvertising(m_listener);
+        m_serviceProvider.StartAdvertising(m_listener);
         log::info("V2 service advertised (peers can dial this PC)");
         return true;
     } catch (const winrt::hresult_error& e) {
         log::warn("V2 service failed to start: 0x{:08X} {}",
             static_cast<std::uint32_t>(e.code().value), winrt::to_string(e.message()));
         m_listener = nullptr;
-        m_provider = nullptr;
+        m_serviceProvider = nullptr;
         return false;
     }
 }
 
 void PeerV2Mesh::stopServer() {
-    try { if (m_provider) m_provider.StopAdvertising(); } catch (...) {}
+    try { if (m_serviceProvider) m_serviceProvider.StopAdvertising(); } catch (...) {}
     try { if (m_listener) m_listener.Close(); } catch (...) {}
-    m_provider = nullptr;
+    m_serviceProvider = nullptr;
     m_listener = nullptr;
 }
 
