@@ -298,24 +298,20 @@ void HandoverController::onMediaPlayingChanged(bool playing) {
     std::thread([this, peerConnected]() {
         winrt::init_apartment(winrt::apartment_type::multi_threaded);
 
-        // Connect immediately while the phone is releasing — the AirPods switch their A2DP
-        // to Windows as soon as the phone's link drops. Retries (1.5s, 3s) cover the case
-        // where the phone hasn't fully released yet on the first attempt.
-        log::handover("ACTION  BT connect attempt 1/3 (connect while phone releases in parallel)");
-        bool connected = m_airpods.connect();
-        if (!connected) {
-            log::handover("RETRY   BT connect attempt 1 failed — backing off");
-            constexpr std::array<int, 2> kBackoffsMs{1500, 3000};
-            for (size_t i = 0; i < kBackoffsMs.size(); ++i) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(kBackoffsMs[i]));
-                log::handover("ACTION  BT connect attempt {}/3 (after {} ms wait)",
-                              i + 2, kBackoffsMs[i]);
-                if (m_airpods.connect()) {
-                    connected = true;
-                    break;
-                }
-                log::handover("RETRY   BT connect attempt {} failed — backing off", i + 2);
-            }
+        // Connect immediately while the phone is releasing. A phone cannot drop the
+        // AirPods itself (no BLUETOOTH_PRIVILEGED); the AirPods decide when to accept
+        // us, and on 2026-11-21 they ignored two attempts from a Xiaomi that had
+        // already let go. Each attempt already waits a full page (~6 s) for the link,
+        // so retry back to back: pauses between attempts only added 4.5 s, and three
+        // attempts could give up on a slow switch.
+        constexpr int kAttempts = 5;
+        bool connected = false;
+        for (int attempt = 1; attempt <= kAttempts && !connected; ++attempt) {
+            log::handover("ACTION  BT connect attempt {}/{}{}", attempt, kAttempts,
+                          attempt == 1 ? " (connect while phone releases in parallel)" : "");
+            connected = m_airpods.connect();
+            if (!connected && attempt < kAttempts)
+                log::handover("RETRY   BT connect attempt {} failed — retrying now", attempt);
         }
         if (connected) {
             m_takeoverInFlight.store(false);
@@ -339,7 +335,7 @@ void HandoverController::onMediaPlayingChanged(bool playing) {
             // forces Windows to open the A2DP channel. No notifier, no 3s re-assert.
             if (m_autoRoute.load()) m_airpods.setAsDefaultAudioDevice();
         } else {
-            log::handover("FAIL    BT connect failed after 3 attempts — AirPods not acquired");
+            log::handover("FAIL    BT connect failed after {} attempts — AirPods not acquired", kAttempts);
             // Anti-pingpong window so a GSMTC re-trigger doesn't immediately re-attempt.
             m_lastLostOwnership.store(tpToNs(std::chrono::steady_clock::now()));
             m_takeoverInFlight.store(false);
@@ -572,6 +568,17 @@ void HandoverController::onPeerConnectionChanged(bool connected) {
         if (wasLocalPc && !airpodsHere) {
             log::handover("RECLAIM Peer grabbed AirPods before RFCOMM was up — reclaiming now");
             onMediaPlayingChanged(true);
+        }
+
+        // A takeover started while this peer was not connected sent its
+        // kRequestDisconnect only to the peers connected then. If this peer
+        // holds the AirPods it never heard it, and every connect attempt
+        // fails (2026-11-21: Propods restarted, the Xiaomi reconnected 14 s
+        // into the takeover, still holding). Repeat the request now; peers
+        // that do not hold the AirPods just confirm kAirPodsDisconnected.
+        if (m_takeoverInFlight.load() && !airpodsHere) {
+            log::handover("OUT     kRequestDisconnect -> all peers (peer connected during takeover)");
+            m_peers.sendPacket(crossdevice::kRequestDisconnect);
         }
     } else {
         log::handover("PEER    Android disconnected");
