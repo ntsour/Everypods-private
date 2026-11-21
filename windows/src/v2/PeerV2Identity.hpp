@@ -37,4 +37,10 @@ struct LocalIdentity {
 };
 const LocalIdentity& localIdentity();
 
+// installationId of the peer at a Bluetooth address, learnt from its v2 HELLO
+// and persisted in %APPDATA%\Propods\peer-ids.txt (Android PeerIdentityStore
+// .bindPeerAddress / .peerInstallationId). Empty string when not known yet.
+std::string knownPeerInstallationId(std::uint64_t address);
+void rememberPeerInstallationId(std::uint64_t address, const std::string& installationId);
+
 }  // namespace Propods::v2

@@ -9,6 +9,8 @@
 #include "Logger.hpp"
 #include "SettingsStore.hpp"
 #include "crossdevice_protocol.hpp"
+#include "v2/PeerV2Arbitration.hpp"
+#include "v2/PeerV2Identity.hpp"
 
 namespace Propods {
 
@@ -27,22 +29,23 @@ void PeerRegistry::setOnPeerAdded(PeerAddedCallback cb) {
     m_onPeerAdded = std::move(cb);
 }
 
-void PeerRegistry::setLocalAddress(std::uint64_t address) {
-    std::scoped_lock lk{m_mutex};
-    m_localAddress = address;
-}
-
-void PeerRegistry::startClient(BluetoothRfcommClient& client, std::uint64_t address, Kind kind) const {
-    // Computers always dial each other, so give the lower address a head start:
-    // its link is the one kept when both get through. Phones dial us only when
-    // the user picks this PC on the phone, so don't slow phone links down for it.
-    std::chrono::milliseconds delay{0};
-    if (kind == Kind::Computer) {
-        std::uint64_t local;
-        { std::scoped_lock lk{m_mutex}; local = m_localAddress; }
-        if (local != 0 && local > address) delay = std::chrono::milliseconds{3000};
-    }
-    client.start(address, crossdevice::kServiceUuid, delay);
+void PeerRegistry::startClient(BluetoothRfcommClient& client, std::uint64_t address) const {
+    // The peer with the smaller installationId dials at once; the other waits 3 s
+    // before its first dial and then dials anyway, so a link forms even when the
+    // other side never dials us. Ids are read on the worker thread, when it is
+    // time to dial; an unknown peer id means no delay.
+    client.start(address, crossdevice::kServiceUuid,
+        [address] {
+            return v2::firstDialDelay(v2::localIdentity().installationId,
+                                      v2::knownPeerInstallationId(address));
+        },
+        [address] {
+            // Both links are up and the peer's came up first: keep ours only if
+            // both ids are known and ours is the smaller.
+            return v2::chooseLegacyLink(v2::localIdentity().installationId,
+                                        v2::knownPeerInstallationId(address),
+                                        /*existingDialledByUs=*/false) == v2::LegacyLinkChoice::UseNew;
+        });
 }
 
 void PeerRegistry::wireCallbacks(Entry& e) {
@@ -66,7 +69,7 @@ void PeerRegistry::wireCallbacks(Entry& e) {
     });
 }
 
-void PeerRegistry::addPeer(std::uint64_t address, Kind kind) {
+void PeerRegistry::addPeer(std::uint64_t address) {
     bool shouldStart = false;
     {
         std::scoped_lock lk{m_mutex};
@@ -78,7 +81,7 @@ void PeerRegistry::addPeer(std::uint64_t address, Kind kind) {
             }
         }
         auto& e = m_entries.emplace_back(
-            Entry{address, kind, /*name=*/{}, std::make_unique<BluetoothRfcommClient>()});
+            Entry{address, /*name=*/{}, std::make_unique<BluetoothRfcommClient>()});
         wireCallbacks(e);
         shouldStart = m_started;
     }
@@ -94,9 +97,8 @@ void PeerRegistry::addPeer(std::uint64_t address, Kind kind) {
             }
         }
         if (clientPtr) {
-            startClient(*clientPtr, address, kind);
-            log::info("PeerRegistry: added and started {} peer {}",
-                kind == Kind::Computer ? "computer" : "phone",
+            startClient(*clientPtr, address);
+            log::info("PeerRegistry: added and started peer {}",
                 SettingsStore::formatBluetoothAddress(address));
         }
     } else {
@@ -105,9 +107,11 @@ void PeerRegistry::addPeer(std::uint64_t address, Kind kind) {
     }
 }
 
-void PeerRegistry::acceptInbound(std::uint64_t address, Kind kind,
+void PeerRegistry::acceptInbound(std::uint64_t address,
                                  winrt::Windows::Networking::Sockets::StreamSocket socket) {
     const auto label = SettingsStore::formatBluetoothAddress(address);
+    const std::string ownId = v2::localIdentity().installationId;
+    const std::string peerId = v2::knownPeerInstallationId(address);
     BluetoothRfcommClient* client = nullptr;
     bool added = false;
     bool keepOurs = false;
@@ -126,15 +130,16 @@ void PeerRegistry::acceptInbound(std::uint64_t address, Kind kind,
         }
         if (!client) {
             auto& e = m_entries.emplace_back(
-                Entry{address, kind, /*name=*/{}, std::make_unique<BluetoothRfcommClient>()});
+                Entry{address, /*name=*/{}, std::make_unique<BluetoothRfcommClient>()});
             wireCallbacks(e);
             client = e.client.get();
             added = true;
             onAdded = m_onPeerAdded;
-        } else if (client->isConnected() && !client->isInbound() && m_localAddress != 0 &&
-                   m_localAddress < address) {
-            // Both sides dialled. The lower address's link wins; that is ours.
-            keepOurs = true;
+        } else if (client->isConnected() && !client->isInbound()) {
+            // Both sides dialled and our link is already up. Keep the link dialled
+            // by the smaller installationId; with unknown ids keep ours (first up).
+            keepOurs = v2::chooseLegacyLink(ownId, peerId, /*existingDialledByUs=*/true) ==
+                       v2::LegacyLinkChoice::KeepExisting;
         }
     }
     if (keepOurs) {
@@ -143,12 +148,11 @@ void PeerRegistry::acceptInbound(std::uint64_t address, Kind kind,
         return;
     }
     if (added) {
-        startClient(*client, address, kind);
-        log::info("PeerRegistry: {} {} dialled us; added it as a peer",
-            kind == Kind::Computer ? "computer" : "phone", label);
+        startClient(*client, address);
+        log::info("PeerRegistry: {} dialled us; added it as a peer", label);
     }
     client->adoptInbound(socket);
-    if (added && onAdded) onAdded(address, kind);
+    if (added && onAdded) onAdded(address);
 }
 
 void PeerRegistry::removePeer(std::uint64_t address) {
@@ -175,17 +179,17 @@ void PeerRegistry::removePeer(std::uint64_t address) {
 
 void PeerRegistry::start() {
     // Collect (address, client*) pairs without holding the lock during start().
-    struct Pending { std::uint64_t address; Kind kind; BluetoothRfcommClient* client; };
+    struct Pending { std::uint64_t address; BluetoothRfcommClient* client; };
     std::vector<Pending> toStart;
     {
         std::scoped_lock lk{m_mutex};
         if (m_started) return;
         m_started = true;
         for (auto& e : m_entries)
-            toStart.push_back({e.address, e.kind, e.client.get()});
+            toStart.push_back({e.address, e.client.get()});
     }
     for (auto& p : toStart)
-        startClient(*p.client, p.address, p.kind);
+        startClient(*p.client, p.address);
     log::info("PeerRegistry: started {} peer(s)", toStart.size());
 }
 
@@ -236,7 +240,6 @@ std::vector<PeerRegistry::PeerInfo> PeerRegistry::peerInfos() const {
         PeerInfo info;
         info.address   = e.address;
         info.connected = e.client->isConnected();
-        info.kind      = e.kind;
         if (!e.name.empty()) {
             // Device names are ASCII-safe; widen char-by-char.
             info.name.assign(e.name.begin(), e.name.end());

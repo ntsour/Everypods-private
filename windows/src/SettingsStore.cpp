@@ -5,6 +5,7 @@
 #include <windows.h>
 #include <shlobj.h>
 
+#include <algorithm>
 #include <charconv>
 #include <fstream>
 #include <sstream>
@@ -72,19 +73,15 @@ Settings SettingsStore::load() const {
         if (eq == std::string::npos) continue;
         std::string key = line.substr(0, eq);
         std::string val = line.substr(eq + 1);
-        if (key == "android") {
+        // "android" is the historical key for every peer. "computer" (an earlier
+        // test build) and "peer" are read too; all go into the one list.
+        if (key == "android" || key == "computer" || key == "peer") {
             if (auto addr = parseBluetoothAddress(val)) {
-                s.androidAddresses.push_back(*addr);
-                log::debug("  android = {} -> {}", val, formatBluetoothAddress(*addr));
+                if (std::find(s.peerAddresses.begin(), s.peerAddresses.end(), *addr) == s.peerAddresses.end())
+                    s.peerAddresses.push_back(*addr);
+                log::debug("  {} = {} -> {}", key, val, formatBluetoothAddress(*addr));
             } else {
-                log::warn("  android = {} -> (parse failed)", val);
-            }
-        } else if (key == "computer") {
-            if (auto addr = parseBluetoothAddress(val)) {
-                s.computerAddresses.push_back(*addr);
-                log::debug("  computer = {} -> {}", val, formatBluetoothAddress(*addr));
-            } else {
-                log::warn("  computer = {} -> (parse failed)", val);
+                log::warn("  {} = {} -> (parse failed)", key, val);
             }
         } else if (key == "airpods") {
             s.airpodsAddress = parseBluetoothAddress(val);
@@ -107,10 +104,10 @@ void SettingsStore::save(const Settings& s) const {
         log::warn("Failed to open settings file for write: {}", m_path.string());
         return;
     }
-    for (auto addr : s.androidAddresses)
+    // Written as "android=" lines (historical key name) so older builds still
+    // find the peers.
+    for (auto addr : s.peerAddresses)
         f << "android=" << formatBluetoothAddress(addr) << '\n';
-    for (auto addr : s.computerAddresses)
-        f << "computer=" << formatBluetoothAddress(addr) << '\n';
     if (s.airpodsAddress) f << "airpods=" << formatBluetoothAddress(*s.airpodsAddress) << '\n';
     f << "autoroute=" << (s.autoRoute ? "1" : "0") << '\n';
     f << "pauseonrelease=" << (s.pauseOnRelease ? "1" : "0") << '\n';

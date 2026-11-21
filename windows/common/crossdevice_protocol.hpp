@@ -14,9 +14,10 @@ namespace Propods::crossdevice {
 inline constexpr std::string_view kServiceUuid =
     "1abbb9a4-10e4-4000-a75c-8953c5471342";
 
-// Every peer, phone or computer, listens on this one service and dials the
-// others on it. When two computers dial each other at once, the link dialled
-// by the lower Bluetooth address is kept and the other is closed.
+// Every peer listens on this legacy service and on the v2 service. Handover
+// packets still use the legacy link (docs/peer-mesh-spec.md sections 1 and 8).
+// When both ends dial at once, the link dialled by the peer with the smaller
+// installationId is kept (see v2/PeerV2Arbitration.hpp).
 
 using Packet4 = std::array<std::uint8_t, 4>;
 
@@ -28,10 +29,11 @@ inline constexpr Packet4 kRequestAncBytes       { 0x00, 0x02, 0x00, 0x02 };
 inline constexpr Packet4 kRequestConnectionStat { 0x00, 0x02, 0x00, 0x03 };
 inline constexpr Packet4 kRequestHandover       { 0x00, 0x02, 0x00, 0x04 };
 inline constexpr Packet4 kAirPodsDataHeader     { 0x00, 0x04, 0x00, 0x01 };
-// Windows → Android: report whether an audio session (call/meeting) is active locally.
-// Android uses these to gate takeover on the user's "takeover during call" preference.
-inline constexpr Packet4 kWindowsAudioActive    { 0x00, 0x03, 0x00, 0x01 };
-inline constexpr Packet4 kWindowsAudioIdle      { 0x00, 0x03, 0x00, 0x00 };
+// A peer reports whether an audio session (call/meeting) is active on its side.
+// The receiver does not start its own call takeover while the sender's flag is
+// set (Android CrossDevice.peerAudioActive). Any peer may send them.
+inline constexpr Packet4 kPeerAudioActive    { 0x00, 0x03, 0x00, 0x01 };
+inline constexpr Packet4 kPeerAudioIdle      { 0x00, 0x03, 0x00, 0x00 };
 
 enum class Incoming {
     Unknown,
@@ -43,8 +45,8 @@ enum class Incoming {
     RequestAncBytes,
     RequestConnectionStatus,
     RelayHeader,
-    WindowsAudioActive,
-    WindowsAudioIdle,
+    PeerAudioActive,
+    PeerAudioIdle,
 };
 
 inline bool equals4(std::span<const std::uint8_t> data, const Packet4& p) {
@@ -98,8 +100,8 @@ private:
     bool isControl() const {
         static constexpr Packet4 kControls[] = {
             kAirPodsConnected, kAirPodsDisconnected, kRequestDisconnect, kRequestBatteryBytes,
-            kRequestAncBytes, kRequestConnectionStat, kRequestHandover, kWindowsAudioActive,
-            kWindowsAudioIdle,
+            kRequestAncBytes, kRequestConnectionStat, kRequestHandover, kPeerAudioActive,
+            kPeerAudioIdle,
             Packet4{0x00, 0x02, 0x00, 0x05},  // REQUEST_TAKEOVER (legacy courtesy)
             Packet4{0x00, 0x06, 0x00, 0x00},  // COURTESY_GRANT
             Packet4{0x00, 0x06, 0x00, 0x01},  // COURTESY_DENY
@@ -137,8 +139,8 @@ inline Incoming classify(std::span<const std::uint8_t> data) {
     if (equals4(data, kRequestBatteryBytes))      return Incoming::RequestBatteryBytes;
     if (equals4(data, kRequestAncBytes))          return Incoming::RequestAncBytes;
     if (equals4(data, kRequestConnectionStat))    return Incoming::RequestConnectionStatus;
-    if (equals4(data, kWindowsAudioActive))       return Incoming::WindowsAudioActive;
-    if (equals4(data, kWindowsAudioIdle))         return Incoming::WindowsAudioIdle;
+    if (equals4(data, kPeerAudioActive))       return Incoming::PeerAudioActive;
+    if (equals4(data, kPeerAudioIdle))         return Incoming::PeerAudioIdle;
     if (startsWith4(data, kAirPodsDataHeader))    return Incoming::RelayHeader;
     return Incoming::Unknown;
 }

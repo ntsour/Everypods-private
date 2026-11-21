@@ -10,29 +10,10 @@
 #include "Logger.hpp"
 #include "crossdevice_protocol.hpp"
 
-#include <cctype>
-#include <cstdlib>
-#include <string>
-
 using namespace winrt::Windows::Devices::Bluetooth::Rfcomm;
 using namespace winrt::Windows::Networking::Sockets;
 
 namespace Propods {
-
-namespace {
-
-// RawName is "(AA:BB:CC:DD:EE:FF)"; keep only the hex digits.
-std::uint64_t remoteAddress(const StreamSocket& socket) {
-    try {
-        const auto raw = winrt::to_string(socket.Information().RemoteHostName().RawName());
-        std::string hex;
-        for (char c : raw) if (std::isxdigit(static_cast<unsigned char>(c))) hex += c;
-        if (hex.size() == 12) return std::strtoull(hex.c_str(), nullptr, 16);
-    } catch (...) {}
-    return 0;
-}
-
-}
 
 bool PeerServer::start() {
     if (m_running.exchange(true)) return true;
@@ -43,7 +24,7 @@ bool PeerServer::start() {
         m_listener.ConnectionReceived([this](StreamSocketListener const&,
                                              StreamSocketListenerConnectionReceivedEventArgs const& args) {
             auto socket = args.Socket();
-            const auto address = remoteAddress(socket);
+            const auto address = remoteBluetoothAddress(socket);
             if (address == 0) {
                 log::warn("Peer link: cannot read the caller's address; closing");
                 try { socket.Close(); } catch (...) {}
@@ -56,7 +37,7 @@ bool PeerServer::start() {
         m_listener.BindServiceNameAsync(m_provider.ServiceId().AsString(),
             SocketProtectionLevel::BluetoothEncryptionWithAuthentication).get();
         m_provider.StartAdvertising(m_listener);
-        log::info("Peer link service advertised (other computers can link to this PC)");
+        log::info("Peer link service advertised (peers can dial this PC)");
         return true;
     } catch (const winrt::hresult_error& e) {
         log::warn("Peer link service failed to start: 0x{:08X} {}",

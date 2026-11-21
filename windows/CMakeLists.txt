@@ -69,6 +69,7 @@ set(HDR
     src/PlaybackSilencer.hpp
     src/BtHandoverSetup.hpp
     src/Logger.hpp
+    src/v2/PeerV2Arbitration.hpp
 )
 
 add_executable(Propods WIN32 ${SRC} ${HDR})

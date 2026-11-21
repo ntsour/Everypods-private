@@ -523,10 +523,16 @@ void HandoverController::onIncomingPacket(std::span<const std::uint8_t> data) {
             log::debug("Peer relayed AACP packet — Windows v1 ignores AACP relay");
             break;
 
-        case Incoming::WindowsAudioActive:
-        case Incoming::WindowsAudioIdle:
-            // These packets flow Windows -> Android only; ignore if received from Android.
-            log::debug("Ignoring audio-state packet from Android (not expected)");
+        case Incoming::PeerAudioActive:
+            // Same as Android CrossDevice.peerAudioActive: a peer has a call/meeting
+            // on the AirPods, so we do not start a call takeover of our own.
+            m_peerAudioActive.store(true);
+            log::handover("IN      peer reports an active audio session (call/meeting in progress)");
+            break;
+
+        case Incoming::PeerAudioIdle:
+            m_peerAudioActive.store(false);
+            log::handover("IN      peer reports its audio session idle");
             break;
 
         case Incoming::Unknown:
@@ -537,7 +543,7 @@ void HandoverController::onIncomingPacket(std::span<const std::uint8_t> data) {
 
 void HandoverController::onPeerConnectionChanged(bool connected) {
     if (connected) {
-        log::handover("PEER    peer connected (phone or computer)");
+        log::handover("PEER    peer connected");
         // Re-sync cached state with reality before announcing.
         const bool airpodsHere = m_airpods.isClassicallyConnectedWinRT();
         const bool wasLocalPc  = (m_state.load() == OwnershipState::LocalPc);
@@ -582,6 +588,8 @@ void HandoverController::onPeerConnectionChanged(bool connected) {
         }
     } else {
         log::handover("PEER    peer disconnected");
+        // The flag is only meaningful while a peer link is up (Android clears it on stop).
+        if (!m_peers.isAnyConnected()) m_peerAudioActive.store(false);
     }
 }
 
@@ -593,6 +601,12 @@ void HandoverController::onCallActive() {
     // path (Chrome auto-resume after device drop).
     if (m_voluntarilyReleased.exchange(false))
         log::handover("STATE   m_voluntarilyReleased cleared (call active)");
+    // Android suppresses its call takeover while a peer reports an active call
+    // session, so two devices answering at once do not steal the AirPods back and forth.
+    if (m_peerAudioActive.load()) {
+        log::handover("SKIP    call takeover suppressed: a peer has an active audio session");
+        return;
+    }
     onMediaPlayingChanged(true);
 }
 

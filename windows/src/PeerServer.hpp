@@ -9,9 +9,9 @@
 
 namespace Propods {
 
-// Advertises the coordination service (crossdevice::kServiceUuid) so another
-// computer (Windows or Mac) can open a peer link to this PC. Each accepted
-// link is handed to onConnection with the dialler's address.
+// Advertises the legacy coordination service (crossdevice::kServiceUuid) so any
+// peer can open a link to this PC. Each accepted link is handed to onConnection
+// with the dialler's address. (The v2 service is served by v2::PeerV2Mesh.)
 class PeerServer {
 public:
     using ConnectionCallback = std::function<void(std::uint64_t address,

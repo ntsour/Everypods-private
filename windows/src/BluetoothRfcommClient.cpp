@@ -6,8 +6,12 @@
 #include <winrt/Windows.Devices.Bluetooth.h>
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Foundation.Collections.h>
+#include <winrt/Windows.Networking.h>
+#include <winrt/Windows.Networking.Sockets.h>
 
+#include <cctype>
 #include <chrono>
+#include <cstdlib>
 #include <string>
 
 using namespace winrt;
@@ -60,12 +64,23 @@ BluetoothRfcommClient::~BluetoothRfcommClient() {
     stop();
 }
 
+std::uint64_t remoteBluetoothAddress(const StreamSocket& socket) {
+    try {
+        const auto raw = winrt::to_string(socket.Information().RemoteHostName().RawName());
+        std::string hex;
+        for (char c : raw) if (std::isxdigit(static_cast<unsigned char>(c))) hex += c;
+        if (hex.size() == 12) return std::strtoull(hex.c_str(), nullptr, 16);
+    } catch (...) {}
+    return 0;
+}
+
 void BluetoothRfcommClient::start(std::uint64_t peerAddress, std::string_view serviceUuid,
-                                  std::chrono::milliseconds firstDialDelay) {
+                                  DelayProvider firstDialDelay, KeepOwnDialled keepOwnDialled) {
     if (m_running.exchange(true)) return;
     m_peerAddress.store(peerAddress);
     m_serviceUuid = std::string(serviceUuid);
-    m_firstDialDelay = firstDialDelay;
+    m_firstDialDelay = std::move(firstDialDelay);
+    m_keepOwnDialled = std::move(keepOwnDialled);
     m_worker = std::thread([this, peerAddress]() {
         winrt::init_apartment(winrt::apartment_type::multi_threaded);
         runLoop(peerAddress);
@@ -216,7 +231,15 @@ void BluetoothRfcommClient::runConnection(std::uint64_t peerAddress, StreamSocke
 
 void BluetoothRfcommClient::runLoop(std::uint64_t peerAddress) {
     auto backoff = kInitialBackoff;
-    if (m_firstDialDelay.count() > 0) waitFor(m_firstDialDelay);
+    if (m_firstDialDelay) {
+        std::chrono::milliseconds delay{0};
+        try { delay = m_firstDialDelay(); } catch (...) {}
+        if (delay.count() > 0) {
+            log::info("RFCOMM {:012X}: waiting {} ms before the first dial (the peer dials first)",
+                peerAddress, delay.count());
+            waitFor(delay);
+        }
+    }
 
     while (m_running.load()) {
         try {
@@ -226,10 +249,19 @@ void BluetoothRfcommClient::runLoop(std::uint64_t peerAddress) {
                 inbound = false;
                 socket = dial(peerAddress);
                 // A link from the peer may have arrived while we were dialling.
+                // Both links are up: keep the one dialled by the peer with the
+                // smaller installationId; unknown ids keep the one that came up
+                // first, which is theirs (it arrived while we were still dialling).
                 if (auto theirs = takePendingInbound()) {
-                    try { socket.Close(); } catch (...) {}
-                    socket = theirs;
-                    inbound = true;
+                    const bool keepOurs = m_keepOwnDialled && m_keepOwnDialled();
+                    if (keepOurs) {
+                        log::info("RFCOMM {:012X}: both links up; keeping the one we dialled", peerAddress);
+                        try { theirs.Close(); } catch (...) {}
+                    } else {
+                        try { socket.Close(); } catch (...) {}
+                        socket = theirs;
+                        inbound = true;
+                    }
                 }
             }
             backoff = kInitialBackoff;

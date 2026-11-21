@@ -72,7 +72,7 @@ TraceUploadResult uploadTraces(std::uint64_t peerAddress, std::chrono::hours max
     try {
         auto device = BluetoothDevice::FromBluetoothAddressAsync(peerAddress).get();
         if (!device) {
-            result.error = "phone not found (is it paired?)";
+            result.error = "peer not found (is it paired?)";
             return result;
         }
         auto services = device.GetRfcommServicesForIdAsync(
@@ -129,7 +129,7 @@ TraceUploadResult uploadTraces(std::uint64_t peerAddress, std::chrono::hours max
                 remaining -= static_cast<std::uintmax_t>(got);
             }
             writer.StoreAsync().get();
-            if (reader.LoadAsync(1).get() != 1) throw std::runtime_error("phone closed the connection");
+            if (reader.LoadAsync(1).get() != 1) throw std::runtime_error("peer closed the connection");
             if (reader.ReadByte() == 1) {
                 ++result.stored;
                 sent[name] = size;
@@ -137,7 +137,7 @@ TraceUploadResult uploadTraces(std::uint64_t peerAddress, std::chrono::hours max
                 log::info("Trace upload: {} ({} bytes) stored", name, size);
             } else {
                 ++result.rejected;
-                log::warn("Trace upload: {} rejected by phone", name);
+                log::warn("Trace upload: {} rejected by peer", name);
             }
         }
         writer.WriteUInt32(0);

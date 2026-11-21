@@ -2,6 +2,7 @@
 // run in CI after the build. Vectors cross-checked against Android's
 // PeerIdentityStore.headsetIdFromAddress and membership digest in Python.
 
+#include "v2/PeerV2Arbitration.hpp"
 #include "v2/PeerV2Frame.hpp"
 #include "v2/PeerV2Identity.hpp"
 #include "v2/PeerV2Json.hpp"
@@ -108,11 +109,34 @@ static void messageTests() {
     CHECK(throwsCode([&] { encode(FrameType::RelayData, relayBad); }, "invalid_relay_data"));
 }
 
+static void arbitrationTests() {
+    using namespace std::chrono;
+    // Smallest (initiatorId, connectionId) wins; both ends compute the same.
+    CHECK(preferredConnection({}) == -1);
+    CHECK(preferredConnection({{kB, "c1"}, {kA, "c9"}}) == 1);
+    CHECK(preferredConnection({{kA, "c2"}, {kA, "c1"}}) == 1);
+    CHECK(preferredConnection({{kA, "c1"}}) == 0);
+    // First dial: smaller installationId at once, the other after 3 s, unknown peer at once.
+    CHECK(firstDialDelay(kA, kB) == milliseconds{0});
+    CHECK(firstDialDelay(kB, kA) == milliseconds{3000});
+    CHECK(firstDialDelay(kB, "") == milliseconds{0});
+    CHECK(firstDialDelay("", kA) == milliseconds{0});
+    CHECK(firstDialDelay(kA, kA) == milliseconds{0});
+    // Duplicate legacy links.
+    CHECK(chooseLegacyLink(kA, kB, true) == LegacyLinkChoice::KeepExisting);   // ours, we are smaller
+    CHECK(chooseLegacyLink(kA, kB, false) == LegacyLinkChoice::UseNew);        // theirs was first, but ours is wanted
+    CHECK(chooseLegacyLink(kB, kA, true) == LegacyLinkChoice::UseNew);         // peer is smaller: use its link
+    CHECK(chooseLegacyLink(kB, kA, false) == LegacyLinkChoice::KeepExisting);
+    CHECK(chooseLegacyLink(kA, "", true) == LegacyLinkChoice::KeepExisting);   // unknown id: first up wins
+    CHECK(chooseLegacyLink(kA, "", false) == LegacyLinkChoice::KeepExisting);
+}
+
 int main() {
     identityTests();
     jsonTests();
     frameTests();
     messageTests();
+    arbitrationTests();
     std::printf("%d passed, %d failed\n", g_passed, g_failed);
     return g_failed == 0 ? 0 : 1;
 }

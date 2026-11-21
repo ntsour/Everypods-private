@@ -9,8 +9,9 @@
 namespace Propods {
 
 struct Settings {
-    std::vector<std::uint64_t>   androidAddresses;  // one entry per paired Android peer
-    std::vector<std::uint64_t>   computerAddresses; // other computers (Windows/Mac) to coordinate with
+    // Every configured peer, deduplicated. There is no phone/computer distinction.
+    // The name is historical: it is the key older builds read from config.txt.
+    std::vector<std::uint64_t>   peerAddresses;
     std::optional<std::uint64_t> airpodsAddress;
     bool                         autoRoute{true};   // auto-set AirPods as default audio device
     bool                         pauseOnRelease{true};  // pause/mute PC audio when the AirPods leave

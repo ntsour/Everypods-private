@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <mutex>
 #include <stdexcept>
 
@@ -46,6 +47,24 @@ std::filesystem::path identityPath() {
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
     return dir / L"peer-identity.txt";
+}
+
+std::filesystem::path peerIdsPath() { return identityPath().parent_path() / L"peer-ids.txt"; }
+
+std::mutex g_peerIdsMutex;
+std::map<std::uint64_t, std::string> g_peerIds;
+bool g_peerIdsLoaded = false;
+
+void loadPeerIdsLocked() {
+    if (g_peerIdsLoaded) return;
+    g_peerIdsLoaded = true;
+    std::ifstream in{peerIdsPath()};
+    std::string line;
+    while (std::getline(in, line)) {
+        const auto eq = line.find('=');
+        if (eq != 12 || !isCanonicalUuid(line.substr(eq + 1))) continue;
+        try { g_peerIds[std::stoull(line.substr(0, 12), nullptr, 16)] = line.substr(eq + 1); } catch (...) {}
+    }
 }
 
 }  // namespace
@@ -118,6 +137,28 @@ const LocalIdentity& localIdentity() {
         identity.sessionId = randomUuid();
     });
     return identity;
+}
+
+std::string knownPeerInstallationId(std::uint64_t address) {
+    std::scoped_lock lk{g_peerIdsMutex};
+    loadPeerIdsLocked();
+    const auto it = g_peerIds.find(address);
+    return it == g_peerIds.end() ? std::string{} : it->second;
+}
+
+void rememberPeerInstallationId(std::uint64_t address, const std::string& installationId) {
+    if (!isCanonicalUuid(installationId)) return;
+    std::scoped_lock lk{g_peerIdsMutex};
+    loadPeerIdsLocked();
+    auto& slot = g_peerIds[address];
+    if (slot == installationId) return;
+    slot = installationId;
+    std::ofstream out{peerIdsPath(), std::ios::trunc};
+    for (const auto& [a, id] : g_peerIds) {
+        char key[16];
+        std::snprintf(key, sizeof(key), "%012llX", static_cast<unsigned long long>(a));
+        out << key << '=' << id << '\n';
+    }
 }
 
 }  // namespace Propods::v2

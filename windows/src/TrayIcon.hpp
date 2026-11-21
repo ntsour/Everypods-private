@@ -31,7 +31,6 @@ public:
         std::uint64_t address{};
         std::wstring  name;
         bool          connected{false};
-        bool          computer{false};   // Windows/Mac peer rather than a phone
     };
 
     // Snapshot of app status, fetched just before the menu opens.
