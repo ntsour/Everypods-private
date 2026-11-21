@@ -13,6 +13,8 @@ struct Settings {
     std::optional<std::uint64_t> airpodsAddress;
     bool                         autoRoute{true};   // auto-set AirPods as default audio device
     bool                         pauseOnRelease{true};  // pause/mute PC audio when the AirPods leave
+    bool                         takeOnMediaStart{true};  // take the AirPods when this PC starts playing media
+    bool                         takeOnCall{true};        // take the AirPods when a call starts on this PC
 };
 
 class SettingsStore {

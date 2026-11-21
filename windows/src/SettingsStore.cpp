@@ -89,6 +89,12 @@ Settings SettingsStore::load() const {
         } else if (key == "pauseonrelease") {
             s.pauseOnRelease = (val != "0");
             log::debug("  pauseonrelease = {}", s.pauseOnRelease);
+        } else if (key == "takeonmedia") {
+            s.takeOnMediaStart = (val != "0");
+            log::debug("  takeonmedia = {}", s.takeOnMediaStart);
+        } else if (key == "takeoncall") {
+            s.takeOnCall = (val != "0");
+            log::debug("  takeoncall = {}", s.takeOnCall);
         }
     }
     return s;
@@ -105,6 +111,8 @@ void SettingsStore::save(const Settings& s) const {
     if (s.airpodsAddress) f << "airpods=" << formatBluetoothAddress(*s.airpodsAddress) << '\n';
     f << "autoroute=" << (s.autoRoute ? "1" : "0") << '\n';
     f << "pauseonrelease=" << (s.pauseOnRelease ? "1" : "0") << '\n';
+    f << "takeonmedia=" << (s.takeOnMediaStart ? "1" : "0") << '\n';
+    f << "takeoncall=" << (s.takeOnCall ? "1" : "0") << '\n';
 }
 
 }

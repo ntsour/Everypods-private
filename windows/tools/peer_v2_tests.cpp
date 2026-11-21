@@ -101,6 +101,45 @@ static void messageTests() {
     unsorted[4].second = Json(JsonArray{Json(kB), Json(kA)});
     CHECK(throwsCode([&] { encode(FrameType::AcquireRequest, unsorted); }, "invalid_membership"));
 
+    // Capabilities: any well-formed name is accepted (unknown ones are ignored).
+    const auto helloWith = [&](const std::string& caps) {
+        return Frame{FrameType::Hello, std::string(R"({"installationId":")") + kA + R"(","sessionId":")" + kB +
+            R"(","capabilities":)" + caps + R"(,"initiatorId":")" + kA + R"(","connectionId":")" + kB + R"("})"};
+    };
+    CHECK(decode(helloWith(R"(["acquire-v1","acquire-v2","snapshot"])")).fields.size() == 5);
+    CHECK(decode(helloWith(R"(["acquire-v1","future-x","snapshot"])")).fields.size() == 5);
+    CHECK(decode(helloWith("[]")).fields.size() == 5);
+    CHECK(throwsCode([&] { decode(helloWith(R"(["Bad Name"])")); }, "invalid_capabilities"));
+    CHECK(throwsCode([&] { decode(helloWith(R"(["-x"])")); }, "invalid_capabilities"));
+    CHECK(throwsCode([&] { decode(helloWith(R"(["snapshot","acquire-v1"])")); }, "invalid_capabilities"));
+    CHECK(throwsCode([&] { decode(helloWith(R"(["snapshot","snapshot"])")); }, "invalid_capabilities"));
+    CHECK(throwsCode([&] { decode(helloWith("[1]")); }, "invalid_capabilities"));
+
+    // ACQUIRE_REQUEST: optional intent, nothing else extra.
+    for (const char* intent : {"call", "manual", "media", "passive"}) {
+        JsonObject withIntent = request;
+        withIntent.push_back({"intent", intent});
+        CHECK(decode(encode(FrameType::AcquireRequest, withIntent)).type == FrameType::AcquireRequest);
+    }
+    JsonObject badIntent = request;
+    badIntent.push_back({"intent", "urgent"});
+    CHECK(throwsCode([&] { encode(FrameType::AcquireRequest, badIntent); }, "invalid_intent"));
+    JsonObject extraField = request;
+    extraField.push_back({"bogus", "x"});
+    CHECK(throwsCode([&] { encode(FrameType::AcquireRequest, extraField); }, "invalid_fields"));
+
+    // ACQUIRE_DENY reasons, including the forward-compatible ones.
+    for (const char* reason : {"HELD", "CALL_ACTIVE", "POLICY"}) {
+        const JsonObject deny{{"requestId", kB}, {"headsetId", kA}, {"requesterId", kA},
+            {"requesterSessionId", kB}, {"membership", JsonArray{Json(kA), Json(kB)}},
+            {"membershipDigest", kDigestAB}, {"grantorId", kB}, {"grantorSessionId", kA}, {"reason", reason}};
+        CHECK(decode(encode(FrameType::AcquireDeny, deny)).type == FrameType::AcquireDeny);
+    }
+    const JsonObject denyBad{{"requestId", kB}, {"headsetId", kA}, {"requesterId", kA},
+        {"requesterSessionId", kB}, {"membership", JsonArray{Json(kA), Json(kB)}},
+        {"membershipDigest", kDigestAB}, {"grantorId", kB}, {"grantorSessionId", kA}, {"reason", "NOPE"}};
+    CHECK(throwsCode([&] { encode(FrameType::AcquireDeny, denyBad); }, "invalid_deny_reason"));
+
     const JsonObject relay{{"subtype", "battery"}, {"data", "AAE="}};
     CHECK(decode(encode(FrameType::RelayData, relay)).fields.size() == 2);
     JsonObject relayBad = relay;
