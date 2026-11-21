@@ -4,6 +4,7 @@
 
 import AppKit
 import IOBluetooth
+import ServiceManagement
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -18,11 +19,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem.menu = menu
         controller.onChange = { [weak self] in self?.updateIcon() }
         controller.start()
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.controller.handleWake()
+        }
         Log.write("EveryPods for Mac started")
     }
 
     private func updateIcon() {
         statusItem.button?.appearsDisabled = controller.ownership != .thisMac
+        statusItem.button?.toolTip = [controller.phoneStatus, controller.airPodsStatus].joined(separator: "\n")
     }
 
     // Rebuilt every time the menu opens, so it always shows current state.
@@ -62,6 +68,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(authorize)
         menu.addItem(.separator())
 
+        let login = NSMenuItem(title: "Launch at Login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
+        login.target = self
+        login.state = SMAppService.mainApp.status == .enabled ? .on : .off
+        menu.addItem(login)
         let log = NSMenuItem(title: "Show Log", action: #selector(showLog), keyEquivalent: "")
         log.target = self
         menu.addItem(log)
@@ -94,6 +104,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func takeTapped() { controller.takeAirPods() }
     @objc private func releaseTapped() { controller.releaseAirPods() }
+
+    @objc private func toggleLaunchAtLogin() {
+        do {
+            if SMAppService.mainApp.status == .enabled {
+                try SMAppService.mainApp.unregister()
+            } else {
+                try SMAppService.mainApp.register()
+            }
+            Log.write("Launch at login: \(SMAppService.mainApp.status == .enabled ? "on" : "off")")
+        } catch {
+            Log.write("Launch at login failed: \(error.localizedDescription)")
+        }
+    }
 
     @objc private func toggleAutoTake() { Settings.autoTake.toggle() }
     @objc private func grantAccessibility() { MediaControl.requestPermission() }

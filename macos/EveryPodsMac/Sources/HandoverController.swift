@@ -75,6 +75,17 @@ final class HandoverController {
         onChange?()
     }
 
+    /// After sleep the Bluetooth stack takes a moment to come back, and macOS may have reconnected
+    /// the AirPods by itself. Rebuild the phone link from scratch, then re-announce who holds them.
+    func handleWake() {
+        Log.write("Wake: rebuilding the phone link")
+        peer.stop()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            self?.restartPeer()
+            self?.refresh()
+        }
+    }
+
     // MARK: User actions
 
     /// Takes the AirPods for this Mac: ask the phone to release them, then connect.
