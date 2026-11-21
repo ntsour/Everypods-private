@@ -25,6 +25,7 @@ final class HandoverController {
     private var takeInProgress = false
     private var lastRelease = Date.distantPast
     private var announcedCall: Bool?
+    private var callDebounce: DispatchWorkItem?
     /// After giving the AirPods away, do not auto-take them back for this long.
     private let autoTakeCooldown: TimeInterval = 10
 
@@ -43,7 +44,8 @@ final class HandoverController {
     }
 
     var macAudioStatus: String {
-        if media.snapshot.inCall { return "Mac audio: microphone in use" }
+        if media.snapshot.inCall { return "Mac audio: in a call" }
+        if media.snapshot.micInUse { return "Mac audio: microphone in use" }
         if media.snapshot.playing { return "Mac audio: playing" }
         return "Mac audio: idle"
     }
@@ -146,12 +148,29 @@ final class HandoverController {
         takeAirPods()
     }
 
-    /// Tells the phone whether the Mac is in a call; the Android app holds back takeovers during one.
+    /// Tells the phone whether the Mac is in a call; the Android app then will not steal the AirPods
+    /// for a ringing phone call. The signal is debounced so a brief mic blip does not flip it.
     private func announceCallState() {
-        let inCall = media.snapshot.inCall
-        guard peer.isConnected, announcedCall != inCall else { return }
-        announcedCall = inCall
-        peer.send(inCall ? Packet.peerAudioActive : Packet.peerAudioIdle)
+        callDebounce?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.peer.isConnected else { return }
+            let inCall = self.media.snapshot.inCall
+            guard self.announcedCall != inCall else { return }
+            let first = self.announcedCall == nil
+            self.announcedCall = inCall
+            if inCall {
+                Log.write("Media: call started (\(self.media.snapshot.callApps.joined(separator: ", ")))")
+            } else {
+                Log.write(first ? "Media: reporting idle to the phone" : "Media: call ended")
+            }
+            self.peer.send(inCall ? Packet.peerAudioActive : Packet.peerAudioIdle)
+        }
+        callDebounce = work
+        // Starting a call is reported after 2s; ending one needs 10s of quiet, because browser calls
+        // toggle their audio flags (measured: 5s on / 5s off blips) and a false "idle" lets the phone
+        // take the AirPods out from under a live call.
+        let delay: TimeInterval = media.snapshot.inCall ? 2 : 10
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
     // MARK: Packets

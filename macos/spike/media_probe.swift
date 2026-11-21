@@ -52,7 +52,8 @@ while true {
         let input: UInt32 = property(process, kAudioProcessPropertyIsRunningInput, default: 0)
         guard out != 0 || input != 0 else { continue }
         let bundle = string(process, kAudioProcessPropertyBundleID)
-        lines.append("  proc \(bundle): output=\(out) input=\(input)")
+        let pid: Int32 = property(process, kAudioProcessPropertyPID, default: 0)
+        lines.append("  proc \(bundle) pid=\(pid): output=\(out) input=\(input)")
     }
     let text = lines.joined(separator: "\n")
     if text != last {

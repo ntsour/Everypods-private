@@ -13,8 +13,11 @@ final class MediaWatcher {
     struct Snapshot: Equatable {
         var playingApps: [String] = []
         var micApps: [String] = []
+        /// Apps with both microphone input and audio output at once: a call or meeting, not a recording.
+        var callApps: [String] = []
         var playing: Bool { !playingApps.isEmpty }
-        var inCall: Bool { !micApps.isEmpty }
+        var inCall: Bool { !callApps.isEmpty }
+        var micInUse: Bool { !micApps.isEmpty }
     }
 
     /// Fires once when audio has been playing for `sustain` seconds (not for short system sounds).
@@ -31,6 +34,13 @@ final class MediaWatcher {
     private let ignoredPrefixes = [
         "com.apple.HeadphoneSettings", "com.apple.audio.", "com.apple.systemsound",
         "com.apple.coreaudio", "com.everypods.mac",
+    ]
+
+    /// Recorders and dictation hold an output stream while using the microphone (Voice Memos shows
+    /// both flags). They are a microphone in use, not a call and not playback.
+    private let recorderPrefixes = [
+        "com.apple.VoiceMemos", "com.apple.QuickTimePlayerX", "com.apple.garageband", "com.apple.logic",
+        "com.apple.dictation", "com.apple.speech", "com.apple.siri", "com.apple.assistant",
     ]
 
     func start() {
@@ -62,8 +72,12 @@ final class MediaWatcher {
         for process in Self.objects(AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyProcessObjectList) {
             let bundle = Self.string(process, kAudioProcessPropertyBundleID)
             if ignoredPrefixes.contains(where: { bundle.hasPrefix($0) }) { continue }
-            if Self.flag(process, kAudioProcessPropertyIsRunningOutput) { result.playingApps.append(bundle) }
-            if Self.flag(process, kAudioProcessPropertyIsRunningInput) { result.micApps.append(bundle) }
+            let output = Self.flag(process, kAudioProcessPropertyIsRunningOutput)
+            let input = Self.flag(process, kAudioProcessPropertyIsRunningInput)
+            let recorder = recorderPrefixes.contains(where: { bundle.hasPrefix($0) })
+            if input { result.micApps.append(bundle) }
+            if output && !(recorder && input) { result.playingApps.append(bundle) }
+            if output && input && !recorder { result.callApps.append(bundle) }
         }
         return result
     }
