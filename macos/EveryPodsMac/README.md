@@ -6,13 +6,36 @@ same idea ("AirPods follow attention"), built on IOBluetooth and CoreAudio.
 
 ## What it does
 Same behaviour as the Windows client (see [PLAN.md](PLAN.md) for the full mapping):
-- Keeps a Bluetooth link to every Android phone you added and answers their status pings.
+- Keeps a Bluetooth link to every peer (Android phone or computer) you added and answers their status pings.
 - **A phone asks for the AirPods** (it started audio or a call): the Mac releases them (pausing playback first, a
   setting) and does not grab them straight back.
 - **The Mac starts playing audio or a call**: asks the phones to release them and connects them here, unless the
   AirPods appear to be in their case. Sets them as the audio output.
 - Tells the phones when a call is active on the Mac so the Android app holds back takeovers of a ringing call.
 - Guards against ping-pong (3 s after a takeover or a loss, 30 s for the same app after handing over).
+
+## Peers: phones and other computers
+Every peer is equal (peer-mesh spec §1.2):
+- **Listens** on the shared `EveryPodsCrossDevice` service (`1abbb9a4-…`): an SDP record on a fixed RFCOMM
+  channel (23) plus an incoming-channel registration (`PeerServer.swift`). No separate computer service.
+- **Dials** every saved peer on the same UUID with backoff (1.5 s doubling to 15 s), while no link to it is up
+  in either direction. No delay: the Mac has no v2 installation ID yet.
+- **One link per peer**: if a link is already up, an incoming one is closed (the first link wins, as the legacy
+  rule says until installation IDs exist). An unknown device that dials in is saved as a peer. There is no
+  phone/computer distinction; **Add peer…** lists paired devices that advertise the service.
+- **Holder rules** on `REQUEST_DISCONNECT` (media) and `REQUEST_HANDOVER` (call): pods in the case → ignore;
+  Mac in a call → keep them, reply `AIRPODS_CONNECTED` (both request types, no setting); `REQUEST_DISCONNECT`
+  within 3 s of our own takeover → keep them; otherwise release and reply `AIRPODS_DISCONNECTED`. A non-holder
+  replies `AIRPODS_DISCONNECTED`.
+- **Graceful release**: pause (setting), ask the AirPods to disconnect, wait up to 4.5 s for the link to close,
+  force it if still up, then tell the peers.
+- **Taking**: `REQUEST_DISCONNECT` for media start, `REQUEST_HANDOVER` for a call, then connect, then
+  `AIRPODS_CONNECTED`. Settings (both on by default): "Take over when media starts", "Take over when receiving
+  a call".
+- Not implemented: the v2 (EPH2) mesh. Computer peers stay out of it.
+
+Not verified on hardware: an inbound link (nothing has dialled the Mac yet), the two-dial race, and computer
+peers. Outbound links to the phone are unchanged.
 
 ## Build and run
 ```bash

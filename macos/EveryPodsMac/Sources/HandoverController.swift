@@ -2,12 +2,19 @@
 //
 // Decides who holds the AirPods. A rule-for-rule port of windows/src/HandoverController.cpp: same ownership
 // states, same guard timers (debounce, anti-ping-pong, voluntary-release suppression), same packet handling.
-// The requester always wins (no holder veto). Differences are listed in PLAN.md. Everything runs on the main thread.
+// Holder rules follow the peer spec: pods in the case -> ignore; in a call -> keep them; right after our own
+// takeover -> keep them (media only); otherwise release. Differences are listed in PLAN.md. Everything runs on
+// the main thread.
 
 import Foundation
 
 enum Ownership: Equatable {
     case unknown, thisMac, otherDevice
+}
+
+/// Why this Mac takes the AirPods: media sends REQUEST_DISCONNECT, a call sends REQUEST_HANDOVER.
+enum TakeIntent {
+    case media, call
 }
 
 final class HandoverController {
@@ -25,6 +32,7 @@ final class HandoverController {
     private let voluntarySuppress: TimeInterval = 30
     private let postReleaseWindow: TimeInterval = 5
     private let ackWait: TimeInterval = 1.5
+    private let releaseGrace: TimeInterval = 4.5
 
     private var lastAction = Date.distantPast
     private var lastLocalTakeover = Date.distantPast
@@ -150,7 +158,11 @@ final class HandoverController {
             }
             return
         }
-        guard Settings.autoTake, pods.isConfigured else { return }
+        let intent: TakeIntent = media.snapshot.inCall ? .call : .media
+        guard pods.isConfigured else { return }
+        guard intent == .call ? Settings.takeOnCall : Settings.takeOnMediaStart else {
+            return Log.write("Skip: take over on \(intent == .call ? "call" : "media start") is off")
+        }
         if since(lastAction) < debounce { return }
         lastAction = Date()
 
@@ -178,8 +190,8 @@ final class HandoverController {
             return Log.write("Skip: \(voluntaryReleaseApp) re-triggered within the voluntary-release window")
         }
         guard !takeoverInFlight else { return Log.write("Skip: a takeover is already in flight") }
-        Log.write("Trigger: audio active (\(media.currentAppID.isEmpty ? "unknown app" : media.currentAppID)); taking the AirPods")
-        startTakeover()
+        Log.write("Trigger: \(intent == .call ? "call" : "audio") active (\(media.currentAppID.isEmpty ? "unknown app" : media.currentAppID)); taking the AirPods")
+        startTakeover(intent)
     }
 
     /// A call (or meeting) started on this Mac: an explicit user action, so the gate is cleared first.
@@ -210,7 +222,7 @@ final class HandoverController {
         }
         guard !takeoverInFlight else { return }
         Log.write("Manual connect")
-        startTakeover()
+        startTakeover(.media)
     }
 
     /// Gives the AirPods up on request from the menu (any phone can then take them).
@@ -222,9 +234,9 @@ final class HandoverController {
 
     // MARK: Taking and giving up
 
-    /// Asks the phones to release, then connects (3 attempts). The connect starts when a phone confirms the
+    /// Asks the peers to release, then connects (3 attempts). The connect starts when a phone confirms the
     /// release or after a short wait, whichever comes first.
-    private func startTakeover() {
+    private func startTakeover(_ intent: TakeIntent) {
         takeoverInFlight = true
         let connect = { [weak self] in
             guard let self else { return }
@@ -243,7 +255,7 @@ final class HandoverController {
                 }
             }
         }
-        if peers.send(Packet.requestDisconnect) {
+        if peers.send(intent == .call ? Packet.requestHandover : Packet.requestDisconnect) {
             var started = false
             let go = { if !started { started = true; connect() } }
             ackWaiters.append(go)
@@ -253,7 +265,9 @@ final class HandoverController {
         }
     }
 
-    /// Optionally pauses what is playing (so audio does not jump to the speakers), then disconnects.
+    /// Optionally pauses what is playing (so audio does not jump to the speakers), then asks the AirPods to
+    /// disconnect, lets the link close on its own and forces it only if it is still up after 4.5 s. The peers
+    /// are told once it is down (the phone's acknowledgement timeout is 6 s).
     private func giveUp() {
         let pause = Settings.pauseOnHandover && media.snapshot.playing
         if pause { MediaControl.togglePlayPause() }
@@ -261,9 +275,22 @@ final class HandoverController {
         DispatchQueue.main.asyncAfter(deadline: .now() + (pause ? 0.4 : 0)) { [weak self] in
             guard let self else { return }
             self.pods.disconnect()
-            self.setState(.otherDevice)
-            self.lastBluetoothConnected = false
-            self.peers.send(Packet.airPodsDisconnected)
+            let deadline = Date().addingTimeInterval(self.releaseGrace)
+            func finish() {
+                self.setState(.otherDevice)
+                self.lastBluetoothConnected = false
+                self.peers.send(Packet.airPodsDisconnected)
+            }
+            func wait() {
+                if !self.pods.isConnected { return finish() }
+                if Date() >= deadline {
+                    Log.write("Release: link still up after \(self.releaseGrace)s; forcing it")
+                    self.pods.disconnect()
+                    return finish()
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: wait)
+            }
+            wait()
         }
     }
 
@@ -280,31 +307,34 @@ final class HandoverController {
 
     func onIncomingPacket(_ data: Data) {
         let holder = ownership == .thisMac || pods.isConnected
-        switch Incoming(data) {
-        case .requestDisconnect:
-            // Music request. Only the holder can release; the requester always wins.
+        let packet = Incoming(data)
+        switch packet {
+        case .requestDisconnect, .requestHandover:
+            let call = packet == .requestHandover
+            let label = call ? "requestHandover" : "requestDisconnect"
+            // Only the holder can release; a non-holder just says it does not hold them.
             guard holder else {
-                Log.write("In: requestDisconnect ignored (not the holder)")
+                Log.write("In: \(label) ignored (not the holder)")
                 peers.send(Packet.airPodsDisconnected)
                 return
             }
-            // Reject a takeover right after our own (the phone's auto-takeover fires on any active media).
-            if since(lastLocalTakeover) < antiPingPong {
-                Log.write("In: requestDisconnect rejected (anti-ping-pong)")
+            // Pods in the case: nothing to hand over.
+            if !proximity.airPodsAvailable {
+                return Log.write("In: \(label) ignored (AirPods appear to be in the case)")
+            }
+            // In a call or ringing: keep the AirPods, both request types.
+            if media.snapshot.inCall {
+                Log.write("In: \(label) refused (call active on this Mac)")
                 peers.send(Packet.airPodsConnected)
                 return
             }
-            Log.write("In: requestDisconnect accepted; releasing the AirPods")
-            releaseToPeer()
-
-        case .requestHandover:
-            // Call-priority request (same handling).
-            guard holder else {
-                Log.write("In: requestHandover ignored (not the holder)")
-                peers.send(Packet.airPodsDisconnected)
+            // Ping-pong guard: a media request right after our own takeover.
+            if !call, since(lastLocalTakeover) < antiPingPong {
+                Log.write("In: \(label) rejected (anti-ping-pong)")
+                peers.send(Packet.airPodsConnected)
                 return
             }
-            Log.write("In: requestHandover accepted unconditionally (call priority)")
+            Log.write("In: \(label) accepted; releasing the AirPods")
             releaseToPeer()
 
         case .airPodsConnected:
@@ -335,7 +365,7 @@ final class HandoverController {
     }
 
     func onPeerConnectionChanged(_ address: String, _ connected: Bool) {
-        Log.write("Phone \(address) \(connected ? "connected" : "disconnected")")
+        Log.write("Peer \(address) \(connected ? "connected" : "disconnected")")
         if connected {
             let here = pods.isConnected
             let wasLocal = ownership == .thisMac

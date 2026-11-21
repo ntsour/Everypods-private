@@ -12,10 +12,9 @@ struct DiscoveredPeer {
 }
 
 enum PeerDiscovery {
-    /// Paired phones whose SDP records contain the CrossDevice service. Cached records are checked first;
-    /// phones without cached records are queried (only devices that are classed as phones, so a car kit
-    /// or a pair of headphones is not woken up for nothing).
-    static func findPhones(completion: @escaping ([DiscoveredPeer]) -> Void) {
+    /// Paired phones and computers whose SDP records contain the CrossDevice service. Cached records are checked first; devices without cached records are queried
+    /// (only devices classed as phones or computers, so a car kit or headphones are not woken up for nothing).
+    static func findPeers(completion: @escaping ([DiscoveredPeer]) -> Void) {
         var found: [DiscoveredPeer] = []
         var toQuery: [IOBluetoothDevice] = []
         let uuid = IOBluetoothSDPUUID(data: Data(ServiceUUID.crossDevice))
@@ -25,7 +24,8 @@ enum PeerDiscovery {
             let cached = (device.services as? [IOBluetoothSDPServiceRecord]) ?? []
             if cached.contains(where: { $0.hasService(from: [uuid]) }) {
                 found.append(DiscoveredPeer(address: address, name: device.name ?? address))
-            } else if device.deviceClassMajor == UInt32(kBluetoothDeviceClassMajorPhone) {
+            } else if device.deviceClassMajor == UInt32(kBluetoothDeviceClassMajorPhone)
+                        || device.deviceClassMajor == UInt32(kBluetoothDeviceClassMajorComputer) {
                 toQuery.append(device)
             }
         }

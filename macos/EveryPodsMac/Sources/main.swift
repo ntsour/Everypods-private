@@ -43,19 +43,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             Settings.airPodsAddress = airPods.address
             Log.write("Setup: selected AirPods \(airPods.name)")
         }
-        guard !Settings.didFirstRun || Settings.phones.isEmpty else { return }
-        PeerDiscovery.findPhones { [weak self] phones in
+        guard !Settings.didFirstRun || (Settings.peers.isEmpty) else { return }
+        PeerDiscovery.findPeers { [weak self] phones in
             guard let self else { return }
             Settings.didFirstRun = true
-            for phone in phones where !Settings.phones.contains(where: { sameAddress($0, phone.address) }) {
-                Log.write("Setup: found phone \(phone.name)")
+            for phone in phones where !self.isKnownPeer(phone.address) {
+                Log.write("Setup: found peer \(phone.name)")
                 self.controller.peers.add(phone.address)
                 self.runAuthorization(for: phone.address, name: phone.name, silent: true)
             }
-            if Settings.phones.isEmpty {
+            if Settings.peers.isEmpty {
                 Log.write("Setup: no paired phone advertises the CrossDevice service")
             }
         }
+    }
+
+    private func isKnownPeer(_ address: String) -> Bool {
+        Settings.peers.contains { sameAddress($0, address) }
     }
 
     private func updateIcon() {
@@ -77,7 +81,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let infos = controller.peers.infos
         if !infos.isEmpty {
-            menu.addItem(disabled("Android peers:"))
+            menu.addItem(disabled("Peers:"))
             for info in infos {
                 let item = NSMenuItem(title: info.name, action: nil, keyEquivalent: "")
                 item.state = info.connected ? .on : .off
@@ -96,7 +100,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(.separator())
         }
 
-        menu.addItem(action("Add Android peer…", #selector(addPeer)))
+        menu.addItem(action("Add peer…", #selector(addPeer)))
         menu.addItem(selectAirPodsMenu())
         let connect = action("Connect AirPods now", #selector(connectNow))
         connect.isEnabled = controller.pods.isConfigured && !controller.pods.isConnected
@@ -106,7 +110,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(release)
         menu.addItem(.separator())
 
-        menu.addItem(toggle("Take AirPods when this Mac plays audio", #selector(toggleAutoTake), Settings.autoTake))
+        menu.addItem(toggle("Take over when media starts", #selector(toggleTakeMedia), Settings.takeOnMediaStart))
+        menu.addItem(toggle("Take over when receiving a call", #selector(toggleTakeCall), Settings.takeOnCall))
         menu.addItem(toggle("Auto-set AirPods as audio device", #selector(toggleAutoRoute), Settings.autoRoute))
         menu.addItem(toggle("Pause playback when handing over", #selector(togglePause), Settings.pauseOnHandover))
         if !MediaControl.hasPermission {
@@ -157,7 +162,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func connectNow() { controller.connectNow() }
     @objc private func releaseTapped() { controller.releaseAirPods() }
-    @objc private func toggleAutoTake() { Settings.autoTake.toggle() }
+    @objc private func toggleTakeMedia() { Settings.takeOnMediaStart.toggle() }
+    @objc private func toggleTakeCall() { Settings.takeOnCall.toggle() }
     @objc private func toggleAutoRoute() { Settings.autoRoute.toggle() }
     @objc private func togglePause() { Settings.pauseOnHandover.toggle() }
     @objc private func grantAccessibility() { MediaControl.requestPermission() }
@@ -177,20 +183,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         runAuthorization(for: address, name: IOBluetoothDevice(addressString: normalizedAddress(address))?.name ?? address, silent: false)
     }
 
-    /// "Add Android peer…": find paired phones running the app, confirm each, then authorize it.
+    /// "Add peer…": find paired phones running the app, confirm each, then authorize it.
     @objc private func addPeer() {
-        PeerDiscovery.findPhones { [weak self] found in
+        PeerDiscovery.findPeers { [weak self] found in
             guard let self else { return }
-            let fresh = found.filter { phone in !Settings.phones.contains { sameAddress($0, phone.address) } }
+            let fresh = found.filter { !self.isKnownPeer($0.address) }
             if fresh.isEmpty {
-                self.alert(found.isEmpty ? "No paired Android phone found"
-                                         : "All discovered phones are already added",
-                           found.isEmpty ? "Make sure the phone is paired in System Settings → Bluetooth and that Cross-Device Handover is on in the EveryPods Android app." : "")
+                self.alert(found.isEmpty ? "No paired peer found"
+                                         : "All discovered devices are already added",
+                           found.isEmpty ? "Make sure the device is paired in System Settings → Bluetooth and runs EveryPods (on Android, with Cross-Device Handover on)." : "")
                 return
             }
             for phone in fresh {
                 let ask = NSAlert()
-                ask.messageText = "Add as Android peer?"
+                ask.messageText = "Add as peer?"
                 ask.informativeText = "\(phone.name)\n\(phone.address)"
                 ask.addButton(withTitle: "Add")
                 ask.addButton(withTitle: "Cancel")

@@ -9,18 +9,18 @@ import IOBluetooth
 enum Settings {
     private static let defaults = UserDefaults.standard
 
-    /// Addresses of the Android phones coordinated with, in the order they were added.
-    static var phones: [String] {
+    /// Addresses of every peer coordinated with (phones and computers alike), in the order they were added.
+    static var peers: [String] {
         get {
-            var list = defaults.stringArray(forKey: "phones") ?? []
-            // Older versions stored a single phone.
-            if list.isEmpty, let legacy = defaults.string(forKey: "phoneAddress") { list = [legacy] }
+            var list = defaults.stringArray(forKey: "peers") ?? []
+            // Older versions stored phones and computers in separate lists, or a single phone.
+            if list.isEmpty {
+                list = (defaults.stringArray(forKey: "phones") ?? []) + (defaults.stringArray(forKey: "computers") ?? [])
+                if list.isEmpty, let legacy = defaults.string(forKey: "phoneAddress") { list = [legacy] }
+            }
             return list
         }
-        set {
-            defaults.set(newValue, forKey: "phones")
-            defaults.removeObject(forKey: "phoneAddress")
-        }
+        set { defaults.set(newValue, forKey: "peers") }
     }
 
     static var airPodsAddress: String? {
@@ -28,10 +28,16 @@ enum Settings {
         set { defaults.set(newValue, forKey: "airPodsAddress") }
     }
 
-    /// Take the AirPods automatically when this Mac starts playing audio or a call (default on).
-    static var autoTake: Bool {
-        get { defaults.object(forKey: "autoTake") as? Bool ?? true }
-        set { defaults.set(newValue, forKey: "autoTake") }
+    /// "Take over when media starts" (default on). Reads the older `autoTake` key until it is first set.
+    static var takeOnMediaStart: Bool {
+        get { defaults.object(forKey: "takeOnMediaStart") as? Bool ?? defaults.object(forKey: "autoTake") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "takeOnMediaStart") }
+    }
+
+    /// "Take over when receiving a call" (default on).
+    static var takeOnCall: Bool {
+        get { defaults.object(forKey: "takeOnCall") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "takeOnCall") }
     }
 
     /// Set the AirPods as the default audio output when this Mac gets them (default on).
