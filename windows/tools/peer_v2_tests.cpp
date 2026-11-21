@@ -134,6 +134,7 @@ static void arbitrationTests() {
 
 static void dialPolicyTests() {
     using namespace std::chrono;
+    using namespace Propods;
     // Android PeerRetryPolicy: 2, 4, 8, then 15 s, repeating; jitter 0.8..1.2.
     CHECK(peerRetryDelay(0, 1.0) == milliseconds{2000});
     CHECK(peerRetryDelay(1, 1.0) == milliseconds{4000});
