@@ -127,6 +127,7 @@ final class RFCOMMSpike: NSObject, IOBluetoothRFCOMMChannelDelegate {
     private let device: IOBluetoothDevice
     private var channel: IOBluetoothRFCOMMChannel?
     var onOpen: (() -> Void)?
+    var onData: ((Data) -> Void)?
 
     init(device: IOBluetoothDevice) {
         self.device = device
@@ -214,6 +215,7 @@ final class RFCOMMSpike: NSObject, IOBluetoothRFCOMMChannelDelegate {
                            length dataLength: Int) {
         let bytes = Data(bytes: dataPointer, count: dataLength)
         log("RX (\(dataLength) bytes): \(hexString(bytes))")
+        onData?(bytes)
     }
 
     func rfcommChannelClosed(_ rfcommChannel: IOBluetoothRFCOMMChannel!) {
@@ -510,6 +512,68 @@ func runHandover(phoneAddress: String, airpodsAddress: String) -> Never {
     runMainLoop()
 }
 
+// MARK: - Mode: serve
+
+/// Mac as a handover participant: holds the cross-device channel and gives the AirPods up when the
+/// phone asks (kRequestDisconnect 00 02 00 00, or kRequestHandover 00 02 00 04). Replies with
+/// kAirPodsDisconnected (00 01 00 00) once they are released. Run for 3 minutes.
+var activeServeSpike: RFCOMMSpike?
+var activeServeConnect: ConnectDelegate?
+
+func runServe(phoneAddress: String, airpodsAddress: String) -> Never {
+    let phone = deviceFromArgument(phoneAddress)
+    let airpods = deviceFromArgument(airpodsAddress)
+    let spike = RFCOMMSpike(device: phone)
+    activeServeSpike = spike
+    spike.onOpen = {
+        log("Serving. AirPods isConnected=\(airpods.isConnected()).")
+        if airpods.isConnected() {
+            spike.send([0x00, 0x01, 0x00, 0x01], label: "kAirPodsConnected")
+            log("READY: pause and then play audio on the phone now.")
+        } else {
+            // Take them first (the forward handover), then wait for the phone to ask for them back.
+            spike.send([0x00, 0x02, 0x00, 0x00], label: "kRequestDisconnect")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                let delegate = ConnectDelegate()
+                delegate.completion = { status, connected in
+                    log("Took the AirPods: status=\(describe(status)) isConnected=\(connected)")
+                    if connected {
+                        spike.send([0x00, 0x01, 0x00, 0x01], label: "kAirPodsConnected")
+                        log("READY: pause and then play audio on the phone now.")
+                    }
+                }
+                activeServeConnect = delegate
+                _ = airpods.openConnection(delegate)
+            }
+        }
+    }
+    spike.onData = { data in
+        let bytes = [UInt8](data)
+        if bytes == [0x00, 0x02, 0x00, 0x03] {  // kRequestConnectionStat: answer with the current state
+            let state: [UInt8] = airpods.isConnected() ? [0x00, 0x01, 0x00, 0x01] : [0x00, 0x01, 0x00, 0x00]
+            spike.send(state, label: "status reply")
+            return
+        }
+        guard bytes == [0x00, 0x02, 0x00, 0x00] || bytes == [0x00, 0x02, 0x00, 0x04] else { return }
+        let started = Date()
+        log("Phone requested the AirPods (\(bytes == [0x00, 0x02, 0x00, 0x04] ? "handover" : "disconnect"))")
+        guard airpods.isConnected() else {
+            log("AirPods not connected here; replying disconnected")
+            spike.send([0x00, 0x01, 0x00, 0x00], label: "kAirPodsDisconnected")
+            return
+        }
+        let rc = airpods.closeConnection()
+        log("closeConnection returned \(describe(rc))")
+        spike.send([0x00, 0x01, 0x00, 0x00], label: "kAirPodsDisconnected")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            log("RELEASED after \(String(format: "%.1f", Date().timeIntervalSince(started)))s; AirPods isConnected=\(airpods.isConnected())")
+        }
+    }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 180) { log("3 min elapsed; closing"); spike.shutdown() }
+    spike.start()
+    runMainLoop()
+}
+
 // MARK: - Mode: airpods-connect
 
 /// Delegate for openConnection(_:). IOBluetooth calls connectionComplete:status: when done.
@@ -576,6 +640,7 @@ func printUsage() {
       \(name) airpods-disconnect <AIRPODS_MAC>
       \(name) paired
       \(name) setup-server
+      \(name) serve <PHONE_MAC> <AIRPODS_MAC>
       \(name) handover <PHONE_MAC> <AIRPODS_MAC>
       \(name) setup-client <PHONE_MAC>
 
@@ -594,6 +659,8 @@ case ("setup-client", 2):
     runSetupClient(address: arguments[1])
 case ("handover", 3):
     runHandover(phoneAddress: arguments[1], airpodsAddress: arguments[2])
+case ("serve", 3):
+    runServe(phoneAddress: arguments[1], airpodsAddress: arguments[2])
 case ("setup-server", 1):
     runSetupServer()
 case ("airpods-connect", 2):
