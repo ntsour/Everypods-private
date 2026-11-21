@@ -1213,55 +1213,70 @@ bool AirPodsConnector::disconnect() {
         return true;
     }
 
-    // The audio disconnect closes the profiles, but Windows then keeps the
-    // Bluetooth link itself up for another ~3.5 s (2026-11-21: link down after
-    // 3.4-3.6 s), which the phone has to wait out. Drop the link right away
-    // with the Bluetooth stack's own disconnect (IOCTL_BTH_DISCONNECT_DEVICE,
-    // bthioctl.h). It only ends this connection; nothing is persisted, and the
-    // AirPods stay paired. The profiles were closed first, so audio ends
-    // cleanly rather than as a lost link.
-    {
+    // The audio disconnect closes the profiles, and Windows then lets the
+    // Bluetooth link close on its own (2026-11-21: link down after 3.4-3.6 s).
+    // Give it kGraceWait to close cleanly; only if it is still up after that,
+    // end it with the Bluetooth stack's own disconnect
+    // (IOCTL_BTH_DISCONNECT_DEVICE, bthioctl.h). Cutting the link at once made
+    // handovers faster, but it cut the AirPods off mid-teardown, and after a
+    // day of handovers the AirPods stopped sending head-gesture motion to the
+    // Pixel until it was re-paired (2026-11-21). The forced drop only ends this
+    // connection; nothing is persisted, and the AirPods stay paired.
+    //
+    // The caller tells the peers "released" (kAirPodsDisconnected) as soon as
+    // this returns, and a phone connects right after that. A phone page that
+    // lands during the teardown goes unanswered until Android's 30 s page
+    // timeout (2026-11-21: PC -> Pixel took 28 s), so wait, bounded by
+    // kLinkDownWait, for the link to actually drop before returning. The phone
+    // waits 6 s for this ack, so kLinkDownWait must stay below that.
+    constexpr auto kGraceWait = std::chrono::seconds{3};
+    constexpr auto kLinkDownWait = std::chrono::seconds{5};
+    const auto elapsedMs = [&] {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - t0).count();
+    };
+    const auto forceLinkDrop = [&] {
         constexpr DWORD kIoctlBthDisconnectDevice =
             CTL_CODE(0x41 /* FILE_DEVICE_BLUETOOTH */, 0x03, METHOD_BUFFERED, FILE_ANY_ACCESS);
         HANDLE hRadio = openFirstRadio();
-        if (hRadio) {
-            ULONGLONG addr = m_address;
-            DWORD returned = 0;
-            const BOOL ok = DeviceIoControl(hRadio, kIoctlBthDisconnectDevice,
-                                            &addr, sizeof(addr), nullptr, 0, &returned, nullptr);
-            const DWORD err = ok ? ERROR_SUCCESS : GetLastError();
-            CloseHandle(hRadio);
-            log::handover("DISCONNECT link drop (IOCTL_BTH_DISCONNECT_DEVICE): {}",
-                          ok ? std::string("ok") : std::format("error {}", err));
-        } else {
+        if (!hRadio) {
             log::handover("DISCONNECT link drop skipped: no Bluetooth radio handle");
+            return;
         }
-    }
-
-    // The caller tells the peers "released" (kAirPodsDisconnected) as soon as
-    // this returns, and a phone connects right after that. The driver request
-    // returns in ~0.25 s, before the link is down; a phone page that lands
-    // during the teardown goes unanswered until Android's 30 s page timeout
-    // (2026-11-21: PC -> Pixel took 28 s). So wait, bounded, for the link to
-    // actually drop before returning. 3 s was not always enough while VLC
-    // was streaming (2026-11-21); the phone waits 6 s for this ack.
-    constexpr auto kLinkDownWait = std::chrono::seconds{5};
+        ULONGLONG addr = m_address;
+        DWORD returned = 0;
+        const BOOL ok = DeviceIoControl(hRadio, kIoctlBthDisconnectDevice,
+                                        &addr, sizeof(addr), nullptr, 0, &returned, nullptr);
+        const DWORD err = ok ? ERROR_SUCCESS : GetLastError();
+        CloseHandle(hRadio);
+        log::handover("DISCONNECT link still up after {} ms; forcing drop "
+                      "(IOCTL_BTH_DISCONNECT_DEVICE): {}", elapsedMs(),
+                      ok ? std::string("ok") : std::format("error {}", err));
+    };
     try {
         using namespace winrt::Windows::Devices::Bluetooth;
         auto device = BluetoothDevice::FromBluetoothAddressAsync(m_address).get();
-        while (device && std::chrono::steady_clock::now() - t0 < kLinkDownWait) {
-            if (device.ConnectionStatus() != BluetoothConnectionStatus::Connected) {
-                log::handover("DISCONNECT link down after {} ms",
-                    std::chrono::duration_cast<std::chrono::milliseconds>(
-                        std::chrono::steady_clock::now() - t0).count());
-                return true;
+        const auto waitForLinkDown = [&](std::chrono::steady_clock::duration limit) {
+            while (device && std::chrono::steady_clock::now() - t0 < limit) {
+                if (device.ConnectionStatus() != BluetoothConnectionStatus::Connected) return true;
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            return false;
+        };
+        if (waitForLinkDown(kGraceWait)) {
+            log::handover("DISCONNECT link closed on its own after {} ms", elapsedMs());
+            return true;
+        }
+        forceLinkDrop();
+        if (waitForLinkDown(kLinkDownWait)) {
+            log::handover("DISCONNECT link down after {} ms (forced)", elapsedMs());
+            return true;
         }
         log::handover("DISCONNECT link still up after 5 s; releasing anyway");
     } catch (const winrt::hresult_error& e) {
-        log::handover("DISCONNECT link-down wait failed (0x{:08X}); releasing anyway",
+        log::handover("DISCONNECT link-down wait failed (0x{:08X}); forcing drop and releasing",
                       static_cast<uint32_t>(e.code()));
+        forceLinkDrop();
     }
     return true;
 }
