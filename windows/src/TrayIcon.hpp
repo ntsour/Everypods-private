@@ -23,7 +23,6 @@ public:
     static constexpr int kCmdSendTraces      = 1008;
     static constexpr int kCmdTogglePause     = 1009;
     static constexpr int kCmdUnmuteApps      = 1010;
-    static constexpr int kCmdPairComputer    = 1011;
     // kCmdRemovePeer+i removes the peer at index i in the StatusInfo::peers list.
     static constexpr int kCmdRemovePeer      = 2000;
 

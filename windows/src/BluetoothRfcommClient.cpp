@@ -139,8 +139,7 @@ void BluetoothRfcommClient::sendPacket(std::span<const std::uint8_t> bytes) {
 }
 
 StreamSocket BluetoothRfcommClient::dial(std::uint64_t peerAddress) {
-    const bool computer = m_serviceUuid == crossdevice::kComputerServiceUuid;
-    log::info("Connecting to {} peer {:012X}...", computer ? "computer" : "phone", peerAddress);
+    log::info("Connecting to peer {:012X}...", peerAddress);
 
     auto device = BluetoothDevice::FromBluetoothAddressAsync(peerAddress).get();
     if (!device) {
@@ -156,9 +155,9 @@ StreamSocket BluetoothRfcommClient::dial(std::uint64_t peerAddress) {
     auto services = device.GetRfcommServicesForIdAsync(rfcommId).get();
     log::debug("RFCOMM services found: {}", services.Services().Size());
     if (services.Services().Size() == 0) {
-        throw std::runtime_error(computer
-            ? "Computer peer service not advertised — is EveryPods running on that computer?"
-            : "CrossDevice RFCOMM service not advertised — is CrossDevice enabled in the Android app?");
+        throw std::runtime_error(
+            "CrossDevice RFCOMM service not advertised — is EveryPods running on that device "
+            "(CrossDevice enabled in the Android app)?");
     }
     auto service = services.Services().GetAt(0);
     log::debug("Connecting to host='{}' service='{}'",

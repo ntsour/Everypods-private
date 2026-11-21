@@ -9,15 +9,15 @@
 
 namespace Propods {
 
-// Advertises the computer peer service (crossdevice::kComputerServiceUuid) so
-// another computer (Windows or Mac) can open a coordination link to this PC.
-// Each accepted link is handed to onConnection with the dialler's address.
-class ComputerPeerServer {
+// Advertises the coordination service (crossdevice::kServiceUuid) so another
+// computer (Windows or Mac) can open a peer link to this PC. Each accepted
+// link is handed to onConnection with the dialler's address.
+class PeerServer {
 public:
     using ConnectionCallback = std::function<void(std::uint64_t address,
         winrt::Windows::Networking::Sockets::StreamSocket socket)>;
 
-    ~ComputerPeerServer() { stop(); }
+    ~PeerServer() { stop(); }
 
     void setOnConnection(ConnectionCallback cb) { m_onConnection = std::move(cb); }
     bool start();

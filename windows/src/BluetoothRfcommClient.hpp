@@ -21,8 +21,8 @@ namespace Propods {
 winrt::guid uuidFromString(std::string_view s);
 
 // One coordination link to one peer. It dials the peer's RFCOMM service and
-// reconnects with backoff. For computer peers it can also take over a link
-// the peer dialled to us (adoptInbound), so either side may open it.
+// reconnects with backoff. It can also take over a link the peer dialled to
+// us (adoptInbound), so either side may open it.
 class BluetoothRfcommClient {
 public:
     using PacketCallback = std::function<void(std::span<const std::uint8_t>)>;
@@ -40,8 +40,8 @@ public:
     void setOnState(StateCallback  cb) { m_onState  = std::move(cb); }
     void setOnName (NameCallback   cb) { m_onName   = std::move(cb); }
 
-    // serviceUuid: the peer's service to dial (phone: kServiceUuid, computer:
-    // kComputerServiceUuid). firstDialDelay: wait before the first dial, so
+    // serviceUuid: the peer's service to dial (always kServiceUuid, for
+    // phones and computers alike). firstDialDelay: wait before the first dial, so
     // the side whose dial should win gets there first.
     void start(std::uint64_t peerAddress,
                std::string_view serviceUuid,

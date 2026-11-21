@@ -177,9 +177,7 @@ void TrayIcon::showContextMenu(HWND hwnd) {
 
     // ── Actions ───────────────────────────────────────────────────────────────
     InsertMenuW(menu, static_cast<UINT>(-1), MF_BYPOSITION | MF_STRING,
-        static_cast<UINT_PTR>(kCmdPairAndroid), L"Add Android peer...");
-    InsertMenuW(menu, static_cast<UINT>(-1), MF_BYPOSITION | MF_STRING,
-        static_cast<UINT_PTR>(kCmdPairComputer), L"Add computer peer (Windows/Mac)...");
+        static_cast<UINT_PTR>(kCmdPairAndroid), L"Add peer...");
     InsertMenuW(menu, static_cast<UINT>(-1), MF_BYPOSITION | MF_STRING,
         static_cast<UINT_PTR>(kCmdPairAirPods), L"Select AirPods...");
     InsertMenuW(menu, static_cast<UINT>(-1), MF_BYPOSITION | MF_STRING,

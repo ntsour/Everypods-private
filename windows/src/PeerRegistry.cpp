@@ -22,9 +22,9 @@ void PeerRegistry::setOnState(StateCallback cb) {
     m_onState = std::move(cb);
 }
 
-void PeerRegistry::setOnComputerPeerAdded(PeerAddedCallback cb) {
+void PeerRegistry::setOnPeerAdded(PeerAddedCallback cb) {
     std::scoped_lock lk{m_mutex};
-    m_onComputerPeerAdded = std::move(cb);
+    m_onPeerAdded = std::move(cb);
 }
 
 void PeerRegistry::setLocalAddress(std::uint64_t address) {
@@ -33,17 +33,16 @@ void PeerRegistry::setLocalAddress(std::uint64_t address) {
 }
 
 void PeerRegistry::startClient(BluetoothRfcommClient& client, std::uint64_t address, Kind kind) const {
-    if (kind == Kind::Phone) {
-        client.start(address, crossdevice::kServiceUuid);
-        return;
+    // Computers always dial each other, so give the lower address a head start:
+    // its link is the one kept when both get through. Phones dial us only when
+    // the user picks this PC on the phone, so don't slow phone links down for it.
+    std::chrono::milliseconds delay{0};
+    if (kind == Kind::Computer) {
+        std::uint64_t local;
+        { std::scoped_lock lk{m_mutex}; local = m_localAddress; }
+        if (local != 0 && local > address) delay = std::chrono::milliseconds{3000};
     }
-    // Both computers dial each other. Give the lower address a head start,
-    // since its link is the one kept when both get through.
-    std::uint64_t local;
-    { std::scoped_lock lk{m_mutex}; local = m_localAddress; }
-    const auto delay = (local != 0 && local > address) ? std::chrono::milliseconds{3000}
-                                                       : std::chrono::milliseconds{0};
-    client.start(address, crossdevice::kComputerServiceUuid, delay);
+    client.start(address, crossdevice::kServiceUuid, delay);
 }
 
 void PeerRegistry::wireCallbacks(Entry& e) {
@@ -106,7 +105,7 @@ void PeerRegistry::addPeer(std::uint64_t address, Kind kind) {
     }
 }
 
-void PeerRegistry::acceptInbound(std::uint64_t address,
+void PeerRegistry::acceptInbound(std::uint64_t address, Kind kind,
                                  winrt::Windows::Networking::Sockets::StreamSocket socket) {
     const auto label = SettingsStore::formatBluetoothAddress(address);
     BluetoothRfcommClient* client = nullptr;
@@ -116,26 +115,22 @@ void PeerRegistry::acceptInbound(std::uint64_t address,
     {
         std::scoped_lock lk{m_mutex};
         if (!m_started) {
-            log::info("PeerRegistry: computer {} dialled before startup finished; closing", label);
+            log::info("PeerRegistry: peer {} dialled before startup finished; closing", label);
             try { socket.Close(); } catch (...) {}
             return;
         }
         for (auto& e : m_entries) {
             if (e.address != address) continue;
-            if (e.kind != Kind::Computer) {
-                log::warn("PeerRegistry: {} is set up as a phone but dialled the computer peer service; switching it to computer", label);
-                e.kind = Kind::Computer;
-            }
             client = e.client.get();
             break;
         }
         if (!client) {
             auto& e = m_entries.emplace_back(
-                Entry{address, Kind::Computer, /*name=*/{}, std::make_unique<BluetoothRfcommClient>()});
+                Entry{address, kind, /*name=*/{}, std::make_unique<BluetoothRfcommClient>()});
             wireCallbacks(e);
             client = e.client.get();
             added = true;
-            onAdded = m_onComputerPeerAdded;
+            onAdded = m_onPeerAdded;
         } else if (client->isConnected() && !client->isInbound() && m_localAddress != 0 &&
                    m_localAddress < address) {
             // Both sides dialled. The lower address's link wins; that is ours.
@@ -143,16 +138,17 @@ void PeerRegistry::acceptInbound(std::uint64_t address,
         }
     }
     if (keepOurs) {
-        log::info("PeerRegistry: computer {} dialled while our link to it is up; keeping ours", label);
+        log::info("PeerRegistry: peer {} dialled while our link to it is up; keeping ours", label);
         try { socket.Close(); } catch (...) {}
         return;
     }
     if (added) {
-        startClient(*client, address, Kind::Computer);
-        log::info("PeerRegistry: computer {} dialled us; added it as a peer", label);
+        startClient(*client, address, kind);
+        log::info("PeerRegistry: {} {} dialled us; added it as a peer",
+            kind == Kind::Computer ? "computer" : "phone", label);
     }
     client->adoptInbound(socket);
-    if (added && onAdded) onAdded(address);
+    if (added && onAdded) onAdded(address, kind);
 }
 
 void PeerRegistry::removePeer(std::uint64_t address) {
