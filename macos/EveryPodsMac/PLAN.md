@@ -119,5 +119,5 @@ rules: in the case -> ignore, in a call -> keep (both request types), media requ
 `REQUEST_HANDOVER`, gated by "Take over when media starts" / "Take over when receiving a call".
 
 Verified on hardware (Pixel, AirPods Pro, a Windows PC): inbound links from a PC, Mac plays -> AirPods move in
-about 2.5 s, phone media -> Mac releases. Not verified: call refusal, graceful-release slow path, sleep/wake,
+about 2.5 s, phone media -> Mac releases. Also verified with a fake call process (mic + playback): a media request during a call is refused. Not verified: graceful-release slow path, sleep/wake,
 two simultaneous peers under load. Deferred: soak test, signing/notarization.
