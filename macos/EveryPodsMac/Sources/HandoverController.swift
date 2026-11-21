@@ -1,11 +1,8 @@
 // HandoverController.swift
 //
-// Decides who holds the AirPods. A port of the essentials of the Windows HandoverController
-// (windows/src/HandoverController.cpp), using the 4-byte cross-device protocol:
-//   * the phone asks for the AirPods (requestDisconnect / requestHandover): release them and reply
-//   * the phone pings for status (requestConnectionStatus): reply, or it drops the link after ~1 min
-//   * the user asks for them ("Take AirPods"): ask the phone to release, then connect here
-// Everything runs on the main thread.
+// Decides who holds the AirPods. A rule-for-rule port of windows/src/HandoverController.cpp: same ownership
+// states, same guard timers (debounce, anti-ping-pong, voluntary-release suppression), same packet handling.
+// The requester always wins (no holder veto). Differences are listed in PLAN.md. Everything runs on the main thread.
 
 import Foundation
 
@@ -14,32 +11,42 @@ enum Ownership: Equatable {
 }
 
 final class HandoverController {
-    let peer = PeerLink()
+    let peers = PeerRegistry()
     let pods = AirPodsConnector()
     let media = MediaWatcher()
+    let router = AudioRouter()
+    let proximity = ProximityWatcher()
     private(set) var ownership: Ownership = .unknown
     var onChange: (() -> Void)?
 
-    private var pollTimer: Timer?
-    private var takeContinuation: (() -> Void)?
-    private var takeInProgress = false
-    private var lastRelease = Date.distantPast
+    // Timers, as in the Windows client.
+    private let debounce: TimeInterval = 0.3
+    private let antiPingPong: TimeInterval = 3
+    private let voluntarySuppress: TimeInterval = 30
+    private let postReleaseWindow: TimeInterval = 5
+    private let ackWait: TimeInterval = 1.5
+
+    private var lastAction = Date.distantPast
+    private var lastLocalTakeover = Date.distantPast
+    private var lastLostOwnership = Date.distantPast
+    private var lastVoluntaryRelease = Date.distantPast
+    private var voluntarilyReleased = false
+    private var voluntaryReleaseApp = ""
+    private var takeoverInFlight = false
+    private var lastBluetoothConnected = false
+    private var ackWaiters: [() -> Void] = []
     private var announcedCall: Bool?
     private var callDebounce: DispatchWorkItem?
-    /// After giving the AirPods away, do not auto-take them back for this long.
-    private let autoTakeCooldown: TimeInterval = 10
+    private var pollTimer: Timer?
 
-    var phoneStatus: String {
-        guard Settings.phoneAddress != nil else { return "Phone: not selected" }
-        return peer.isConnected ? "Phone: connected" : "Phone: connecting…"
-    }
+    // MARK: Status text (menu and tooltip)
 
     var airPodsStatus: String {
         guard pods.isConfigured else { return "AirPods: not selected" }
         switch ownership {
-        case .thisMac: return "AirPods: connected to this Mac"
-        case .otherDevice: return "AirPods: on another device"
-        case .unknown: return "AirPods: not connected"
+        case .thisMac: return "AirPods: on this Mac"
+        case .otherDevice: return "AirPods: on Android"
+        case .unknown: return "AirPods: unknown"
         }
     }
 
@@ -50,168 +57,323 @@ final class HandoverController {
         return "Mac audio: idle"
     }
 
+    // MARK: Lifecycle
+
     func start() {
-        media.onPlaybackStarted = { [weak self] in self?.macStartedPlaying() }
+        media.onPlaybackStarted = { [weak self] in self?.onMediaPlayingChanged(true) }
+        media.onPlaybackStopped = { [weak self] in self?.onMediaPlayingChanged(false) }
         media.onChange = { [weak self] in
-            self?.announceCallState()
+            self?.scheduleCallState()
             self?.onChange?()
         }
+        peers.onPacket = { [weak self] data in self?.onIncomingPacket(data) }
+        peers.onConnectionChange = { [weak self] address, connected in self?.onPeerConnectionChanged(address, connected) }
         media.start()
-        peer.onPacket = { [weak self] data in self?.handle(data) }
-        peer.onConnectionChange = { [weak self] connected in
-            Log.write("Phone link \(connected ? "up" : "down")")
-            if connected {
-                self?.announce()
-                self?.announcedCall = nil
-                self?.announceCallState()
-            }
-            self?.onChange?()
-        }
-        restartPeer()
-        pollTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in self?.refresh() }
-        refresh()
+        proximity.start()
+        peers.start()
+        lastBluetoothConnected = pods.isConnected
+        pollTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.pollBluetooth() }
+        pollBluetooth()
     }
 
-    func restartPeer() {
-        if let address = Settings.phoneAddress { peer.start(address: address) } else { peer.stop() }
-        onChange?()
-    }
-
-    /// After sleep the Bluetooth stack takes a moment to come back, and macOS may have reconnected
-    /// the AirPods by itself. Rebuild the phone link from scratch, then re-announce who holds them.
+    /// After sleep the Bluetooth stack takes a moment to come back, and macOS may have reconnected the AirPods
+    /// by itself. Rebuild the phone links from scratch, then re-resolve who holds the AirPods.
     func handleWake() {
-        Log.write("Wake: rebuilding the phone link")
-        peer.stop()
+        Log.write("Wake: rebuilding the phone links")
+        peers.stop()
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
-            self?.restartPeer()
-            self?.refresh()
+            self?.peers.start()
+            self?.pollBluetooth()
+        }
+    }
+
+    // MARK: Ownership
+
+    /// Returns true if the state changed, so callers announce only on real transitions.
+    @discardableResult
+    private func setState(_ state: Ownership) -> Bool {
+        guard state != ownership else { return false }
+        ownership = state
+        Log.write("State -> \(state)")
+        router.setPersistent(state == .thisMac)
+        if state == .thisMac {
+            // Claiming the AirPods by any means resets the voluntary-release gate.
+            voluntarilyReleased = false
+            voluntaryReleaseApp = ""
+        }
+        onChange?()
+        return true
+    }
+
+    /// Tells every connected phone whether this Mac holds the AirPods.
+    private func sendState() {
+        peers.send(ownership == .thisMac ? Packet.airPodsConnected : Packet.airPodsDisconnected)
+    }
+
+    private func since(_ date: Date) -> TimeInterval { Date().timeIntervalSince(date) }
+
+    /// Bluetooth edge observer (1 s): catches connects and disconnects that bypass the protocol (Apple
+    /// auto-switch, a manual connect, the phone grabbing the AirPods before the link was up).
+    private func pollBluetooth() {
+        let connected = pods.isConnected
+
+        if ownership == .unknown, peers.isAnyConnected || connected {
+            if setState(connected ? .thisMac : .otherDevice) { sendState() }
+        }
+
+        if connected && !lastBluetoothConnected {
+            if setState(.thisMac) {
+                Log.write("Bluetooth: AirPods connected here (rising edge); claiming ownership")
+                sendState()
+                if Settings.autoRoute { router.routeToAirPods() }
+            }
+        } else if !connected && lastBluetoothConnected {
+            if ownership == .thisMac {
+                Log.write("Bluetooth: AirPods left this Mac (falling edge); releasing")
+                lastLostOwnership = Date()
+                if setState(.otherDevice) { sendState() }
+            }
+        }
+        lastBluetoothConnected = connected
+    }
+
+    // MARK: Media and call triggers
+
+    /// Port of onMediaPlayingChanged: audio started (or stopped) on this Mac.
+    func onMediaPlayingChanged(_ playing: Bool) {
+        if !playing {
+            // Only clear the voluntary-release gate once past the immediate post-release window: a stop
+            // inside it is our own pause during the handover.
+            if since(lastVoluntaryRelease) > postReleaseWindow, voluntarilyReleased {
+                voluntarilyReleased = false
+                Log.write("Gate: voluntary release cleared (media stopped)")
+            }
+            return
+        }
+        guard Settings.autoTake, pods.isConfigured else { return }
+        if since(lastAction) < debounce { return }
+        lastAction = Date()
+
+        if pods.isConnected {
+            if ownership == .thisMac { return }
+            // Already connected at the Bluetooth layer but the state says otherwise: claim without
+            // reconnecting (reconnecting would tear down the live link).
+            Log.write("Claim: AirPods already connected here; claiming ownership")
+            setState(.thisMac)
+            lastLocalTakeover = Date()
+            sendState()
+            if Settings.autoRoute { router.routeToAirPods() }
+            return
+        }
+
+        // Not connected here. Do not poke Bluetooth when the AirPods are in their case.
+        if !proximity.airPodsAvailable {
+            return Log.write("Skip: AirPods appear to be in the case; not initiating a takeover")
+        }
+        if since(lastLostOwnership) < antiPingPong {
+            return Log.write("Skip: anti-ping-pong (lost the AirPods \(Int(since(lastLostOwnership) * 1000)) ms ago)")
+        }
+        if !voluntaryReleaseApp.isEmpty, since(lastVoluntaryRelease) < voluntarySuppress,
+           media.currentAppID == voluntaryReleaseApp {
+            return Log.write("Skip: \(voluntaryReleaseApp) re-triggered within the voluntary-release window")
+        }
+        guard !takeoverInFlight else { return Log.write("Skip: a takeover is already in flight") }
+        Log.write("Trigger: audio active (\(media.currentAppID.isEmpty ? "unknown app" : media.currentAppID)); taking the AirPods")
+        startTakeover()
+    }
+
+    /// A call (or meeting) started on this Mac: an explicit user action, so the gate is cleared first.
+    private func onCallActive() {
+        if voluntarilyReleased {
+            voluntarilyReleased = false
+            Log.write("Gate: voluntary release cleared (call active)")
+        }
+        onMediaPlayingChanged(true)
+    }
+
+    private func onCallEnded() {
+        if voluntarilyReleased {
+            voluntarilyReleased = false
+            Log.write("Gate: voluntary release cleared (call ended)")
         }
     }
 
     // MARK: User actions
 
-    /// Takes the AirPods for this Mac: ask the phone to release them, then connect.
-    func takeAirPods() {
-        guard pods.isConfigured, !takeInProgress else { return }
-        guard !pods.isConnected else { return Log.write("Take: already connected here") }
-        takeInProgress = true
-        Log.write("Take: requesting AirPods")
+    /// "Connect AirPods now": bypasses the proximity probe and the guards.
+    func connectNow() {
+        guard pods.isConfigured else { return }
+        if pods.isConnected {
+            if setState(.thisMac) { sendState() }
+            router.routeToAirPods()
+            return
+        }
+        guard !takeoverInFlight else { return }
+        Log.write("Manual connect")
+        startTakeover()
+    }
+
+    /// Gives the AirPods up on request from the menu (any phone can then take them).
+    func releaseAirPods() {
+        guard pods.isConnected else { return }
+        lastLostOwnership = Date()
+        giveUp()
+    }
+
+    // MARK: Taking and giving up
+
+    /// Asks the phones to release, then connects (3 attempts). The connect starts when a phone confirms the
+    /// release or after a short wait, whichever comes first.
+    private func startTakeover() {
+        takeoverInFlight = true
         let connect = { [weak self] in
             guard let self else { return }
-            self.pods.connect { success in
-                self.takeInProgress = false
-                Log.write("Take: connect \(success ? "succeeded" : "failed")")
-                self.refresh()
+            self.pods.connectWithRetries { success in
+                self.takeoverInFlight = false
+                if success {
+                    let claimed = self.setState(.thisMac)
+                    self.lastLocalTakeover = Date()
+                    if claimed { self.sendState() }
+                    if Settings.autoRoute { self.router.routeToAirPods() }
+                    Log.write("Take: connected")
+                } else {
+                    // Anti-ping-pong so a re-trigger does not retry immediately.
+                    self.lastLostOwnership = Date()
+                    Log.write("Take: failed after 3 attempts; AirPods not acquired")
+                }
             }
         }
-        if peer.send(Packet.requestDisconnect) {
-            // Proceed when the phone reports released, or after a short grace period.
-            var done = false
-            let proceed = { if !done { done = true; self.takeContinuation = nil; connect() } }
-            takeContinuation = proceed
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: proceed)
+        if peers.send(Packet.requestDisconnect) {
+            var started = false
+            let go = { if !started { started = true; connect() } }
+            ackWaiters.append(go)
+            DispatchQueue.main.asyncAfter(deadline: .now() + ackWait, execute: go)
         } else {
-            Log.write("Take: phone link is down; connecting directly")
             connect()
         }
     }
 
-    /// Gives the AirPods up (the phone or any other device can take them).
-    func releaseAirPods() {
-        guard pods.isConnected else { return }
-        giveUpAirPods(reply: true)
-    }
-
-    /// Pauses what is playing on the AirPods (so it does not jump to the speakers), then disconnects.
-    private func giveUpAirPods(reply: Bool) {
-        lastRelease = Date()
-        let wasPlaying = media.snapshot.playing
-        if wasPlaying { MediaControl.togglePlayPause() }
-        if media.snapshot.inCall { Log.write("Release: giving up the AirPods during a call (requester wins)") }
-        // A short pause lets the player react before the audio route disappears.
-        DispatchQueue.main.asyncAfter(deadline: .now() + (wasPlaying ? 0.4 : 0)) { [weak self] in
+    /// Optionally pauses what is playing (so audio does not jump to the speakers), then disconnects.
+    private func giveUp() {
+        let pause = Settings.pauseOnHandover && media.snapshot.playing
+        if pause { MediaControl.togglePlayPause() }
+        // A short wait lets the player react before the audio route disappears.
+        DispatchQueue.main.asyncAfter(deadline: .now() + (pause ? 0.4 : 0)) { [weak self] in
             guard let self else { return }
             self.pods.disconnect()
-            self.ownership = .otherDevice
-            if reply { self.peer.send(Packet.airPodsDisconnected) }
-            self.onChange?()
+            self.setState(.otherDevice)
+            self.lastBluetoothConnected = false
+            self.peers.send(Packet.airPodsDisconnected)
         }
     }
 
-    /// The Mac started playing audio: take the AirPods unless a cooldown or setting says no.
-    private func macStartedPlaying() {
-        guard Settings.autoTake, pods.isConfigured, peer.isConnected, !pods.isConnected, !takeInProgress else { return }
-        guard Date().timeIntervalSince(lastRelease) > autoTakeCooldown else {
-            return Log.write("Auto-take skipped (cooldown after releasing the AirPods)")
-        }
-        Log.write("Auto-take: this Mac started playing")
-        takeAirPods()
-    }
-
-    /// Tells the phone whether the Mac is in a call; the Android app then will not steal the AirPods
-    /// for a ringing phone call. The signal is debounced so a brief mic blip does not flip it.
-    private func announceCallState() {
-        callDebounce?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            guard let self, self.peer.isConnected else { return }
-            let inCall = self.media.snapshot.inCall
-            guard self.announcedCall != inCall else { return }
-            let first = self.announcedCall == nil
-            self.announcedCall = inCall
-            if inCall {
-                Log.write("Media: call started (\(self.media.snapshot.callApps.joined(separator: ", ")))")
-            } else {
-                Log.write(first ? "Media: reporting idle to the phone" : "Media: call ended")
-            }
-            self.peer.send(inCall ? Packet.peerAudioActive : Packet.peerAudioIdle)
-        }
-        callDebounce = work
-        // Starting a call is reported after 2s; ending one needs 10s of quiet, because browser calls
-        // toggle their audio flags (measured: 5s on / 5s off blips) and a false "idle" lets the phone
-        // take the AirPods out from under a live call.
-        let delay: TimeInterval = media.snapshot.inCall ? 2 : 10
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    /// A phone asked for the AirPods and we agree: remember it so the same app cannot take them straight back.
+    private func releaseToPeer() {
+        voluntarilyReleased = true
+        voluntaryReleaseApp = media.currentAppID
+        lastVoluntaryRelease = Date()
+        lastLostOwnership = Date()
+        giveUp()
     }
 
     // MARK: Packets
 
-    private func handle(_ data: Data) {
+    func onIncomingPacket(_ data: Data) {
+        let holder = ownership == .thisMac || pods.isConnected
         switch Incoming(data) {
-        case .requestConnectionStatus:
-            announce()
-        case .requestDisconnect, .requestHandover:
-            Log.write("Phone requested the AirPods")
-            if pods.isConnected {
-                giveUpAirPods(reply: true)
-            } else {
-                peer.send(Packet.airPodsDisconnected)
-                onChange?()
+        case .requestDisconnect:
+            // Music request. Only the holder can release; the requester always wins.
+            guard holder else {
+                Log.write("In: requestDisconnect ignored (not the holder)")
+                peers.send(Packet.airPodsDisconnected)
+                return
             }
+            // Reject a takeover right after our own (the phone's auto-takeover fires on any active media).
+            if since(lastLocalTakeover) < antiPingPong {
+                Log.write("In: requestDisconnect rejected (anti-ping-pong)")
+                peers.send(Packet.airPodsConnected)
+                return
+            }
+            Log.write("In: requestDisconnect accepted; releasing the AirPods")
+            releaseToPeer()
+
+        case .requestHandover:
+            // Call-priority request (same handling).
+            guard holder else {
+                Log.write("In: requestHandover ignored (not the holder)")
+                peers.send(Packet.airPodsDisconnected)
+                return
+            }
+            Log.write("In: requestHandover accepted unconditionally (call priority)")
+            releaseToPeer()
+
         case .airPodsConnected:
-            if !pods.isConnected { ownership = .otherDevice }
-            onChange?()
+            // The AirPods can be connected to one device only. If this Mac's own Bluetooth link is up, the
+            // phone's claim is stale (it announces its last known state when its link comes up): correct it.
+            if pods.isConnected {
+                Log.write("In: a phone claims the AirPods, but they are connected here; correcting it")
+                setState(.thisMac)
+                sendState()
+                return
+            }
+            Log.write("In: a phone now holds the AirPods")
+            lastLostOwnership = Date()
+            setState(.otherDevice)
+
         case .airPodsDisconnected:
-            takeContinuation?()
-            if ownership == .otherDevice { ownership = .unknown }
-            onChange?()
+            // Wake a takeover that is waiting for the phone to confirm it released.
+            let waiters = ackWaiters
+            ackWaiters = []
+            waiters.forEach { $0() }
+
+        case .requestConnectionStatus:
+            sendState()
+
         case .peerAudioActive, .peerAudioIdle, .other:
-            break  // AirPods data frames and call/audio hints are not used yet
+            break  // not used by this client
         }
     }
 
-    /// Tells the phone whether this Mac currently holds the AirPods.
-    private func announce() {
-        peer.send(pods.isConnected ? Packet.airPodsConnected : Packet.airPodsDisconnected)
+    func onPeerConnectionChanged(_ address: String, _ connected: Bool) {
+        Log.write("Phone \(address) \(connected ? "connected" : "disconnected")")
+        if connected {
+            let here = pods.isConnected
+            let wasLocal = ownership == .thisMac
+            // Send our state only if it changed; the other phones already know.
+            if setState(here ? .thisMac : .otherDevice) { sendState() }
+            // We held the AirPods but they are gone: a phone took them over Bluetooth before this link was up.
+            if wasLocal && !here {
+                Log.write("Reclaim: a phone grabbed the AirPods before the link was up")
+                onMediaPlayingChanged(true)
+            }
+            // A phone that connects late learns the current call state.
+            if let call = announcedCall { peers.send(call ? Packet.peerAudioActive : Packet.peerAudioIdle) }
+        }
+        onChange?()
     }
 
-    /// Polls the Bluetooth connection state so changes made outside the app are noticed.
-    private func refresh() {
-        let connected = pods.isConnected
-        let previous = ownership
-        if connected { ownership = .thisMac } else if ownership == .thisMac { ownership = .unknown }
-        if ownership != previous {
-            announce()
-            onChange?()
+    // MARK: Call state (reported to the phones; Mac addition)
+
+    /// Debounced: a call is reported after 2 s, and ends only after 10 s of quiet, because browser calls
+    /// toggle their audio flags (measured 5 s on / 5 s off blips) and a false "idle" would let a phone take
+    /// the AirPods out from under a live call.
+    private func scheduleCallState() {
+        callDebounce?.cancel()
+        let inCall = media.snapshot.inCall
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.announcedCall != inCall else { return }
+            let first = self.announcedCall == nil
+            self.announcedCall = inCall
+            if inCall {
+                Log.write("Call started (\(self.media.snapshot.callApps.joined(separator: ", ")))")
+                self.onCallActive()
+            } else if !first {
+                Log.write("Call ended")
+                self.onCallEnded()
+            }
+            self.peers.send(inCall ? Packet.peerAudioActive : Packet.peerAudioIdle)
         }
+        callDebounce = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + (inCall ? 2 : 10), execute: work)
     }
 }

@@ -5,11 +5,14 @@ It is the macOS counterpart of the Windows tray client (`../../windows`): same c
 same idea ("AirPods follow attention"), built on IOBluetooth and CoreAudio.
 
 ## What it does
-- Keeps a Bluetooth link to the Android app and answers its status pings.
-- **Phone asks for the AirPods** (it started audio or a call): pauses what is playing on the Mac, then releases them.
-- **Mac starts playing audio**: asks the phone to release them and connects them here (can be turned off in the menu).
-- Tells the phone when a microphone app is active on the Mac so the Android app can hold back takeovers during a call.
-- A 10 second cooldown after releasing stops the two devices fighting over the AirPods.
+Same behaviour as the Windows client (see [PLAN.md](PLAN.md) for the full mapping):
+- Keeps a Bluetooth link to every Android phone you added and answers their status pings.
+- **A phone asks for the AirPods** (it started audio or a call): the Mac releases them (pausing playback first, a
+  setting) and does not grab them straight back.
+- **The Mac starts playing audio or a call**: asks the phones to release them and connects them here, unless the
+  AirPods appear to be in their case. Sets them as the audio output.
+- Tells the phones when a call is active on the Mac so the Android app holds back takeovers of a ringing call.
+- Guards against ping-pong (3 s after a takeover or a loss, 30 s for the same app after handing over).
 
 ## Build and run
 ```bash
@@ -20,24 +23,34 @@ It has to be a **signed app bundle**: IOBluetooth never delivers its async callb
 command-line binary. The deployment target is macOS 13 (a newer target makes `open` fail with -10825).
 
 ## First-time setup
-1. Pair the **AirPods** with this Mac in System Settings > Bluetooth. A stale pairing fails with `KEY_NOT_FOUND`.
-2. Pair the **Android phone** with this Mac the same way, and enable Cross-Device in the Android app.
-3. In the menu choose **Phone** and **AirPods** from the paired devices.
-4. In the Android app add this Mac as a peer, then choose **Authorize with Phone...**. This runs the one-off setup
-   exchange; without it the phone closes the channel ("Rejecting unconfigured peer").
-5. Allow **Accessibility** (menu: *Allow Pausing Playback*) so the app can send the play/pause key.
+1. Pair the **AirPods** and the **Android phone** with this Mac in System Settings > Bluetooth. A stale AirPods
+   pairing fails with `KEY_NOT_FOUND`: remove and pair them again.
+2. In the Android app turn on Cross-Device Handover and add this Mac as a peer.
+3. Start the app. On first launch it selects the paired AirPods, finds the phone and authorizes with it (the
+   one-off setup exchange; without it the phone closes the channel with "Rejecting unconfigured peer").
+   Later, **Add Android peer…** does the same for another phone.
+4. Allow **Accessibility** (menu: *Allow Pausing Playback*) so the app can pause playback on handover, and the
+   Bluetooth permission prompt (used for the in-case check).
+
+Menu: AirPods state, Android peers (checkmark when connected; Authorize / Remove), Add Android peer…, Select
+AirPods, Connect AirPods now, Release AirPods, and the toggles (take on playback, auto-set audio device, pause on
+handover, start at login).
 
 ## How it works
-| File | Role |
+| File | Role (Windows counterpart) |
 |---|---|
-| `Protocol.swift` | The 4-byte cross-device packets and service UUIDs |
-| `ServiceLookup.swift`, `PeerLink.swift` | Finds the phone's RFCOMM channel and keeps the link up with backoff |
-| `SetupAuthorizer.swift` | One-off two-exchange authorization (`BtHandoverSync.kt` format) |
-| `AirPodsConnector.swift` | Connects and disconnects the AirPods |
-| `MediaWatcher.swift` | CoreAudio per-process flags: who is playing, who is using the microphone |
+| `Protocol.swift` | The 4-byte cross-device packets and service UUIDs (`crossdevice_protocol.hpp`) |
+| `Settings.swift` | Phones, AirPods, toggles (`SettingsStore`) |
+| `ServiceLookup.swift`, `PeerLink.swift` | Finds the phone's RFCOMM channel and keeps one link up (`BluetoothRfcommClient`) |
+| `PeerRegistry.swift`, `PeerDiscovery.swift` | Several phones, discovery (`PeerRegistry`, `discoverAndroidPeers`) |
+| `SetupAuthorizer.swift` | One-off two-exchange authorization (`BtHandoverSync.kt` format; Mac only) |
+| `AirPodsConnector.swift` | Connects (3 attempts) and disconnects the AirPods (`AirPodsConnector`) |
+| `AudioRouter.swift` | Sets the AirPods as the output device |
+| `MediaWatcher.swift` | CoreAudio per-process flags: playback, microphone, calls (`MediaPlaybackWatcher`, `TeamsCallWatcher`) |
+| `ProximityWatcher.swift` | In-case check from BLE beacons (`BleProximityWatcher`) |
 | `MediaControl.swift` | Pauses via the system play/pause key |
-| `HandoverController.swift` | The state machine tying it together |
-| `main.swift` | Menu-bar UI, sleep/wake handling, launch at login |
+| `HandoverController.swift` | The state machine (`HandoverController`) |
+| `main.swift` | Menu-bar UI, sleep/wake, start at login (`TrayIcon`, `main.cpp`) |
 
 Measured behaviour worth knowing: playback shows up in CoreAudio within about a second, but after a pause the
 flag lingers 10-15 s (browsers keep the stream open), so "started" is a good trigger and "stopped" is slow.
@@ -46,7 +59,9 @@ flag lingers 10-15 s (browsers keep the stream open), so "started" is a good tri
 - Only the 4-byte protocol is implemented, not the V2 peer frames.
 - No handling of the phone's AirPods data frames (battery, ear detection, AACP control).
 - Not notarized; not yet tested across sleep/wake or a long soak.
-- The menu pause key goes to whichever app owns the system media session.
+- The pause key goes to whichever app owns the system media session.
+- The in-case check has not been seen working yet: no BLE beacons were observed with the AirPods in use (it
+  fails open, so it never blocks a handover).
 
 ## Out of scope: AirPods control
 

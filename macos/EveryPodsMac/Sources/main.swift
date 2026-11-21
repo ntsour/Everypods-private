@@ -1,6 +1,7 @@
 // main.swift
 //
-// Menu-bar app: shows who holds the AirPods and lets the user take or release them.
+// Menu-bar app: the Mac counterpart of the Windows tray icon (windows/src/TrayIcon.cpp, main.cpp).
+// Shows who holds the AirPods, the paired phones, and the same actions and toggles.
 
 import AppKit
 import IOBluetooth
@@ -12,69 +13,109 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var authorizer: SetupAuthorizer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Single instance: if another copy is already running, quit silently.
+        if let id = Bundle.main.bundleIdentifier,
+           NSRunningApplication.runningApplications(withBundleIdentifier: id).contains(where: { $0 != .current }) {
+            NSApp.terminate(nil)
+            return
+        }
+
         statusItem.button?.image = NSImage(systemSymbolName: "airpodspro", accessibilityDescription: "EveryPods")
         if statusItem.button?.image == nil { statusItem.button?.title = "EP" }
         let menu = NSMenu()
         menu.delegate = self
         statusItem.menu = menu
+
+        firstRunSetup()
         controller.onChange = { [weak self] in self?.updateIcon() }
         controller.start()
         NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
             self?.controller.handleWake()
         }
+        updateIcon()
         Log.write("EveryPods for Mac started")
+    }
+
+    /// First launch: pick up the paired AirPods and any paired phone that runs the Android app.
+    private func firstRunSetup() {
+        if Settings.airPodsAddress == nil, let airPods = PeerDiscovery.findAirPods().first {
+            Settings.airPodsAddress = airPods.address
+            Log.write("Setup: selected AirPods \(airPods.name)")
+        }
+        guard !Settings.didFirstRun || Settings.phones.isEmpty else { return }
+        PeerDiscovery.findPhones { [weak self] phones in
+            guard let self else { return }
+            Settings.didFirstRun = true
+            for phone in phones where !Settings.phones.contains(where: { sameAddress($0, phone.address) }) {
+                Log.write("Setup: found phone \(phone.name)")
+                self.controller.peers.add(phone.address)
+                self.runAuthorization(for: phone.address, name: phone.name, silent: true)
+            }
+            if Settings.phones.isEmpty {
+                Log.write("Setup: no paired phone advertises the CrossDevice service")
+            }
+        }
     }
 
     private func updateIcon() {
         statusItem.button?.appearsDisabled = controller.ownership != .thisMac
-        statusItem.button?.toolTip = [controller.phoneStatus, controller.airPodsStatus].joined(separator: "\n")
+        statusItem.button?.toolTip = controller.airPodsStatus
     }
 
-    // Rebuilt every time the menu opens, so it always shows current state.
+    // MARK: Menu (rebuilt every time it opens, so it always shows current state)
+
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
-        menu.addItem(disabled(controller.phoneStatus))
+
         menu.addItem(disabled(controller.airPodsStatus))
+        let connected = disabled(controller.pods.isConnected ? "AirPods connected (Bluetooth)" : "AirPods not connected")
+        connected.state = controller.pods.isConnected ? .on : .off
+        menu.addItem(connected)
         menu.addItem(disabled(controller.macAudioStatus))
         menu.addItem(.separator())
 
-        let take = NSMenuItem(title: "Take AirPods", action: #selector(takeTapped), keyEquivalent: "")
-        take.target = self
-        take.isEnabled = controller.pods.isConfigured && !controller.pods.isConnected
-        menu.addItem(take)
-        let release = NSMenuItem(title: "Release AirPods", action: #selector(releaseTapped), keyEquivalent: "")
-        release.target = self
+        let infos = controller.peers.infos
+        if !infos.isEmpty {
+            menu.addItem(disabled("Android peers:"))
+            for info in infos {
+                let item = NSMenuItem(title: info.name, action: nil, keyEquivalent: "")
+                item.state = info.connected ? .on : .off
+                let submenu = NSMenu()
+                let authorize = NSMenuItem(title: "Authorize with Phone…", action: #selector(authorizePeer(_:)), keyEquivalent: "")
+                authorize.target = self
+                authorize.representedObject = info.address
+                submenu.addItem(authorize)
+                let remove = NSMenuItem(title: "Remove \(info.name)", action: #selector(removePeer(_:)), keyEquivalent: "")
+                remove.target = self
+                remove.representedObject = info.address
+                submenu.addItem(remove)
+                item.submenu = submenu
+                menu.addItem(item)
+            }
+            menu.addItem(.separator())
+        }
+
+        menu.addItem(action("Add Android peer…", #selector(addPeer)))
+        menu.addItem(selectAirPodsMenu())
+        let connect = action("Connect AirPods now", #selector(connectNow))
+        connect.isEnabled = controller.pods.isConfigured && !controller.pods.isConnected
+        menu.addItem(connect)
+        let release = action("Release AirPods", #selector(releaseTapped))
         release.isEnabled = controller.pods.isConnected
         menu.addItem(release)
         menu.addItem(.separator())
 
-        let auto = NSMenuItem(title: "Take AirPods when this Mac plays audio", action: #selector(toggleAutoTake), keyEquivalent: "")
-        auto.target = self
-        auto.state = Settings.autoTake ? .on : .off
-        menu.addItem(auto)
+        menu.addItem(toggle("Take AirPods when this Mac plays audio", #selector(toggleAutoTake), Settings.autoTake))
+        menu.addItem(toggle("Auto-set AirPods as audio device", #selector(toggleAutoRoute), Settings.autoRoute))
+        menu.addItem(toggle("Pause playback when handing over", #selector(togglePause), Settings.pauseOnHandover))
         if !MediaControl.hasPermission {
-            let grant = NSMenuItem(title: "Allow Pausing Playback (Accessibility)…", action: #selector(grantAccessibility), keyEquivalent: "")
-            grant.target = self
-            menu.addItem(grant)
+            menu.addItem(action("Allow Pausing Playback (Accessibility)…", #selector(grantAccessibility)))
         }
         menu.addItem(.separator())
 
-        menu.addItem(deviceMenu(title: "Phone", current: Settings.phoneAddress, action: #selector(choosePhone(_:))))
-        menu.addItem(deviceMenu(title: "AirPods", current: Settings.airPodsAddress, action: #selector(chooseAirPods(_:))))
-        let authorize = NSMenuItem(title: "Authorize with Phone…", action: #selector(authorize), keyEquivalent: "")
-        authorize.target = self
-        authorize.isEnabled = Settings.phoneAddress != nil
-        menu.addItem(authorize)
-        menu.addItem(.separator())
-
-        let login = NSMenuItem(title: "Launch at Login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
-        login.target = self
-        login.state = SMAppService.mainApp.status == .enabled ? .on : .off
-        menu.addItem(login)
-        let log = NSMenuItem(title: "Show Log", action: #selector(showLog), keyEquivalent: "")
-        log.target = self
-        menu.addItem(log)
+        menu.addItem(toggle("Start at login", #selector(toggleLaunchAtLogin), SMAppService.mainApp.status == .enabled))
+        menu.addItem(action("Show Log", #selector(showLog)))
         menu.addItem(NSMenuItem(title: "Quit EveryPods", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
     }
 
@@ -84,15 +125,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return item
     }
 
-    private func deviceMenu(title: String, current: String?, action: Selector) -> NSMenuItem {
-        let parent = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+    private func action(_ title: String, _ selector: Selector) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: selector, keyEquivalent: "")
+        item.target = self
+        return item
+    }
+
+    private func toggle(_ title: String, _ selector: Selector, _ on: Bool) -> NSMenuItem {
+        let item = action(title, selector)
+        item.state = on ? .on : .off
+        return item
+    }
+
+    private func selectAirPodsMenu() -> NSMenuItem {
+        let parent = NSMenuItem(title: "Select AirPods", action: nil, keyEquivalent: "")
         let submenu = NSMenu()
         for device in Settings.pairedDevices() {
             guard let address = device.addressString else { continue }
-            let item = NSMenuItem(title: device.name ?? address, action: action, keyEquivalent: "")
+            let item = NSMenuItem(title: device.name ?? address, action: #selector(chooseAirPods(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = address
-            item.state = (current.map(normalizedAddress) == normalizedAddress(address)) ? .on : .off
+            item.state = Settings.airPodsAddress.map { sameAddress($0, address) } == true ? .on : .off
             submenu.addItem(item)
         }
         if submenu.items.isEmpty { submenu.addItem(disabled("No paired devices")) }
@@ -102,8 +155,81 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: Actions
 
-    @objc private func takeTapped() { controller.takeAirPods() }
+    @objc private func connectNow() { controller.connectNow() }
     @objc private func releaseTapped() { controller.releaseAirPods() }
+    @objc private func toggleAutoTake() { Settings.autoTake.toggle() }
+    @objc private func toggleAutoRoute() { Settings.autoRoute.toggle() }
+    @objc private func togglePause() { Settings.pauseOnHandover.toggle() }
+    @objc private func grantAccessibility() { MediaControl.requestPermission() }
+
+    @objc private func chooseAirPods(_ sender: NSMenuItem) {
+        Settings.airPodsAddress = sender.representedObject as? String
+        controller.onChange?()
+    }
+
+    @objc private func removePeer(_ sender: NSMenuItem) {
+        guard let address = sender.representedObject as? String else { return }
+        controller.peers.remove(address)
+    }
+
+    @objc private func authorizePeer(_ sender: NSMenuItem) {
+        guard let address = sender.representedObject as? String else { return }
+        runAuthorization(for: address, name: IOBluetoothDevice(addressString: normalizedAddress(address))?.name ?? address, silent: false)
+    }
+
+    /// "Add Android peer…": find paired phones running the app, confirm each, then authorize it.
+    @objc private func addPeer() {
+        PeerDiscovery.findPhones { [weak self] found in
+            guard let self else { return }
+            let fresh = found.filter { phone in !Settings.phones.contains { sameAddress($0, phone.address) } }
+            if fresh.isEmpty {
+                self.alert(found.isEmpty ? "No paired Android phone found"
+                                         : "All discovered phones are already added",
+                           found.isEmpty ? "Make sure the phone is paired in System Settings → Bluetooth and that Cross-Device Handover is on in the EveryPods Android app." : "")
+                return
+            }
+            for phone in fresh {
+                let ask = NSAlert()
+                ask.messageText = "Add as Android peer?"
+                ask.informativeText = "\(phone.name)\n\(phone.address)"
+                ask.addButton(withTitle: "Add")
+                ask.addButton(withTitle: "Cancel")
+                NSApp.activate(ignoringOtherApps: true)
+                guard ask.runModal() == .alertFirstButtonReturn else { continue }
+                self.controller.peers.add(phone.address)
+                self.runAuthorization(for: phone.address, name: phone.name, silent: false)
+            }
+        }
+    }
+
+    /// The one-off setup exchange newer Android builds require before they accept this Mac.
+    private func runAuthorization(for address: String, name: String, silent: Bool) {
+        guard authorizer == nil, let authorizer = SetupAuthorizer(phoneAddress: address) else { return }
+        self.authorizer = authorizer
+        authorizer.run { [weak self] result in
+            self?.authorizer = nil
+            switch result {
+            case .success:
+                Log.write("Authorized with \(name)")
+                self?.controller.peers.restart()
+                if !silent { self?.alert("Added \(name)", "The phone now accepts this Mac. The link will connect shortly.") }
+            case .failure(let error):
+                Log.write("Authorization with \(name) failed: \(error.localizedDescription)")
+                if !silent {
+                    self?.alert("Authorization with \(name) failed",
+                                "\(error.localizedDescription) Check that Cross-Device Handover is on in the Android app, then use the phone's menu → Authorize with Phone….")
+                }
+            }
+        }
+    }
+
+    private func alert(_ title: String, _ text: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = text
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
+    }
 
     @objc private func toggleLaunchAtLogin() {
         do {
@@ -112,43 +238,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             } else {
                 try SMAppService.mainApp.register()
             }
-            Log.write("Launch at login: \(SMAppService.mainApp.status == .enabled ? "on" : "off")")
+            Log.write("Start at login: \(SMAppService.mainApp.status == .enabled ? "on" : "off")")
         } catch {
-            Log.write("Launch at login failed: \(error.localizedDescription)")
-        }
-    }
-
-    @objc private func toggleAutoTake() { Settings.autoTake.toggle() }
-    @objc private func grantAccessibility() { MediaControl.requestPermission() }
-
-    @objc private func choosePhone(_ sender: NSMenuItem) {
-        Settings.phoneAddress = sender.representedObject as? String
-        controller.restartPeer()
-    }
-
-    @objc private func chooseAirPods(_ sender: NSMenuItem) {
-        Settings.airPodsAddress = sender.representedObject as? String
-        controller.onChange?()
-    }
-
-    @objc private func authorize() {
-        guard let address = Settings.phoneAddress, let authorizer = SetupAuthorizer(phoneAddress: address) else { return }
-        self.authorizer = authorizer
-        authorizer.run { [weak self] result in
-            self?.authorizer = nil
-            let alert = NSAlert()
-            switch result {
-            case .success:
-                alert.messageText = "Authorized"
-                alert.informativeText = "The phone now accepts this Mac. The link will connect shortly."
-                self?.controller.restartPeer()
-            case .failure(let error):
-                alert.alertStyle = .warning
-                alert.messageText = "Authorization failed"
-                alert.informativeText = error.localizedDescription
-            }
-            NSApp.activate(ignoringOtherApps: true)
-            alert.runModal()
+            Log.write("Start at login failed: \(error.localizedDescription)")
         }
     }
 

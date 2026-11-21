@@ -22,6 +22,8 @@ final class MediaWatcher {
 
     /// Fires once when audio has been playing for `sustain` seconds (not for short system sounds).
     var onPlaybackStarted: (() -> Void)?
+    /// Fires when audio stops (late: browsers keep the stream open for 10-15 s after a pause).
+    var onPlaybackStopped: (() -> Void)?
     var onChange: (() -> Void)?
     private(set) var snapshot = Snapshot()
 
@@ -65,6 +67,9 @@ final class MediaWatcher {
         poll()
     }
 
+    /// The app currently producing audio ("" if none); used to recognise the same app re-triggering.
+    var currentAppID: String { snapshot.playingApps.first ?? "" }
+
     private func poll() {
         let next = readSnapshot()
         if next.playing {
@@ -76,6 +81,7 @@ final class MediaWatcher {
             }
         } else {
             playingSince = nil
+            if startFired { onPlaybackStopped?() }
             startFired = false
         }
         if next != snapshot {

@@ -27,6 +27,21 @@ final class AirPodsConnector: NSObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in self?.finish(false) }
     }
 
+    /// Connects with up to three attempts (immediately, after 1.5 s, after 3 s), as the Windows client does:
+    /// the phone may not have released the AirPods yet on the first try.
+    func connectWithRetries(completion: @escaping (Bool) -> Void) {
+        let waits: [TimeInterval] = [0, 1.5, 3]
+        func attempt(_ index: Int) {
+            Log.write("AirPods: connect attempt \(index + 1)/\(waits.count)")
+            connect { success in
+                if success { return completion(true) }
+                guard index + 1 < waits.count else { return completion(false) }
+                DispatchQueue.main.asyncAfter(deadline: .now() + waits[index + 1]) { attempt(index + 1) }
+            }
+        }
+        attempt(0)
+    }
+
     @discardableResult
     func disconnect() -> Bool {
         guard let device else { return false }
