@@ -1213,6 +1213,31 @@ bool AirPodsConnector::disconnect() {
         return true;
     }
 
+    // The audio disconnect closes the profiles, but Windows then keeps the
+    // Bluetooth link itself up for another ~3.5 s (2026-11-21: link down after
+    // 3.4-3.6 s), which the phone has to wait out. Drop the link right away
+    // with the Bluetooth stack's own disconnect (IOCTL_BTH_DISCONNECT_DEVICE,
+    // bthioctl.h). It only ends this connection; nothing is persisted, and the
+    // AirPods stay paired. The profiles were closed first, so audio ends
+    // cleanly rather than as a lost link.
+    {
+        constexpr DWORD kIoctlBthDisconnectDevice =
+            CTL_CODE(0x41 /* FILE_DEVICE_BLUETOOTH */, 0x03, METHOD_BUFFERED, FILE_ANY_ACCESS);
+        HANDLE hRadio = openFirstRadio();
+        if (hRadio) {
+            ULONGLONG addr = m_address;
+            DWORD returned = 0;
+            const BOOL ok = DeviceIoControl(hRadio, kIoctlBthDisconnectDevice,
+                                            &addr, sizeof(addr), nullptr, 0, &returned, nullptr);
+            const DWORD err = ok ? ERROR_SUCCESS : GetLastError();
+            CloseHandle(hRadio);
+            log::handover("DISCONNECT link drop (IOCTL_BTH_DISCONNECT_DEVICE): {}",
+                          ok ? std::string("ok") : std::format("error {}", err));
+        } else {
+            log::handover("DISCONNECT link drop skipped: no Bluetooth radio handle");
+        }
+    }
+
     // The caller tells the peers "released" (kAirPodsDisconnected) as soon as
     // this returns, and a phone connects right after that. The driver request
     // returns in ~0.25 s, before the link is down; a phone page that lands
