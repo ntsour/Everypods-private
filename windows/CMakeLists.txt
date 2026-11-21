@@ -49,6 +49,7 @@ set(SRC
     src/v2/PeerV2Message.cpp
     src/v2/PeerV2Mesh.cpp
     src/BtHandoverSetup.cpp
+    src/ComputerPeerServer.cpp
     src/Propods.rc
 )
 
@@ -62,6 +63,7 @@ set(HDR
     src/SettingsStore.hpp
     src/TeamsCallWatcher.hpp
     src/PeerRegistry.hpp
+    src/ComputerPeerServer.hpp
     src/BleProximityWatcher.hpp
     src/TraceUploader.hpp
     src/PlaybackSilencer.hpp

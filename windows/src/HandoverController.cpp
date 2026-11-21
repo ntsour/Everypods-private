@@ -537,7 +537,7 @@ void HandoverController::onIncomingPacket(std::span<const std::uint8_t> data) {
 
 void HandoverController::onPeerConnectionChanged(bool connected) {
     if (connected) {
-        log::handover("PEER    Android connected via CrossDevice RFCOMM");
+        log::handover("PEER    peer connected (phone or computer)");
         // Re-sync cached state with reality before announcing.
         const bool airpodsHere = m_airpods.isClassicallyConnectedWinRT();
         const bool wasLocalPc  = (m_state.load() == OwnershipState::LocalPc);
@@ -581,7 +581,7 @@ void HandoverController::onPeerConnectionChanged(bool connected) {
             m_peers.sendPacket(crossdevice::kRequestDisconnect);
         }
     } else {
-        log::handover("PEER    Android disconnected");
+        log::handover("PEER    peer disconnected");
     }
 }
 

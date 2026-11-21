@@ -18,6 +18,7 @@
 #include "SettingsStore.hpp"
 #include "TeamsCallWatcher.hpp"
 #include "BtHandoverSetup.hpp"
+#include "ComputerPeerServer.hpp"
 #include "v2/PeerV2Identity.hpp"
 #include "v2/PeerV2Mesh.hpp"
 #include "PlaybackSilencer.hpp"
@@ -46,7 +47,7 @@ namespace {
 std::wstring stateLabel(OwnershipState s) {
     switch (s) {
         case OwnershipState::LocalPc:       return L"AirPods: on this PC";
-        case OwnershipState::RemoteAndroid: return L"AirPods: on Android";
+        case OwnershipState::RemoteAndroid: return L"AirPods: on another device";
         default:                            return L"AirPods: unknown";
     }
 }
@@ -56,15 +57,13 @@ struct DiscoveredPeer {
     std::wstring  name;
 };
 
-// Returns ALL paired devices that advertise the CrossDevice RFCOMM UUID.
-std::vector<DiscoveredPeer> discoverAndroidPeers() {
+// Returns ALL paired devices that advertise `serviceUuid`: the CrossDevice
+// UUID for phones, the computer peer UUID for other computers.
+std::vector<DiscoveredPeer> discoverPeers(std::string_view serviceUuid) {
     std::vector<DiscoveredPeer> found;
+    const char* kind = serviceUuid == crossdevice::kComputerServiceUuid ? "computer" : "Android";
     try {
-        winrt::guid rfcommGuid {
-            0x1abbb9a4u, 0x10e4u, 0x4000u,
-            { 0xa7, 0x5c, 0x89, 0x53, 0xc5, 0x47, 0x13, 0x42 }
-        };
-        auto rfcommId = RfcommServiceId::FromUuid(rfcommGuid);
+        auto rfcommId = RfcommServiceId::FromUuid(uuidFromString(serviceUuid));
 
         // Fast path: collect everything the SDP cache already knows about.
         auto selector = RfcommDeviceService::GetDeviceSelector(rfcommId);
@@ -74,7 +73,7 @@ std::vector<DiscoveredPeer> discoverAndroidPeers() {
                 auto service = RfcommDeviceService::FromIdAsync(hit.Id()).get();
                 if (!service || !service.Device()) continue;
                 auto bdev = service.Device();
-                log::info("Discovered Android peer (cached SDP): {} ({})",
+                log::info("Discovered {} peer (cached SDP): {} ({})", kind,
                     to_string(bdev.Name()),
                     SettingsStore::formatBluetoothAddress(bdev.BluetoothAddress()));
                 found.push_back({bdev.BluetoothAddress(), std::wstring(bdev.Name())});
@@ -100,7 +99,7 @@ std::vector<DiscoveredPeer> discoverAndroidPeers() {
                     SettingsStore::formatBluetoothAddress(addr));
                 auto services = bdev.GetRfcommServicesForIdAsync(rfcommId, BluetoothCacheMode::Uncached).get();
                 if (services.Services().Size() > 0) {
-                    log::info("Discovered Android peer (uncached SDP): {} ({})",
+                    log::info("Discovered {} peer (uncached SDP): {} ({})", kind,
                         to_string(bdev.Name()),
                         SettingsStore::formatBluetoothAddress(addr));
                     found.push_back({addr, std::wstring(bdev.Name())});
@@ -110,7 +109,10 @@ std::vector<DiscoveredPeer> discoverAndroidPeers() {
             }
         }
 
-        if (found.empty()) {
+        if (found.empty() && serviceUuid == crossdevice::kComputerServiceUuid) {
+            log::warn("No paired computer advertises the computer peer service. Make sure the "
+                      "other computer is paired with this PC and runs this version of EveryPods.");
+        } else if (found.empty()) {
             log::warn("No paired device advertises CrossDevice UUID. "
                       "Make sure: (1) the phone is paired with this PC, "
                       "(2) Handover is ON in the Propods Android app.");
@@ -120,6 +122,19 @@ std::vector<DiscoveredPeer> discoverAndroidPeers() {
             (std::uint32_t)e.code().value, to_string(e.message()));
     }
     return found;
+}
+
+std::vector<DiscoveredPeer> discoverAndroidPeers() { return discoverPeers(crossdevice::kServiceUuid); }
+
+// This PC's Bluetooth radio address, or 0 if unknown.
+std::uint64_t localBluetoothAddress() {
+    try {
+        auto adapter = BluetoothAdapter::GetDefaultAsync().get();
+        if (adapter) return adapter.BluetoothAddress();
+    } catch (const hresult_error& e) {
+        log::warn("Cannot read this PC's Bluetooth address: {}", to_string(e.message()));
+    }
+    return 0;
 }
 
 std::optional<std::uint64_t> discoverAirPods() {
@@ -283,7 +298,8 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
         info.pauseOnRelease = silencer.enabled();
         info.hasMutedApps = silencer.hasMuted();
         for (auto& p : peers.peerInfos())
-            info.peers.push_back({p.address, p.name, p.connected});
+            info.peers.push_back({p.address, p.name, p.connected,
+                                  p.kind == PeerRegistry::Kind::Computer});
         return info;
     });
 
@@ -309,6 +325,27 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
             SettingsStore::formatBluetoothAddress(phone));
     });
     handoverSetup.start();
+
+    // Other computers (Windows or Mac) link to this PC over the computer peer
+    // service. One that is not a peer yet becomes one; save it.
+    const std::uint64_t localAddress = localBluetoothAddress();
+    log::info("This PC's Bluetooth address: {}",
+        localAddress ? SettingsStore::formatBluetoothAddress(localAddress) : std::string("unknown"));
+    peers.setLocalAddress(localAddress);
+    peers.setOnComputerPeerAdded([&](std::uint64_t computer) {
+        std::scoped_lock lk{settingsMutex};
+        auto& addrs = settings.computerAddresses;
+        if (std::find(addrs.begin(), addrs.end(), computer) != addrs.end()) return;
+        addrs.push_back(computer);
+        store.save(settings);
+        log::info("Saved computer peer {} (it linked to this PC)",
+            SettingsStore::formatBluetoothAddress(computer));
+    });
+    ComputerPeerServer computerServer;
+    computerServer.setOnConnection([&peers](std::uint64_t address,
+                                            winrt::Windows::Networking::Sockets::StreamSocket socket) {
+        peers.acceptInbound(address, socket);
+    });
 
     peers.setOnPacket([&controller](std::span<const std::uint8_t> data) {
         controller.onIncomingPacket(data);
@@ -411,6 +448,42 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
                 if (anyAdded) store.save(settings);
                 break;
             }
+            case TrayIcon::kCmdPairComputer: {
+                auto discovered = discoverPeers(crossdevice::kComputerServiceUuid);
+                std::vector<DiscoveredPeer> newPeers;
+                {
+                    std::scoped_lock lk{settingsMutex};
+                    auto& addrs = settings.computerAddresses;
+                    for (auto& p : discovered)
+                        if (std::find(addrs.begin(), addrs.end(), p.address) == addrs.end())
+                            newPeers.push_back(p);
+                }
+                if (newPeers.empty()) {
+                    MessageBoxW(nullptr, discovered.empty()
+                        ? L"No paired computer running EveryPods found.\n\n"
+                          L"Make sure:\n"
+                          L"  \x2022 The other computer is paired in Windows Bluetooth settings\n"
+                          L"  \x2022 It runs a version of EveryPods with computer peers, and is on"
+                        : L"All discovered computers are already added as peers.",
+                        L"Propods \x2014 Add computer peer", MB_OK | MB_ICONINFORMATION);
+                    break;
+                }
+                for (auto& p : newPeers) {
+                    auto addrStr = SettingsStore::formatBluetoothAddress(p.address);
+                    std::wstring msg = L"Add as computer peer?\n\n" + p.name
+                        + L"\n" + std::wstring(addrStr.begin(), addrStr.end());
+                    if (MessageBoxW(nullptr, msg.c_str(), L"Propods \x2014 Add computer peer",
+                                    MB_YESNO | MB_ICONQUESTION) != IDYES) continue;
+                    {
+                        std::scoped_lock lk{settingsMutex};
+                        settings.computerAddresses.push_back(p.address);
+                        store.save(settings);
+                    }
+                    peers.addPeer(p.address, PeerRegistry::Kind::Computer);
+                    log::info("Added computer peer: {} ({})", to_string(p.name), addrStr);
+                }
+                break;
+            }
             case TrayIcon::kCmdPairAirPods:
                 if (auto a = discoverAirPods()) {
                     settings.airpodsAddress = a;
@@ -430,7 +503,11 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
                 if (sending.exchange(true)) break;
                 tray.notify(L"Sending traces to phone",
                             L"Only new or changed trace files are sent. You'll get a summary when done.");
-                std::thread([&tray, infos = peers.peerInfos()]() {
+                auto infos = peers.peerInfos();
+                std::erase_if(infos, [](const PeerRegistry::PeerInfo& p) {
+                    return p.kind != PeerRegistry::Kind::Phone;
+                });
+                std::thread([&tray, infos]() {
                     winrt::init_apartment(winrt::apartment_type::multi_threaded);
                     std::wstring summary;
                     for (const auto& info : infos) {
@@ -485,15 +562,21 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
                 break;
             default:
                 if (cmd >= TrayIcon::kCmdRemovePeer) {
-                    int idx = cmd - TrayIcon::kCmdRemovePeer;
-                    auto& addrs = settings.androidAddresses;
-                    if (idx >= 0 && idx < (int)addrs.size()) {
-                        std::uint64_t addr = addrs[idx];
+                    // The index is into the peer list the menu was built from.
+                    const int idx = cmd - TrayIcon::kCmdRemovePeer;
+                    const auto infos = peers.peerInfos();
+                    if (idx >= 0 && idx < (int)infos.size()) {
+                        const std::uint64_t addr = infos[idx].address;
+                        const bool computer = infos[idx].kind == PeerRegistry::Kind::Computer;
                         peers.removePeer(addr);
-                        peerV2.removePeer(addr);
-                        addrs.erase(addrs.begin() + idx);
-                        store.save(settings);
-                        log::info("Removed Android peer: {}",
+                        if (!computer) peerV2.removePeer(addr);
+                        {
+                            std::scoped_lock lk{settingsMutex};
+                            auto& addrs = computer ? settings.computerAddresses : settings.androidAddresses;
+                            std::erase(addrs, addr);
+                            store.save(settings);
+                        }
+                        log::info("Removed {} peer: {}", computer ? "computer" : "Android",
                             SettingsStore::formatBluetoothAddress(addr));
                     }
                 }
@@ -503,12 +586,14 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
 
     for (auto addr : settings.androidAddresses)
         peers.addPeer(addr);
+    for (auto addr : settings.computerAddresses)
+        peers.addPeer(addr, PeerRegistry::Kind::Computer);
 
-    if (!settings.androidAddresses.empty()) {
-        peers.start();
-    } else {
-        log::warn("No Android peers configured. Use tray menu \"Add Android peer...\" once a device is paired in Windows.");
-    }
+    // Always started: a computer peer may link to this PC at any time.
+    peers.start();
+    computerServer.start();
+    if (settings.androidAddresses.empty() && settings.computerAddresses.empty())
+        log::warn("No peers configured. Use the tray menu to add an Android or computer peer once it is paired in Windows.");
 
     peerV2.start(settings.androidAddresses);
     media.start();
@@ -521,6 +606,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     teamsWatcher.stop();
     bleWatcher.stop();
     media.stop();
+    computerServer.stop();
     peers.stop();
     return 0;
 }

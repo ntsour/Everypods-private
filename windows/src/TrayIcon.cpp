@@ -157,16 +157,17 @@ void TrayIcon::showContextMenu(HWND hwnd) {
 
     InsertMenuW(menu, static_cast<UINT>(-1), MF_BYPOSITION | MF_SEPARATOR, 0u, nullptr);
 
-    // ── Android peers ─────────────────────────────────────────────────────────
+    // ── Peers (phones and other computers) ────────────────────────────────────
     if (!status.peers.empty()) {
         InsertMenuW(menu, static_cast<UINT>(-1),
             MF_BYPOSITION | MF_STRING | MF_DISABLED | MF_GRAYED,
-            0u, L"Android peers:");
+            0u, L"Peers:");
         for (int i = 0; i < (int)status.peers.size(); ++i) {
             auto& peer = status.peers[i];
             UINT peerFlags = MF_BYPOSITION | MF_STRING | MF_DISABLED | MF_GRAYED;
             if (peer.connected) peerFlags |= MF_CHECKED;
-            InsertMenuW(menu, static_cast<UINT>(-1), peerFlags, 0u, peer.name.c_str());
+            const std::wstring label = peer.name + (peer.computer ? L" (computer)" : L" (phone)");
+            InsertMenuW(menu, static_cast<UINT>(-1), peerFlags, 0u, label.c_str());
             std::wstring removeLabel = L"Remove " + peer.name;
             InsertMenuW(menu, static_cast<UINT>(-1), MF_BYPOSITION | MF_STRING,
                 static_cast<UINT_PTR>(kCmdRemovePeer + i), removeLabel.c_str());
@@ -177,6 +178,8 @@ void TrayIcon::showContextMenu(HWND hwnd) {
     // ── Actions ───────────────────────────────────────────────────────────────
     InsertMenuW(menu, static_cast<UINT>(-1), MF_BYPOSITION | MF_STRING,
         static_cast<UINT_PTR>(kCmdPairAndroid), L"Add Android peer...");
+    InsertMenuW(menu, static_cast<UINT>(-1), MF_BYPOSITION | MF_STRING,
+        static_cast<UINT_PTR>(kCmdPairComputer), L"Add computer peer (Windows/Mac)...");
     InsertMenuW(menu, static_cast<UINT>(-1), MF_BYPOSITION | MF_STRING,
         static_cast<UINT_PTR>(kCmdPairAirPods), L"Select AirPods...");
     InsertMenuW(menu, static_cast<UINT>(-1), MF_BYPOSITION | MF_STRING,

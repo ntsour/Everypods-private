@@ -23,6 +23,7 @@ public:
     static constexpr int kCmdSendTraces      = 1008;
     static constexpr int kCmdTogglePause     = 1009;
     static constexpr int kCmdUnmuteApps      = 1010;
+    static constexpr int kCmdPairComputer    = 1011;
     // kCmdRemovePeer+i removes the peer at index i in the StatusInfo::peers list.
     static constexpr int kCmdRemovePeer      = 2000;
 
@@ -31,6 +32,7 @@ public:
         std::uint64_t address{};
         std::wstring  name;
         bool          connected{false};
+        bool          computer{false};   // Windows/Mac peer rather than a phone
     };
 
     // Snapshot of app status, fetched just before the menu opens.

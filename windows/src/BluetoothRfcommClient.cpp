@@ -24,6 +24,8 @@ namespace {
 constexpr std::chrono::milliseconds kInitialBackoff{1500};
 constexpr std::chrono::milliseconds kMaxBackoff{15000};
 
+}
+
 winrt::guid uuidFromString(std::string_view s) {
     winrt::guid g{};
     // Format: 1abbb9a4-10e4-4000-a75c-8953c5471342
@@ -51,7 +53,6 @@ winrt::guid uuidFromString(std::string_view s) {
     return g;
 }
 
-}
 
 BluetoothRfcommClient::BluetoothRfcommClient() = default;
 
@@ -59,9 +60,12 @@ BluetoothRfcommClient::~BluetoothRfcommClient() {
     stop();
 }
 
-void BluetoothRfcommClient::start(std::uint64_t peerAddress) {
+void BluetoothRfcommClient::start(std::uint64_t peerAddress, std::string_view serviceUuid,
+                                  std::chrono::milliseconds firstDialDelay) {
     if (m_running.exchange(true)) return;
     m_peerAddress.store(peerAddress);
+    m_serviceUuid = std::string(serviceUuid);
+    m_firstDialDelay = firstDialDelay;
     m_worker = std::thread([this, peerAddress]() {
         winrt::init_apartment(winrt::apartment_type::multi_threaded);
         runLoop(peerAddress);
@@ -78,7 +82,43 @@ void BluetoothRfcommClient::stop() {
             m_writer = nullptr;
         }
     }
+    {
+        std::scoped_lock lk{m_pendingMutex};
+        if (m_pendingInbound) { try { m_pendingInbound.Close(); } catch (...) {} }
+        m_pendingInbound = nullptr;
+    }
+    m_pendingCv.notify_all();
     if (m_worker.joinable()) m_worker.join();
+}
+
+void BluetoothRfcommClient::adoptInbound(StreamSocket socket) {
+    if (!m_running.load()) { try { socket.Close(); } catch (...) {} return; }
+    {
+        std::scoped_lock lk{m_pendingMutex};
+        if (m_pendingInbound) { try { m_pendingInbound.Close(); } catch (...) {} }
+        m_pendingInbound = socket;
+    }
+    // Close the current link (if any) so the worker picks up the new one now.
+    {
+        std::scoped_lock lk{m_socketMutex};
+        if (m_socket) {
+            log::info("RFCOMM {:012X}: replacing the current link with the peer's", m_peerAddress.load());
+            try { m_socket.Close(); } catch (...) {}
+        }
+    }
+    m_pendingCv.notify_all();
+}
+
+StreamSocket BluetoothRfcommClient::takePendingInbound() {
+    std::scoped_lock lk{m_pendingMutex};
+    auto s = m_pendingInbound;
+    m_pendingInbound = nullptr;
+    return s;
+}
+
+void BluetoothRfcommClient::waitFor(std::chrono::milliseconds d) {
+    std::unique_lock lk{m_pendingMutex};
+    m_pendingCv.wait_for(lk, d, [this] { return !m_running.load() || m_pendingInbound != nullptr; });
 }
 
 void BluetoothRfcommClient::sendPacket(std::span<const std::uint8_t> bytes) {
@@ -98,85 +138,108 @@ void BluetoothRfcommClient::sendPacket(std::span<const std::uint8_t> bytes) {
     }
 }
 
+StreamSocket BluetoothRfcommClient::dial(std::uint64_t peerAddress) {
+    const bool computer = m_serviceUuid == crossdevice::kComputerServiceUuid;
+    log::info("Connecting to {} peer {:012X}...", computer ? "computer" : "phone", peerAddress);
+
+    auto device = BluetoothDevice::FromBluetoothAddressAsync(peerAddress).get();
+    if (!device) {
+        throw std::runtime_error("BluetoothDevice not found (is it paired?)");
+    }
+    std::string deviceName = to_string(device.Name());
+    log::debug("Got BluetoothDevice: name='{}' connectionStatus={}",
+        deviceName, (int)device.ConnectionStatus());
+    if (m_onName) m_onName(deviceName);
+
+    auto rfcommId = RfcommServiceId::FromUuid(uuidFromString(m_serviceUuid));
+    log::debug("Enumerating RFCOMM services for UUID...");
+    auto services = device.GetRfcommServicesForIdAsync(rfcommId).get();
+    log::debug("RFCOMM services found: {}", services.Services().Size());
+    if (services.Services().Size() == 0) {
+        throw std::runtime_error(computer
+            ? "Computer peer service not advertised — is EveryPods running on that computer?"
+            : "CrossDevice RFCOMM service not advertised — is CrossDevice enabled in the Android app?");
+    }
+    auto service = services.Services().GetAt(0);
+    log::debug("Connecting to host='{}' service='{}'",
+        to_string(service.ConnectionHostName().DisplayName()),
+        to_string(service.ConnectionServiceName()));
+
+    StreamSocket socket;
+    socket.ConnectAsync(service.ConnectionHostName(), service.ConnectionServiceName()).get();
+    return socket;
+}
+
+void BluetoothRfcommClient::runConnection(std::uint64_t peerAddress, StreamSocket socket, bool inbound) {
+    DataWriter writer{socket.OutputStream()};
+    DataReader reader{socket.InputStream()};
+    reader.InputStreamOptions(InputStreamOptions::Partial);
+
+    {
+        std::scoped_lock lk{m_socketMutex};
+        m_socket = socket;
+        m_writer = writer;
+    }
+    m_inbound.store(inbound);
+    m_connected.store(true);
+    if (m_onState) m_onState(true);
+    log::info("RFCOMM connected to {:012X} ({})", peerAddress, inbound ? "peer dialled us" : "we dialled");
+
+    std::vector<std::uint8_t> buf;
+    buf.resize(1024);
+    crossdevice::StreamDecoder decoder;  // fresh per connection
+
+    while (m_running.load()) {
+        std::uint32_t read = reader.LoadAsync(1024).get();
+        if (read == 0) {
+            throw std::runtime_error("Peer closed connection");
+        }
+        if (buf.size() < read) buf.resize(read);
+        reader.ReadBytes(winrt::array_view<std::uint8_t>(buf.data(), buf.data() + read));
+        // Hex-dump incoming packets for debugging.
+        if (read <= 64) {
+            std::string hex;
+            hex.reserve(read * 3);
+            for (std::uint32_t i = 0; i < read; ++i) {
+                char tmp[4];
+                std::snprintf(tmp, sizeof(tmp), "%02X ", buf[i]);
+                hex += tmp;
+            }
+            log::debug("RFCOMM {:012X} recv {} bytes: {}", peerAddress, read, hex);
+        } else {
+            log::debug("RFCOMM {:012X} recv {} bytes", peerAddress, read);
+        }
+        for (const auto& packet : decoder.feed(std::span<const std::uint8_t>(buf.data(), read))) {
+            if (m_onPacket) m_onPacket(std::span<const std::uint8_t>(packet.data(), packet.size()));
+        }
+    }
+}
+
 void BluetoothRfcommClient::runLoop(std::uint64_t peerAddress) {
     auto backoff = kInitialBackoff;
-    const auto serviceUuid = uuidFromString(crossdevice::kServiceUuid);
+    if (m_firstDialDelay.count() > 0) waitFor(m_firstDialDelay);
 
     while (m_running.load()) {
         try {
-            log::info("Connecting to peer {:012X}...", peerAddress);
-
-            auto device = BluetoothDevice::FromBluetoothAddressAsync(peerAddress).get();
-            if (!device) {
-                throw std::runtime_error("BluetoothDevice not found (is it paired?)");
+            bool inbound = true;
+            StreamSocket socket = takePendingInbound();
+            if (!socket) {
+                inbound = false;
+                socket = dial(peerAddress);
+                // A link from the peer may have arrived while we were dialling.
+                if (auto theirs = takePendingInbound()) {
+                    try { socket.Close(); } catch (...) {}
+                    socket = theirs;
+                    inbound = true;
+                }
             }
-            std::string deviceName = to_string(device.Name());
-            log::debug("Got BluetoothDevice: name='{}' connectionStatus={}",
-                deviceName, (int)device.ConnectionStatus());
-            if (m_onName) m_onName(deviceName);
-
-            auto rfcommId = RfcommServiceId::FromUuid(serviceUuid);
-            log::debug("Enumerating RFCOMM services for UUID...");
-            auto services = device.GetRfcommServicesForIdAsync(rfcommId).get();
-            log::debug("RFCOMM services found: {}", services.Services().Size());
-            if (services.Services().Size() == 0) {
-                throw std::runtime_error("CrossDevice RFCOMM service not advertised — is CrossDevice enabled in the Android app?");
-            }
-            auto service = services.Services().GetAt(0);
-            log::debug("Connecting to host='{}' service='{}'",
-                to_string(service.ConnectionHostName().DisplayName()),
-                to_string(service.ConnectionServiceName()));
-
-            StreamSocket socket;
-            socket.ConnectAsync(service.ConnectionHostName(), service.ConnectionServiceName()).get();
-
-            DataWriter writer{socket.OutputStream()};
-            DataReader reader{socket.InputStream()};
-            reader.InputStreamOptions(InputStreamOptions::Partial);
-
-            {
-                std::scoped_lock lk{m_socketMutex};
-                m_socket = socket;
-                m_writer = writer;
-            }
-            m_connected.store(true);
-            if (m_onState) m_onState(true);
-            log::info("RFCOMM connected to {:012X}", peerAddress);
             backoff = kInitialBackoff;
-
-            std::vector<std::uint8_t> buf;
-            buf.resize(1024);
-            crossdevice::StreamDecoder decoder;  // fresh per connection
-
-            while (m_running.load()) {
-                std::uint32_t read = reader.LoadAsync(1024).get();
-                if (read == 0) {
-                    throw std::runtime_error("Peer closed connection");
-                }
-                if (buf.size() < read) buf.resize(read);
-                reader.ReadBytes(winrt::array_view<std::uint8_t>(buf.data(), buf.data() + read));
-                // Hex-dump incoming packets for debugging.
-                if (read <= 64) {
-                    std::string hex;
-                    hex.reserve(read * 3);
-                    for (std::uint32_t i = 0; i < read; ++i) {
-                        char tmp[4];
-                        std::snprintf(tmp, sizeof(tmp), "%02X ", buf[i]);
-                        hex += tmp;
-                    }
-                    log::debug("RFCOMM {:012X} recv {} bytes: {}", peerAddress, read, hex);
-                } else {
-                    log::debug("RFCOMM {:012X} recv {} bytes", peerAddress, read);
-                }
-                for (const auto& packet : decoder.feed(std::span<const std::uint8_t>(buf.data(), read))) {
-                    if (m_onPacket) m_onPacket(std::span<const std::uint8_t>(packet.data(), packet.size()));
-                }
-            }
+            runConnection(peerAddress, socket, inbound);
         } catch (const winrt::hresult_error& e) {
-            log::warn("RFCOMM connection error: 0x{:08X} {}",
+            log::warn("RFCOMM {:012X} connection error: 0x{:08X} {}", peerAddress,
                 (std::uint32_t)e.code().value, winrt::to_string(e.message()));
         } catch (const std::exception& e) {
-            log::warn("RFCOMM connection error: {}", e.what());
+            log::warn("RFCOMM {:012X} connection error: {}", peerAddress, e.what());
         }
 
         {
@@ -187,14 +250,18 @@ void BluetoothRfcommClient::runLoop(std::uint64_t peerAddress) {
                 m_writer = nullptr;
             }
         }
+        m_inbound.store(false);
         const bool wasConnected = m_connected.exchange(false);
         if (wasConnected && m_onState) m_onState(false);
 
         if (!m_running.load()) break;
-        log::info("Reconnecting in {} ms...", backoff.count());
-        for (int i = 0; i < 10 && m_running.load(); ++i) {
-            std::this_thread::sleep_for(backoff / 10);
+        {
+            // A replacement link from the peer is waiting: use it right away.
+            std::scoped_lock lk{m_pendingMutex};
+            if (m_pendingInbound) continue;
         }
+        log::info("RFCOMM {:012X}: reconnecting in {} ms...", peerAddress, backoff.count());
+        waitFor(backoff);
         backoff = std::min(backoff * 2, kMaxBackoff);
     }
 }

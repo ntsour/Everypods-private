@@ -14,6 +14,15 @@ namespace Propods::crossdevice {
 inline constexpr std::string_view kServiceUuid =
     "1abbb9a4-10e4-4000-a75c-8953c5471342";
 
+// "EveryPodsComputerPeer": the same 4-byte packets, between two computers
+// (Windows <-> Windows, Windows <-> Mac). Every computer client listens on it;
+// phones never do. Kept apart from kServiceUuid so a computer is never
+// mistaken for a phone (phone discovery and the phone-only v2 protocol key
+// on kServiceUuid). When both sides dial at once, the link dialled by the
+// lower Bluetooth address is kept and the other is closed.
+inline constexpr std::string_view kComputerServiceUuid =
+    "fc163292-cca9-4217-a075-81566bca4af3";
+
 using Packet4 = std::array<std::uint8_t, 4>;
 
 inline constexpr Packet4 kAirPodsConnected      { 0x00, 0x01, 0x00, 0x01 };
