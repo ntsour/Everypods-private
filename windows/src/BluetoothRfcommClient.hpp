@@ -25,6 +25,16 @@ winrt::guid uuidFromString(std::string_view s);
 // ("(AA:BB:CC:DD:EE:FF)" in RawName), or 0 if it cannot be read.
 std::uint64_t remoteBluetoothAddress(const winrt::Windows::Networking::Sockets::StreamSocket& socket);
 
+// Dials the peer's RFCOMM service the way Android does (docs/peer-link.md,
+// "Dial and retry"): resolves the service fresh every time (uncached, with one
+// cached fallback), gives each step kPeerConnectTimeout (8 s) and cancels/closes
+// on expiry, and holds one process-wide mutex so only one dial (legacy or v2)
+// is in flight at a time. Blocks; throws on failure or timeout. `tag` is for
+// logs. `onName`, if set, gets the device display name before the connect.
+winrt::Windows::Networking::Sockets::StreamSocket dialRfcomm(
+    std::uint64_t peerAddress, const winrt::guid& serviceUuid, const char* tag,
+    const std::function<void(const std::string&)>& onName = {});
+
 // One coordination link to one peer. It dials the peer's RFCOMM service and
 // reconnects with backoff. It can also take over a link the peer dialled to
 // us (adoptInbound), so either side may open it.
@@ -69,14 +79,19 @@ public:
 
     void sendPacket(std::span<const std::uint8_t> bytes);
 
+    // The peer's Bluetooth link came up: cut the backoff wait short and dial at
+    // once. Does not stop the client; no-op while a link is up.
+    void retryNow();
+
 private:
     void runLoop(std::uint64_t peerAddress);
     winrt::Windows::Networking::Sockets::StreamSocket dial(std::uint64_t peerAddress);
     void runConnection(std::uint64_t peerAddress,
                        winrt::Windows::Networking::Sockets::StreamSocket socket, bool inbound);
     winrt::Windows::Networking::Sockets::StreamSocket takePendingInbound();
-    // Sleeps up to `d`; returns early when stopping or a peer link arrives.
-    void waitFor(std::chrono::milliseconds d);
+    // Sleeps up to `d`; returns early when stopping or a peer link arrives, and,
+    // if `interruptibleByRetry`, when retryNow() is called.
+    void waitFor(std::chrono::milliseconds d, bool interruptibleByRetry);
 
     std::atomic<bool> m_running{false};
     std::atomic<bool> m_connected{false};
@@ -94,6 +109,7 @@ private:
     std::mutex m_pendingMutex;
     std::condition_variable m_pendingCv;
     winrt::Windows::Networking::Sockets::StreamSocket m_pendingInbound{nullptr};
+    bool m_retryRequested{false};  // guarded by m_pendingMutex
 
     PacketCallback m_onPacket;
     StateCallback  m_onState;

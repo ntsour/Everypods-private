@@ -68,6 +68,9 @@ public:
     void stop();
     void addPeer(std::uint64_t peer);
     void removePeer(std::uint64_t peer);
+    // The peer's Bluetooth link came up: cut the dial backoff short. No-op while
+    // a v2 link to it is up.
+    void retryNow(std::uint64_t peer);
 
     // True while a peer holds a PREPARING/IN_PROGRESS reservation on us:
     // that peer is mid-connect, so we must not start a takeover ourselves.

@@ -2,6 +2,7 @@
 
 #include "BluetoothRfcommClient.hpp"
 #include "Logger.hpp"
+#include "PeerDialPolicy.hpp"
 #include "PeerV2Arbitration.hpp"
 #include "PeerV2Identity.hpp"
 #include "PeerV2Message.hpp"
@@ -38,9 +39,7 @@ constexpr auto kPreparationTtl = std::chrono::seconds{5};
 // Android keeps IN_PROGRESS until the requester's terminal CANCEL. A bound
 // here keeps a lost CANCEL from blocking our own takeovers forever.
 constexpr auto kInProgressSafety = std::chrono::seconds{60};
-// Dial backoff: 1.5 s doubling to 15 s (docs/peer-mesh-spec.md section 1.2).
-constexpr auto kInitialBackoff = std::chrono::milliseconds{1500};
-constexpr auto kMaxBackoff = std::chrono::milliseconds{15000};
+// Dial backoff, timeout and serialization: PeerDialPolicy.hpp, dialRfcomm().
 
 const char* ownershipName(Ownership o) {
     switch (o) {
@@ -101,6 +100,7 @@ struct PeerV2Mesh::PeerSession {
     std::uint64_t address = 0;
     std::atomic<bool> running{true};
     std::thread worker;  // dial loop
+    std::atomic<bool> wake{false};  // retryNow(): cut the backoff wait short
 
     // Guarded by the mesh's m_mutex.
     std::string remoteInstallationId;   // last known, survives reconnects
@@ -111,9 +111,12 @@ struct PeerV2Mesh::PeerSession {
 namespace {
 
 // Sleeps up to `d` in small steps; false if asked to stop meanwhile.
-bool sleepWhile(const std::function<bool()>& keepGoing, std::chrono::milliseconds d) {
+// With `wake`, it also returns true early once `wake` is set (and clears it).
+bool sleepWhile(const std::function<bool()>& keepGoing, std::chrono::milliseconds d,
+                std::atomic<bool>* wake = nullptr) {
     for (auto left = d; left.count() > 0; left -= std::min(left, std::chrono::milliseconds{100})) {
         if (!keepGoing()) return false;
+        if (wake && wake->exchange(false)) return true;
         std::this_thread::sleep_for(std::min(left, std::chrono::milliseconds{100}));
     }
     return keepGoing();
@@ -170,6 +173,18 @@ void PeerV2Mesh::addPeer(std::uint64_t peer) {
         winrt::init_apartment(winrt::apartment_type::multi_threaded);
         runPeer(s);
     });
+}
+
+void PeerV2Mesh::retryNow(std::uint64_t peer) {
+    std::shared_ptr<PeerSession> s;
+    {
+        std::scoped_lock lk{m_mutex};
+        auto it = m_sessions.find(peer);
+        if (it == m_sessions.end() || !it->second->links.empty()) return;
+        s = it->second;
+    }
+    log::info("V2 {:012X} peer Bluetooth link is up; dialling now", peer);
+    s->wake.store(true);
 }
 
 void PeerV2Mesh::removePeer(std::uint64_t peer) {
@@ -356,30 +371,28 @@ bool PeerV2Mesh::send(Link& l, FrameType type, const JsonObject& fields) {
 void PeerV2Mesh::runPeer(std::shared_ptr<PeerSession> session) {
     PeerSession& s = *session;
     const auto keepGoing = [this, &s] { return s.running.load() && m_running.load(); };
-    auto backoff = kInitialBackoff;
+    int attempt = 0;  // failed dials since the last link (Android retryAttempt)
 
     const auto delay = firstDialDelay(localIdentity().installationId, knownPeerInstallationId(s.address));
     if (delay.count() > 0) {
         log::info("V2 {:012X} waiting {} ms before the first dial (the peer dials first)", s.address, delay.count());
         if (!sleepWhile(keepGoing, delay)) return;
     }
+    s.wake.store(false);  // a retryNow() during the first-dial wait is spent
 
     while (keepGoing()) {
         bool haveLink;
         { std::scoped_lock lk{m_mutex}; haveLink = !s.links.empty(); }
         if (haveLink) {  // the peer dialled us; nothing to dial
+            s.wake.store(false);
+            attempt = 0;
             if (!sleepWhile(keepGoing, std::chrono::milliseconds{1000})) return;
             continue;
         }
         try {
-            auto device = BluetoothDevice::FromBluetoothAddressAsync(s.address).get();
-            if (!device) throw std::runtime_error("peer not paired");
-            auto services = device.GetRfcommServicesForIdAsync(RfcommServiceId::FromUuid(kV2Service),
-                BluetoothCacheMode::Uncached).get();
-            if (services.Services().Size() == 0) throw std::runtime_error("v2 service not offered");
-            auto svc = services.Services().GetAt(0);
-            StreamSocket socket;
-            socket.ConnectAsync(svc.ConnectionHostName(), svc.ConnectionServiceName()).get();
+            // Same dial as the legacy link: uncached resolve, 8 s timeout, one
+            // dial at a time across all peers and both services.
+            StreamSocket socket = dialRfcomm(s.address, kV2Service, "V2");
             auto link = std::make_shared<Link>();
             link->dialled = true;
             link->socket = socket;
@@ -389,7 +402,8 @@ void PeerV2Mesh::runPeer(std::shared_ptr<PeerSession> session) {
                 if (!keepGoing()) { try { socket.Close(); } catch (...) {} return; }
                 s.links.push_back(link);
             }
-            backoff = kInitialBackoff;
+            attempt = 0;
+            s.wake.store(false);
             runLink(session, link);
         } catch (const winrt::hresult_error& e) {
             log::debug("V2 {:012X} dial error 0x{:08X} {}", s.address,
@@ -397,8 +411,10 @@ void PeerV2Mesh::runPeer(std::shared_ptr<PeerSession> session) {
         } catch (const std::exception& e) {
             log::debug("V2 {:012X} dial failed: {}", s.address, e.what());
         }
-        if (!sleepWhile(keepGoing, backoff)) return;
-        backoff = std::min(backoff * 2, std::chrono::duration_cast<std::chrono::milliseconds>(kMaxBackoff));
+        const auto backoff = peerRetryDelay(attempt, peerRetryJitter());
+        ++attempt;
+        log::debug("V2 {:012X} redialling in {} ms (attempt {})", s.address, backoff.count(), attempt);
+        if (!sleepWhile(keepGoing, backoff, &s.wake)) return;
     }
 }
 

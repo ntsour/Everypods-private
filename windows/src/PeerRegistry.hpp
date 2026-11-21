@@ -10,6 +10,10 @@
 #include <string>
 #include <vector>
 
+#include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.Devices.Bluetooth.h>
+#include <winrt/Windows.Networking.Sockets.h>
+
 namespace Propods {
 
 // Manages one BluetoothRfcommClient link per peer. Every peer is equal: all of
@@ -53,6 +57,13 @@ public:
     void acceptInbound(std::uint64_t address,
                        winrt::Windows::Networking::Sockets::StreamSocket socket);
 
+    // A peer's Bluetooth link (ACL) came up and we have no legacy link to it. The
+    // registry has already woken that peer's legacy dial loop; this lets the
+    // owner wake other loops (the v2 mesh). Called on a thread-pool thread, with
+    // no registry lock held.
+    using PeerLinkUpCallback = std::function<void(std::uint64_t address)>;
+    void setOnPeerLinkUp(PeerLinkUpCallback cb);
+
     // Stop and remove a peer by address. No-op if the address is not registered.
     void removePeer(std::uint64_t address);
 
@@ -78,8 +89,20 @@ private:
     struct Entry {
         std::uint64_t address{};
         std::string   name;   // last known BT display name (ASCII-safe for device names)
-        std::unique_ptr<BluetoothRfcommClient> client;
+        std::shared_ptr<BluetoothRfcommClient> client;
+        // Kept alive for its ConnectionStatusChanged subscription.
+        winrt::Windows::Devices::Bluetooth::BluetoothDevice device{nullptr};
+        winrt::event_token statusToken{};
     };
+
+    // Shared with the status handlers so they never touch `this`.
+    struct LinkUpSlot {
+        std::mutex mutex;
+        PeerLinkUpCallback callback;
+    };
+
+    void watchBluetoothDevice(std::uint64_t address);
+    static void revokeWatch(Entry& e);
 
     void wireCallbacks(Entry& e);
     void startClient(BluetoothRfcommClient& client, std::uint64_t address) const;
@@ -89,6 +112,7 @@ private:
     PacketCallback m_onPacket;
     StateCallback  m_onState;
     PeerAddedCallback m_onPeerAdded;
+    std::shared_ptr<LinkUpSlot> m_linkUp = std::make_shared<LinkUpSlot>();
     bool m_started{false};
 };
 

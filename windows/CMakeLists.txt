@@ -56,6 +56,7 @@ set(SRC
 set(HDR
     common/crossdevice_protocol.hpp
     src/BluetoothRfcommClient.hpp
+    src/PeerDialPolicy.hpp
     src/MediaPlaybackWatcher.hpp
     src/AirPodsConnector.hpp
     src/HandoverController.hpp

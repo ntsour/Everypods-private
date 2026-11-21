@@ -21,7 +21,7 @@ packets still travel on the legacy link, so every pair needs both links.
 
 1. **Listen** on the legacy and the v2 service at startup.
 2. **Dial** every configured peer it has no link with, on legacy and on v2,
-   with backoff (1.5 s doubling to 15 s). A link the peer dialled counts as
+   with backoff (2, 4, 8, then 15 s; see "Dial and retry"). A link the peer dialled counts as
    the link to that peer: don't dial that service while it is up.
 3. **First dial order.** The peer with the smaller `installationId` dials at
    once; the other waits 3 s before its first dial, then dials anyway. A peer
@@ -68,6 +68,41 @@ The side that accepts a v2 link answers like Android's v2 server
 
 The dialling side checks that the answering HELLO echoes its own
 `initiatorId` and `connectionId`.
+
+## Dial and retry
+
+Windows dials exactly like Android, so a restarted peer relinks quickly. Android
+references are in `android/app/src/main/java/io/automated/ventures/everypods/utils/`.
+
+1. **Resolve fresh on every dial.** Never reuse a cached channel. Windows asks
+   for the service with `BluetoothCacheMode::Uncached` and falls back to the
+   cached query once if that fails or finds nothing (the log says which was
+   used). Android creates a new socket per dial (`CrossDeviceClient.kt`,
+   `createSocket`).
+2. **8 s connect timeout**, then cancel the connect and close the socket
+   (`CrossDeviceClient.kt` `CONNECT_TIMEOUT_MS`, `PeerConnectDeadline`). Windows
+   applies the same 8 s to the device lookup and the service lookup.
+3. **Backoff 2, 4, 8, then 15 s**, repeating 15 s, each times a random factor
+   in 0.8..1.2 (`PeerConnectionState.kt` `PeerRetryPolicy.delaysMs`;
+   `CrossDeviceClient.kt` `Random.nextDouble(0.8, 1.2000001)`). The attempt
+   counter resets to 0 when a link comes up. Windows does not apply
+   Android's 15 s floor while local audio is active
+   (`MIN_DELAY_DURING_AUDIO_MS`); the pure function supports it but nothing
+   passes the audio state yet.
+4. **retryNow.** When the peer's Bluetooth link comes up (`ACL_CONNECTED` on
+   Android, `BluetoothDevice::ConnectionStatusChanged` to `Connected` on
+   Windows), cancel the backoff wait and dial at once, if there is no link
+   (`CrossDeviceClient.kt` `retryNow`). It does not cut the 3 s first-dial wait
+   of rule 3 above.
+5. **One dial at a time** across all peers and both services
+   (`PeerConnectionSupervisor.kt` `connectSerialized`). Windows holds one
+   process-wide mutex around resolve plus connect.
+6. **No baseband or radio reset** on the link path.
+
+Windows code: `PeerDialPolicy.hpp` (timeout, schedule, jitter; covered by
+`peer_v2_tests`), `dialRfcomm()` in `BluetoothRfcommClient.cpp` (steps 1, 2, 5,
+shared by the legacy and v2 dial loops), `BluetoothRfcommClient::retryNow` and
+`PeerV2Mesh::retryNow` (step 4, triggered from `PeerRegistry`).
 
 ## Audio-session packets
 

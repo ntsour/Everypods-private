@@ -2,6 +2,7 @@
 // run in CI after the build. Vectors cross-checked against Android's
 // PeerIdentityStore.headsetIdFromAddress and membership digest in Python.
 
+#include "PeerDialPolicy.hpp"
 #include "v2/PeerV2Arbitration.hpp"
 #include "v2/PeerV2Frame.hpp"
 #include "v2/PeerV2Identity.hpp"
@@ -131,12 +132,38 @@ static void arbitrationTests() {
     CHECK(chooseLegacyLink(kA, "", false) == LegacyLinkChoice::KeepExisting);
 }
 
+static void dialPolicyTests() {
+    using namespace std::chrono;
+    // Android PeerRetryPolicy: 2, 4, 8, then 15 s, repeating; jitter 0.8..1.2.
+    CHECK(peerRetryDelay(0, 1.0) == milliseconds{2000});
+    CHECK(peerRetryDelay(1, 1.0) == milliseconds{4000});
+    CHECK(peerRetryDelay(2, 1.0) == milliseconds{8000});
+    CHECK(peerRetryDelay(3, 1.0) == milliseconds{15000});
+    CHECK(peerRetryDelay(4, 1.0) == milliseconds{15000});
+    CHECK(peerRetryDelay(99, 1.0) == milliseconds{15000});
+    CHECK(peerRetryDelay(-1, 1.0) == milliseconds{2000});
+    CHECK(peerRetryDelay(0, 0.8) == milliseconds{1600});
+    CHECK(peerRetryDelay(0, 1.2) == milliseconds{2400});
+    CHECK(peerRetryDelay(3, 0.8) == milliseconds{12000});
+    CHECK(peerRetryDelay(3, 1.2) == milliseconds{18000});
+    CHECK(peerRetryDelay(0, 5.0) == milliseconds{2400});   // clamped
+    CHECK(peerRetryDelay(0, 0.1) == milliseconds{1600});
+    CHECK(peerRetryDelay(0, 1.0, true) == milliseconds{15000});  // audio floor
+    CHECK(peerRetryDelay(3, 1.0, true) == milliseconds{15000});
+    for (int i = 0; i < 1000; ++i) {
+        const double j = peerRetryJitter();
+        CHECK(j >= 0.8 && j <= 1.2);
+    }
+    CHECK(kPeerConnectTimeout == milliseconds{8000});
+}
+
 int main() {
     identityTests();
     jsonTests();
     frameTests();
     messageTests();
     arbitrationTests();
+    dialPolicyTests();
     std::printf("%d passed, %d failed\n", g_passed, g_failed);
     return g_failed == 0 ? 0 : 1;
 }

@@ -531,6 +531,9 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     peerV2.start(settings.peerAddresses);
     // Always started: any peer may dial this PC at any time.
     peers.start();
+    // A peer's Bluetooth link coming up wakes the legacy dial loop (in
+    // PeerRegistry) and the v2 one here, so a restarted peer relinks at once.
+    peers.setOnPeerLinkUp([&peerV2](std::uint64_t address) { peerV2.retryNow(address); });
     peerServer.start();
     if (settings.peerAddresses.empty())
         log::warn("No peers configured. Use the tray menu to add a peer once it is paired in Windows.");
@@ -540,6 +543,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
 
     tray.runMessageLoop();
 
+    peers.setOnPeerLinkUp({});
     peerV2.stop();
 
     teamsWatcher.stop();
