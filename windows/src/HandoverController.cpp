@@ -573,6 +573,17 @@ void HandoverController::onPeerConnectionChanged(bool connected) {
             log::handover("RECLAIM Peer grabbed AirPods before RFCOMM was up — reclaiming now");
             onMediaPlayingChanged(true);
         }
+
+        // A takeover started while this peer was not connected sent its
+        // kRequestDisconnect only to the peers connected then. If this peer
+        // holds the AirPods it never heard it, and every connect attempt
+        // fails (2026-11-21: Propods restarted, the Xiaomi reconnected 14 s
+        // into the takeover, still holding). Repeat the request now; peers
+        // that do not hold the AirPods just confirm kAirPodsDisconnected.
+        if (m_takeoverInFlight.load() && !airpodsHere) {
+            log::handover("OUT     kRequestDisconnect -> all peers (peer connected during takeover)");
+            m_peers.sendPacket(crossdevice::kRequestDisconnect);
+        }
     } else {
         log::handover("PEER    Android disconnected");
     }
