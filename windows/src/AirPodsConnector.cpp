@@ -1228,9 +1228,10 @@ bool AirPodsConnector::disconnect() {
     // lands during the teardown goes unanswered until Android's 30 s page
     // timeout (2026-11-21: PC -> Pixel took 28 s), so wait, bounded by
     // kLinkDownWait, for the link to actually drop before returning. The phone
-    // waits 6 s for this ack, so kLinkDownWait must stay below that.
-    constexpr auto kGraceWait = std::chrono::seconds{3};
-    constexpr auto kLinkDownWait = std::chrono::seconds{5};
+    // waits 6 s for this ack, so kLinkDownWait must stay below that. kGraceWait
+    // is 4.5 s so the usual 3.4-3.6 s clean close fits inside it.
+    constexpr auto kGraceWait = std::chrono::milliseconds{4500};
+    constexpr auto kLinkDownWait = std::chrono::milliseconds{5500};
     const auto elapsedMs = [&] {
         return std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - t0).count();
@@ -1272,7 +1273,7 @@ bool AirPodsConnector::disconnect() {
             log::handover("DISCONNECT link down after {} ms (forced)", elapsedMs());
             return true;
         }
-        log::handover("DISCONNECT link still up after 5 s; releasing anyway");
+        log::handover("DISCONNECT link still up after 5.5 s; releasing anyway");
     } catch (const winrt::hresult_error& e) {
         log::handover("DISCONNECT link-down wait failed (0x{:08X}); forcing drop and releasing",
                       static_cast<uint32_t>(e.code()));
