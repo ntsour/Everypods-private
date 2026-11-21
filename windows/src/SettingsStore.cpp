@@ -86,6 +86,9 @@ Settings SettingsStore::load() const {
         } else if (key == "autoroute") {
             s.autoRoute = (val != "0");
             log::debug("  autoroute = {}", s.autoRoute);
+        } else if (key == "pauseonrelease") {
+            s.pauseOnRelease = (val != "0");
+            log::debug("  pauseonrelease = {}", s.pauseOnRelease);
         }
     }
     return s;
@@ -101,6 +104,7 @@ void SettingsStore::save(const Settings& s) const {
         f << "android=" << formatBluetoothAddress(addr) << '\n';
     if (s.airpodsAddress) f << "airpods=" << formatBluetoothAddress(*s.airpodsAddress) << '\n';
     f << "autoroute=" << (s.autoRoute ? "1" : "0") << '\n';
+    f << "pauseonrelease=" << (s.pauseOnRelease ? "1" : "0") << '\n';
 }
 
 }

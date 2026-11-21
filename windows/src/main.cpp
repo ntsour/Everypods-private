@@ -20,6 +20,7 @@
 #include "BtHandoverSetup.hpp"
 #include "v2/PeerV2Identity.hpp"
 #include "v2/PeerV2Mesh.hpp"
+#include "PlaybackSilencer.hpp"
 #include "TraceUploader.hpp"
 #include "TrayIcon.hpp"
 #include "crossdevice_protocol.hpp"
@@ -232,9 +233,46 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     if (!tray.create(hInstance)) return 1;
     tray.setStatus(stateLabel(controller.state()));
 
-    controller.setOnStateChanged([&tray, &bleWatcher](OwnershipState s) {
+    // When the AirPods leave this PC, stop PC audio so it doesn't continue out of
+    // the speakers: pause every playing media session, then mute what is still
+    // audible. Only our own mutes are undone, when the AirPods come back, when
+    // media starts on the PC, or from the tray.
+    PlaybackSilencer silencer;
+    silencer.setEnabled(settings.pauseOnRelease);
+    silencer.restoreLeftovers();
+    silencer.setStillReleased([&controller]() { return controller.state() != OwnershipState::LocalPc; });
+    silencer.setOnDone([&tray](const PlaybackSilencer::Result& r) {
+        std::wstring apps;
+        for (const auto& n : r.names) { if (!apps.empty()) apps += L", "; apps += n; }
+        std::wstring text = std::format(L"Paused {}, muted {}: {}", r.paused, r.muted, apps);
+        if (r.muted > 0) text += L". Unmute from the tray if needed.";
+        tray.notify(L"PC audio stopped for the phone", text);
+    });
+    auto restoreAsync = [&silencer](const char* reason) {
+        if (!silencer.hasMuted()) return;
+        std::thread([&silencer, reason]() {
+            winrt::init_apartment(winrt::apartment_type::multi_threaded);
+            silencer.restoreMutes(reason);
+        }).detach();
+    };
+
+    std::atomic<OwnershipState> lastOwnership{OwnershipState::Unknown};
+    // When the AirPods leave, Windows moves output to the speakers and apps'
+    // audio sessions reappear there as "active". That is not the user asking
+    // for the AirPods back (on 2026-11-21 VLC did exactly this and pulled them
+    // back from the Pixel within 5 s), so audio-session triggers are ignored
+    // for a short while after losing ownership.
+    std::atomic<std::int64_t> lostOwnershipAtMs{0};
+    controller.setOnStateChanged([&tray, &bleWatcher, &silencer, &lastOwnership, &lostOwnershipAtMs, restoreAsync](OwnershipState s) {
         tray.setStatus(stateLabel(s));
         bleWatcher.setPaused(s == OwnershipState::LocalPc);
+        const OwnershipState previous = lastOwnership.exchange(s);
+        if (previous == OwnershipState::LocalPc && s != OwnershipState::LocalPc) {
+            lostOwnershipAtMs.store(static_cast<std::int64_t>(GetTickCount64()));
+            silencer.silenceAsync("AirPods left this PC");
+        }
+        if (s == OwnershipState::LocalPc)
+            restoreAsync("AirPods back on this PC");
     });
 
     // Provide live status to the tray menu (queried each time the menu opens).
@@ -242,6 +280,8 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
         TrayIcon::StatusInfo info;
         info.airpodsConnected = airpods.isClassicallyConnected();
         info.autoRouteEnabled = controller.autoRoute();
+        info.pauseOnRelease = silencer.enabled();
+        info.hasMutedApps = silencer.hasMuted();
         for (auto& p : peers.peerInfos())
             info.peers.push_back({p.address, p.name, p.connected});
         return info;
@@ -277,8 +317,9 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
         controller.onPeerConnectionChanged(connected);
     });
 
-    media.setCallback([&controller, &mediaPlaying, &peerV2](bool playing) {
+    media.setCallback([&controller, &mediaPlaying, &peerV2, restoreAsync](bool playing) {
         mediaPlaying.store(playing);
+        if (playing) restoreAsync("media started on this PC");
         controller.onMediaPlayingChanged(playing);
         peerV2.refreshLocalState();
     });
@@ -288,7 +329,19 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     // the standard debounce and anti-pingpong guards. This prevents an ongoing
     // Teams call from re-triggering a claim after Windows voluntarily released
     // AirPods to a peer.
-    teamsWatcher.setOnTriggered([&controller, &callActive, &peerV2]() {
+    teamsWatcher.setOnTriggered([&controller, &callActive, &peerV2, &silencer, &lostOwnershipAtMs]() {
+        const std::int64_t sinceLost = static_cast<std::int64_t>(GetTickCount64()) - lostOwnershipAtMs.load();
+        if (lostOwnershipAtMs.load() != 0 && sinceLost < 15'000) {
+            log::handover("SKIP    audio-session trigger {} ms after the AirPods left (output moved to speakers)", sinceLost);
+            return;
+        }
+        // An app we muted for the phone keeps its audio session active; that is
+        // not the user asking for the AirPods back (seen with VLC: it pulled them
+        // back from the Pixel a minute later). Real media starts still trigger.
+        if (silencer.hasMuted()) {
+            log::handover("SKIP    audio-session trigger: apps are muted for the phone");
+            return;
+        }
         callActive.store(true);
         controller.onCallActive();
         peerV2.refreshLocalState();
@@ -406,6 +459,19 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
                     }
                 }).detach();
                 break;
+            case TrayIcon::kCmdTogglePause: {
+                const bool nowEnabled = !silencer.enabled();
+                silencer.setEnabled(nowEnabled);
+                settings.pauseOnRelease = nowEnabled;
+                store.save(settings);
+                log::info("Pause PC audio when AirPods leave: {}", nowEnabled ? "ON" : "OFF");
+                break;
+            }
+            case TrayIcon::kCmdUnmuteApps: {
+                const int n = silencer.restoreMutes("tray");
+                tray.notify(L"PC audio", std::format(L"Unmuted {} app(s).", n));
+                break;
+            }
             case TrayIcon::kCmdToggleAutoRoute: {
                 bool nowEnabled = !controller.autoRoute();
                 controller.setAutoRoute(nowEnabled);

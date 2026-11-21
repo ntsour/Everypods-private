@@ -188,6 +188,15 @@ void TrayIcon::showContextMenu(HWND hwnd) {
     InsertMenuW(menu, static_cast<UINT>(-1), autoRouteFlags,
         static_cast<UINT_PTR>(kCmdToggleAutoRoute), L"Auto-set AirPods as audio device");
 
+    UINT pauseFlags = MF_BYPOSITION | MF_STRING;
+    if (status.pauseOnRelease) pauseFlags |= MF_CHECKED;
+    InsertMenuW(menu, static_cast<UINT>(-1), pauseFlags,
+        static_cast<UINT_PTR>(kCmdTogglePause), L"Pause PC audio when AirPods leave");
+    UINT unmuteFlags = MF_BYPOSITION | MF_STRING;
+    if (!status.hasMutedApps) unmuteFlags |= MF_GRAYED | MF_DISABLED;
+    InsertMenuW(menu, static_cast<UINT>(-1), unmuteFlags,
+        static_cast<UINT_PTR>(kCmdUnmuteApps), L"Unmute apps muted for the phone");
+
     UINT autoStartFlags = MF_BYPOSITION | MF_STRING;
     if (isAutoStartEnabled()) autoStartFlags |= MF_CHECKED;
     InsertMenuW(menu, static_cast<UINT>(-1), autoStartFlags,
