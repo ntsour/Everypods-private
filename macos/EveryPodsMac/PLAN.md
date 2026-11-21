@@ -108,3 +108,16 @@ Bluetooth toggles; in-case AirPods do not trigger a takeover; Start at login wor
 
 Out of scope here: Developer ID signing/notarization and packaging (last), the long soak test (later),
 AirPods control.
+
+## 7. Peer mesh update (equal peers)
+
+Per the peer spec (§1.2) and the Windows session's brief: every peer is equal. `PeerServer.swift` listens on the
+shared `EveryPodsCrossDevice` service (fixed RFCOMM channel 23); one peer list with no phone/computer kind;
+unknown devices that dial in are saved; the first link per peer wins (until v2 installation IDs exist). Holder
+rules: in the case -> ignore, in a call -> keep (both request types), media request within 3 s of our own takeover
+-> keep, otherwise a graceful release (4.5 s). Takeover intents: media -> `REQUEST_DISCONNECT`, call ->
+`REQUEST_HANDOVER`, gated by "Take over when media starts" / "Take over when receiving a call".
+
+Verified on hardware (Pixel, AirPods Pro, a Windows PC): inbound links from a PC, Mac plays -> AirPods move in
+about 2.5 s, phone media -> Mac releases. Not verified: call refusal, graceful-release slow path, sleep/wake,
+two simultaneous peers under load. Deferred: soak test, signing/notarization.
