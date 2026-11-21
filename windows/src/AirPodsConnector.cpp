@@ -305,7 +305,11 @@ bool AirPodsConnector::connect() {
         const auto t0 = std::chrono::steady_clock::now();
         const int sent = sendBtAudioOneshot(kKsOneshotReconnect, "RECONNECT");
         if (sent > 0) {
-            constexpr auto kLinkWait = std::chrono::seconds{10};
+            // Every link that came up did so within 1.6-4.5 s (2026-11-21, 8
+            // handovers). When the AirPods ignore the request (a phone still
+            // holds them), waiting longer does not help; the caller's retry
+            // does. 10 s here made those handovers take 13-15 s.
+            constexpr auto kLinkWait = std::chrono::seconds{6};
             while (std::chrono::steady_clock::now() - t0 < kLinkWait) {
                 bool up = false;
                 try { up = device.ConnectionStatus() == BluetoothConnectionStatus::Connected; } catch (...) {}
@@ -317,7 +321,7 @@ bool AirPodsConnector::connect() {
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
             }
-            log::handover("CONNECT driver-level connect: no link within 10 s");
+            log::handover("CONNECT driver-level connect: no link within 6 s");
             return false;
         }
         log::handover("CONNECT driver-level connect unavailable — falling back to SDP/RFCOMM wake");
@@ -1201,10 +1205,37 @@ bool AirPodsConnector::disconnect() {
     // NEVER use BluetoothSetServiceState(DISABLE) here: Windows persists it, so
     // the next connection comes up with A2DP NOTPRESENT (no sound) until it is
     // re-enabled on a cold link. That was the "connects but no audio" bug.
+    const auto t0 = std::chrono::steady_clock::now();
     const int sent = sendBtAudioOneshot(kKsOneshotDisconnect, "DISCONNECT");
     if (sent == 0) {
         log::info("AirPods release for {:012X}: driver-level disconnect unavailable; "
                   "leaving the link for the peer's A2DP grab", m_address);
+        return true;
+    }
+
+    // The caller tells the peers "released" (kAirPodsDisconnected) as soon as
+    // this returns, and a phone connects right after that. The driver request
+    // returns in ~0.25 s, before the link is down; a phone page that lands
+    // during the teardown goes unanswered until Android's 30 s page timeout
+    // (2026-11-21: PC -> Pixel took 28 s). So wait, bounded, for the link to
+    // actually drop before returning.
+    constexpr auto kLinkDownWait = std::chrono::seconds{3};
+    try {
+        using namespace winrt::Windows::Devices::Bluetooth;
+        auto device = BluetoothDevice::FromBluetoothAddressAsync(m_address).get();
+        while (device && std::chrono::steady_clock::now() - t0 < kLinkDownWait) {
+            if (device.ConnectionStatus() != BluetoothConnectionStatus::Connected) {
+                log::handover("DISCONNECT link down after {} ms",
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - t0).count());
+                return true;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        log::handover("DISCONNECT link still up after 3 s; releasing anyway");
+    } catch (const winrt::hresult_error& e) {
+        log::handover("DISCONNECT link-down wait failed (0x{:08X}); releasing anyway",
+                      static_cast<uint32_t>(e.code()));
     }
     return true;
 }
