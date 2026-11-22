@@ -41,6 +41,7 @@ final class HandoverController {
     private var voluntarilyReleased = false
     private var voluntaryReleaseApp = ""
     private var takeoverInFlight = false
+    private var releasing = false
     private var lastBluetoothConnected = false
     private var ackWaiters: [() -> Void] = []
     private var announcedCall: Bool?
@@ -115,6 +116,8 @@ final class HandoverController {
 
     /// Tells every connected phone whether this Mac holds the AirPods.
     private func sendState() {
+        // While releasing, the phone is waiting for AIRPODS_DISCONNECTED; a "connected" now would read as a refusal.
+        if releasing { return }
         peers.send(ownership == .thisMac ? Packet.airPodsConnected : Packet.airPodsDisconnected)
     }
 
@@ -274,9 +277,11 @@ final class HandoverController {
         // A short wait lets the player react before the audio route disappears.
         DispatchQueue.main.asyncAfter(deadline: .now() + (pause ? 0.4 : 0)) { [weak self] in
             guard let self else { return }
+            self.releasing = true
             self.pods.disconnect()
             let deadline = Date().addingTimeInterval(self.releaseGrace)
             func finish() {
+                self.releasing = false
                 self.setState(.otherDevice)
                 self.lastBluetoothConnected = false
                 self.peers.send(Packet.airPodsDisconnected)
