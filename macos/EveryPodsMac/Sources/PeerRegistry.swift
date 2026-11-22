@@ -76,6 +76,9 @@ final class PeerRegistry {
         start()
     }
 
+    /// A phone just authorized this Mac: retry the phones that refused it, without dropping the other links.
+    func retryRefused() { gatt.retryRefused() }
+
     func add(_ address: String, persist: Bool = true) {
         guard !addresses.contains(where: { sameAddress($0, address) }) else { return }
         addresses.append(address)

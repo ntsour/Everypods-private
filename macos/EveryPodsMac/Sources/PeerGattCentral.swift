@@ -97,6 +97,13 @@ final class PeerGattCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
         manager = nil
     }
 
+    /// Forgets which phones refused this Mac and tries them again now (after this Mac was authorized with one).
+    func retryRefused() {
+        refused.removeAll()
+        attachToConnected()
+        scan()  // restarting the scan reports advertising phones again
+    }
+
     /// Sends one legacy packet to the phone with this installation ID; false if it has no ready link.
     @discardableResult
     func send(_ bytes: [UInt8], to installationId: String) -> Bool {

@@ -36,7 +36,7 @@ enum PeerDiscovery {
         for device in toQuery {
             let lookup = ServiceLookup(device: device, uuidBytes: ServiceUUID.crossDevice)
             lookups.append(lookup)
-            lookup.find { channel in
+            lookup.find(fresh: true) { channel in  // a user-started search: never trust a stale cache
                 if channel != nil, let address = device.addressString {
                     found.append(DiscoveredPeer(address: address, name: device.name ?? address))
                 }

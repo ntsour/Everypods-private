@@ -217,7 +217,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             switch result {
             case .success:
                 Log.write("Authorized with \(name)")
-                self?.controller.peers.restart()
+                self?.controller.peers.retryRefused()
                 if !silent { self?.alert("Added \(name)", "The phone now accepts this Mac. The link will connect shortly.") }
             case .failure(let error):
                 Log.write("Authorization with \(name) failed: \(error.localizedDescription)")
