@@ -10,7 +10,6 @@ import ServiceManagement
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let controller = HandoverController()
-    private var authorizer: SetupAuthorizer?
     private var gattAuthorizer: GattSetupAuthorizer?
     private var menuCandidates: [PeerRegistry.Candidate] = []
 
@@ -56,17 +55,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             Log.write("Setup: found Bluetooth LE peer \(candidate.name)")
             addAndAuthorize(address: address, name: candidate.name, installationId: candidate.installationId, silent: true)
         }
-        PeerDiscovery.findPeers { [weak self] phones in
-            guard let self else { return }
-            Settings.didFirstRun = true
-            for phone in phones where !self.isKnownPeer(phone.address) {
-                Log.write("Setup: found peer \(phone.name)")
-                self.controller.peers.add(phone.address)
-                self.runAuthorization(for: phone.address, name: phone.name, silent: true)
-            }
-            if Settings.peers.isEmpty {
-                Log.write("Setup: no paired phone advertises the CrossDevice service")
-            }
+        Settings.didFirstRun = true
+        if Settings.peers.isEmpty {
+            Log.write("Setup: no phone found over Bluetooth LE")
         }
     }
 
@@ -128,8 +119,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     submenu.addItem(disabled("\(candidate.name): Pair this phone with the Mac in System Settings first"))
                 }
             }
-            submenu.addItem(.separator())
-            submenu.addItem(action("Search Paired Devices…", #selector(addPeer)))
             add.submenu = submenu
             menu.addItem(add)
         }
@@ -215,22 +204,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         runAuthorization(for: address, name: IOBluetoothDevice(addressString: normalizedAddress(address))?.name ?? address, silent: false)
     }
 
-    /// "Add peer…" (no phone found over Bluetooth LE) and "Search Paired Devices…": SDP lookup of paired phones
-    /// running the app, confirm each, then authorize it.
+    /// "Add peer…" while no phone is visible over Bluetooth LE.
     @objc private func addPeer() {
-        PeerDiscovery.findPeers { [weak self] found in
-            guard let self else { return }
-            let fresh = found.filter { !self.isKnownPeer($0.address) }
-            if fresh.isEmpty {
-                self.alert(found.isEmpty ? "No paired peer found"
-                                         : "All discovered devices are already added",
-                           found.isEmpty ? "Make sure the device is paired in System Settings → Bluetooth and runs EveryPods (on Android, with Cross-Device Handover on)." : "")
-                return
-            }
-            for phone in fresh where self.confirmAdd(name: phone.name, address: phone.address) {
-                self.addAndAuthorize(address: phone.address, name: phone.name, installationId: nil, silent: false)
-            }
-        }
+        alert("No phone found",
+              "Make sure the phone is paired in System Settings → Bluetooth and runs EveryPods (on Android, with Cross-Device Handover on), then try again.")
     }
 
     /// A phone found over Bluetooth LE, picked from the "Add peer" submenu.
@@ -257,34 +234,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         runAuthorization(for: address, name: name, silent: silent, installationId: installationId)
     }
 
-    /// The one-off setup exchange newer Android builds require before they accept this Mac: over the Bluetooth LE
-    /// link when the phone has one, else (an older app) over RFCOMM.
+    /// The one-off setup exchange newer Android builds require before they accept this Mac, over the Bluetooth LE link.
     private func runAuthorization(for address: String, name: String, silent: Bool, installationId: String? = nil) {
-        guard authorizer == nil, gattAuthorizer == nil else { return }
+        guard gattAuthorizer == nil else { return }
         let id = installationId ?? controller.peers.leInstallationId(for: address)
-        if let id, controller.peers.hasLESession(id) {
-            controller.peers.remember(installationId: id, address: address)
-            let gatt = GattSetupAuthorizer(registry: controller.peers, installationId: id)
-            gattAuthorizer = gatt
-            gatt.run { [weak self] result in
-                self?.gattAuthorizer = nil
-                switch result {
-                case .success: self?.authorized(name: name, silent: silent)
-                case .failure(let error):
-                    Log.write("Authorization with \(name) over Bluetooth LE failed (\(error.localizedDescription)); trying RFCOMM")
-                    self?.runRfcommAuthorization(for: address, name: name, silent: silent)
-                }
+        guard let id, controller.peers.hasLESession(id) else {
+            Log.write("Authorization with \(name): no Bluetooth LE link")
+            if !silent {
+                alert("Authorization with \(name) failed",
+                      "The phone has no Bluetooth LE link to this Mac. Check that Cross-Device Handover is on in the Android app, then use the phone's menu → Authorize with Phone….")
             }
-        } else {
-            runRfcommAuthorization(for: address, name: name, silent: silent)
+            return
         }
-    }
-
-    private func runRfcommAuthorization(for address: String, name: String, silent: Bool) {
-        guard authorizer == nil, let authorizer = SetupAuthorizer(phoneAddress: address) else { return }
-        self.authorizer = authorizer
-        authorizer.run { [weak self] result in
-            self?.authorizer = nil
+        controller.peers.remember(installationId: id, address: address)
+        let gatt = GattSetupAuthorizer(registry: controller.peers, installationId: id)
+        gattAuthorizer = gatt
+        gatt.run { [weak self] result in
+            self?.gattAuthorizer = nil
             switch result {
             case .success: self?.authorized(name: name, silent: silent)
             case .failure(let error):

@@ -66,7 +66,6 @@ handover, start at login).
 | `Settings.swift` | Phones, AirPods, toggles (`SettingsStore`) |
 | `ServiceLookup.swift`, `PeerLink.swift` | Finds the phone's RFCOMM channel and keeps one link up (`BluetoothRfcommClient`) |
 | `PeerRegistry.swift`, `PeerDiscovery.swift` | Several phones, discovery (`PeerRegistry`, `discoverAndroidPeers`) |
-| `SetupAuthorizer.swift` | One-off two-exchange authorization (`BtHandoverSync.kt` format; Mac only) |
 | `AirPodsConnector.swift` | Connects (3 attempts) and disconnects the AirPods (`AirPodsConnector`) |
 | `AudioRouter.swift` | Sets the AirPods as the output device |
 | `MediaWatcher.swift` | CoreAudio per-process flags: playback, microphone, calls (`MediaPlaybackWatcher`, `TeamsCallWatcher`) |

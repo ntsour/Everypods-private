@@ -44,7 +44,7 @@ Windows is layered (`PeerRegistry` / `AirPodsConnector` / watchers / `HandoverCo
 | In-case probe | `BleProximityWatcher` | `ProximityWatcher.swift` | CoreBluetooth scan, same Apple 0x004C parse, same rules |
 | Controller | `HandoverController` | `HandoverController.swift` | Direct port of the state machine and its timers |
 | Menu | `TrayIcon` | `main.swift` + `Menu.swift` | NSStatusItem |
-| Authorization | (none; Mac-only) | `SetupAuthorizer.swift` | Needed because newer Android builds require it |
+| Authorization | (none; Mac-only) | `GattSetupAuthorizer.swift` | Needed because newer Android builds require it |
 
 ## 3. Algorithms carried over unchanged
 
