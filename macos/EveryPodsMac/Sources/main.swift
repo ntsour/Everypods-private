@@ -11,6 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let controller = HandoverController()
     private var authorizer: SetupAuthorizer?
+    private let gattSpike = GattSpike()  // SPIKE: BLE peer link timing (not for release)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Single instance: if another copy is already running, quit silently.
@@ -29,6 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         firstRunSetup()
         controller.onChange = { [weak self] in self?.updateIcon() }
         controller.start()
+        gattSpike.start()
         NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
             self?.controller.handleWake()
