@@ -273,11 +273,12 @@ final class HandoverController {
     /// are told once it is down (the phone's acknowledgement timeout is 6 s).
     private func giveUp() {
         let pause = Settings.pauseOnHandover && media.snapshot.playing
+        // Set before the pause wait too: a status ping answered "connected" in that window reads as a refusal.
+        releasing = true
         if pause { MediaControl.togglePlayPause() }
         // A short wait lets the player react before the audio route disappears.
         DispatchQueue.main.asyncAfter(deadline: .now() + (pause ? 0.4 : 0)) { [weak self] in
             guard let self else { return }
-            self.releasing = true
             self.pods.disconnect()
             let deadline = Date().addingTimeInterval(self.releaseGrace)
             func finish() {
