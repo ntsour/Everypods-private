@@ -31,6 +31,8 @@ final class PeerGattCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
     var onReady: ((Peer) -> Void)?
     var onPacket: ((Peer, Data) -> Void)?
     var onEnded: ((Peer) -> Void)?
+    /// Records the central does not handle itself (SETUP_ACK, V2, unknown types), from any session with a HELLO.
+    var onRecord: ((Peer, UInt8, Data) -> Void)?
     var localHello: () -> PeerGattRecords.Hello = {
         PeerGattRecords.Hello(installationId: UUID().uuidString.lowercased(), name: Host.current().localizedName ?? "Mac",
                               capabilities: ["legacy1"])
@@ -77,7 +79,17 @@ final class PeerGattCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
     private var refused: [UUID: Date] = [:]
     private var timer: Timer?
 
+    /// Every phone with a live session and an exchanged HELLO, configured or not.
     var readyPeers: [Peer] { sessions.values.filter(\.ready).compactMap(\.peer) }
+
+    /// Sends one record to the phone with this installation ID over any session with an exchanged HELLO (the phone
+    /// need not be an authorized peer: this carries the setup exchange). False if there is no such session.
+    @discardableResult
+    func sendRecord(type: UInt8, payload: Data, to installationId: String) -> Bool {
+        guard let session = sessions.values.first(where: { $0.ready && $0.hello?.installationId == installationId }),
+              let record = PeerGattRecords.encode(type, payload) else { return false }
+        return write(record, to: session)
+    }
 
     func start() {
         guard manager == nil else { return }
@@ -372,7 +384,8 @@ final class PeerGattCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
                     session.pings[seq] = nil
                 }
             default:
-                break  // V2 is not spoken by the Mac yet; unknown types are skipped
+                // SETUP_ACK, and V2 (not spoken by the Mac yet) or unknown types, are for the owner to handle or skip.
+                if session.ready, let peer = session.peer { onRecord?(peer, record.type, record.payload) }
             }
         }
     }

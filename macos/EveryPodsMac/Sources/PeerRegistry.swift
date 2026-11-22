@@ -16,7 +16,17 @@ final class PeerRegistry {
         let connected: Bool
     }
 
+    /// A phone reachable over Bluetooth LE that is not (yet) a configured peer.
+    struct Candidate {
+        let installationId: String
+        let name: String
+        /// The paired classic address, when the name matches exactly one paired device that is not a configured peer.
+        let address: String?
+    }
+
     var onPacket: ((Data) -> Void)?
+    /// SETUP_ACK payloads: (installation ID, JSON).
+    var onSetupAck: ((String, Data) -> Void)?
     /// `connected` is the state of the peer that changed.
     var onConnectionChange: ((String, Bool) -> Void)?
 
@@ -26,6 +36,9 @@ final class PeerRegistry {
     private let gatt = PeerGattCentral()
     /// Ready links: installation ID → configured peer address.
     private var gattLinks: [String: String] = [:]
+    /// Phones with a session (HELLO exchanged) that match no configured peer: installation ID → phone. They stay
+    /// connected and idle (kept alive by PING) so the Mac can be authorized over them.
+    private var unmatched: [String: PeerGattCentral.Peer] = [:]
 
     var isAnyConnected: Bool { !gattLinks.isEmpty }
     var isEmpty: Bool { addresses.isEmpty }
@@ -54,6 +67,9 @@ final class PeerRegistry {
         }
         gatt.onReady = { [weak self] peer in self?.gattReady(peer) }
         gatt.onEnded = { [weak self] peer in self?.gattEnded(peer) }
+        gatt.onRecord = { [weak self] peer, type, payload in
+            if type == PeerGattRecords.setupAck { self?.onSetupAck?(peer.installationId, payload) }
+        }
         gatt.onPacket = { [weak self] peer, data in
             guard let self, self.gattLinks[peer.installationId] != nil else { return }
             self.onPacket?(data)
@@ -66,6 +82,7 @@ final class PeerRegistry {
         gatt.stop()
         let linked = Array(gattLinks.values)
         gattLinks.removeAll()
+        unmatched.removeAll()
         linked.forEach { onConnectionChange?($0, false) }
     }
 
@@ -77,7 +94,61 @@ final class PeerRegistry {
     }
 
     /// A phone just authorized this Mac: retry the phones that refused it, without dropping the other links.
-    func retryRefused() { gatt.retryRefused() }
+    func retryRefused() {
+        rematch()
+        gatt.retryRefused()
+    }
+
+    /// Tries again to match the phones that were not used (a peer was added or remembered since).
+    func rematch() {
+        for peer in Array(unmatched.values) { gattReady(peer) }
+    }
+
+    /// Phones reachable over Bluetooth LE that are not configured peers, for "Add peer…".
+    var discoverable: [Candidate] {
+        let paired = Settings.pairedDevices()
+        return unmatched.values.sorted { $0.name < $1.name }.map { peer in
+            let devices = paired.filter { Self.sameName($0.name ?? "", peer.name) }
+            var address: String?
+            if devices.count == 1, let found = devices[0].addressString,
+               !addresses.contains(where: { sameAddress($0, found) }) {
+                address = found
+            }
+            return Candidate(installationId: peer.installationId, name: peer.name, address: address)
+        }
+    }
+
+    /// The installation ID of the phone with a live LE session for this configured peer, if any.
+    func leInstallationId(for address: String) -> String? {
+        let live = Set(gatt.readyPeers.map(\.installationId))
+        if let id = Settings.gattPeerAddresses.first(where: { live.contains($0.key) && sameAddress($0.value, address) })?.key {
+            return id
+        }
+        let name = Self.name(of: address)
+        let named = gatt.readyPeers.filter { Self.sameName($0.name, name) }
+        return named.count == 1 ? named[0].installationId : nil
+    }
+
+    func hasLESession(_ installationId: String) -> Bool {
+        gatt.readyPeers.contains { $0.installationId == installationId }
+    }
+
+    /// Sends a setup record over the LE session with this phone (it need not be a configured peer).
+    @discardableResult
+    func sendSetupRecord(_ payload: Data, to installationId: String) -> Bool {
+        gatt.sendRecord(type: PeerGattRecords.setupRequest, payload: payload, to: installationId)
+    }
+
+    /// Remembers that the phone with this installation ID is configured under `address`.
+    func remember(installationId: String, address: String) {
+        var known = Settings.gattPeerAddresses
+        known[installationId] = address
+        Settings.gattPeerAddresses = known
+    }
+
+    private static func sameName(_ a: String, _ b: String) -> Bool {
+        a.trimmingCharacters(in: .whitespaces).caseInsensitiveCompare(b.trimmingCharacters(in: .whitespaces)) == .orderedSame
+    }
 
     func add(_ address: String, persist: Bool = true) {
         guard !addresses.contains(where: { sameAddress($0, address) }) else { return }
@@ -117,7 +188,9 @@ final class PeerRegistry {
             Self.name(of: $0).trimmingCharacters(in: .whitespaces).caseInsensitiveCompare(name) == .orderedSame
         }
         guard candidates.count == 1, let address = candidates.first else {
-            Log.write("Peers: Bluetooth LE peer '\(peer.name)' matches \(candidates.count) configured peers; not using it")
+            if unmatched[peer.installationId] == nil {
+                Log.write("Peers: Bluetooth LE peer '\(peer.name)' matches \(candidates.count) configured peers; keeping it idle for setup")
+            }
             return nil
         }
         var known = Settings.gattPeerAddresses
@@ -128,13 +201,18 @@ final class PeerRegistry {
     }
 
     private func gattReady(_ peer: PeerGattCentral.Peer) {
-        guard let address = match(peer) else { return }
+        guard let address = match(peer) else {
+            unmatched[peer.installationId] = peer
+            return
+        }
+        unmatched[peer.installationId] = nil
         let wasReachable = isReachable(address)
         gattLinks[peer.installationId] = address
         if !wasReachable { onConnectionChange?(address, true) }
     }
 
     private func gattEnded(_ peer: PeerGattCentral.Peer) {
+        unmatched[peer.installationId] = nil
         guard let address = gattLinks.removeValue(forKey: peer.installationId) else { return }
         if !isReachable(address) { onConnectionChange?(address, false) }
     }

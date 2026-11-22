@@ -12,6 +12,11 @@ enum PeerGattRecords {
     static let ping: UInt8 = 0x03
     static let pong: UInt8 = 0x04
     static let v2: UInt8 = 0x05
+    /// Setup exchange (authorizing this Mac): central -> phone request, phone -> central answer. Same UTF-8 JSON as the
+    /// RFCOMM setup exchange, at most `maxSetupPayload` bytes.
+    static let setupRequest: UInt8 = 0x06
+    static let setupAck: UInt8 = 0x07
+    static let maxSetupPayload = 1024
 
     static let maxPayload = 4096
 

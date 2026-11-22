@@ -55,4 +55,14 @@ check((try? PeerGattRecords.parseHello(Data("not json".utf8))) == nil, "bad hell
 check((try? PeerGattRecords.parseHello(Data(#"{"v":2,"id":"0b7b2c43-5a0f-4c1e-9d2b-1f6f2d3c4b5a"}"#.utf8))) == nil, "wrong version rejected")
 check((try? PeerGattRecords.parseHello(Data(#"{"v":1,"id":"0B7B2C43-5A0F-4C1E-9D2B-1F6F2D3C4B5A"}"#.utf8))) == nil, "non-canonical id rejected")
 
+// SETUP_REQ / SETUP_ACK round trip.
+let setupJson = Data(#"{"version":1,"revision":1,"origin":"0b7b2c43-5a0f-4c1e-9d2b-1f6f2d3c4b5a","enabled":true}"#.utf8)
+for type in [PeerGattRecords.setupRequest, PeerGattRecords.setupAck] {
+    let encoded = PeerGattRecords.encode(type, setupJson)!
+    check(encoded[0] == type && Int(encoded[1]) << 8 | Int(encoded[2]) == setupJson.count, "setup header \(type)")
+    var setupDecoder = PeerGattRecords.Decoder()
+    check((try! setupDecoder.feed(encoded)) == [PeerGattRecords.Record(type: type, payload: setupJson)], "setup round trip \(type)")
+}
+check(PeerGattRecords.setupRequest == 0x06 && PeerGattRecords.setupAck == 0x07, "setup type values")
+
 if failures == 0 { print("PeerGattRecords: all tests passed") } else { print("PeerGattRecords: \(failures) failure(s)"); exit(1) }
