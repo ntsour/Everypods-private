@@ -47,6 +47,42 @@ final class HandoverController {
     private var announcedCall: Bool?
     private var callDebounce: DispatchWorkItem?
     private var pollTimer: Timer?
+    /// An automatic takeover trigger held back by a live acquisition reservation; replayed when it ends.
+    private var triggerDeferredByReservation = false
+
+    /// Protocol v2: this Mac's snapshots and its vote (grantor role) in a phone's lid-open acquisition round.
+    lazy var v2: PeerV2Hub = {
+        let hub = PeerV2Hub(installationId: Settings.installationId)
+        hub.localState = { [weak self] in self?.v2LocalState() ?? PeerV2Hub.LocalState(headsetId: nil, ownership: .unknown, audioUse: .unknown, takeoverActive: false) }
+        hub.sendRecord = { [weak self] id, payload in self?.peers.sendV2(payload, to: id) ?? false }
+        hub.isConfigured = { [weak self] id in self?.peers.isLinked(id) ?? false }
+        hub.configuredPeerIds = { [weak self] in self?.peers.configuredInstallationIds() }
+        hub.peerName = { [weak self] id in self?.peers.displayName(forInstallationId: id) ?? String(id.prefix(8)) }
+        hub.onReservationEnded = { [weak self] in self?.reservationEnded() }
+        return hub
+    }()
+
+    private func v2LocalState() -> PeerV2Hub.LocalState {
+        var headsetId: String?
+        if let address = Settings.airPodsAddress { headsetId = try? PeerV2Message.headsetId(fromAddress: address) }
+        var held: PeerOwnership = .unknown
+        if headsetId != nil {
+            if ownership == .thisMac || pods.isConnected { held = .held } else if ownership == .otherDevice { held = .released }
+        }
+        let use: PeerAudioUse = media.snapshot.inCall ? .call : media.snapshot.playing ? .media : .idle
+        return PeerV2Hub.LocalState(headsetId: headsetId, ownership: held, audioUse: use, takeoverActive: takeoverInFlight)
+    }
+
+    /// Replays the automatic trigger that a reservation held back, if the audio that caused it is still going.
+    private func reservationEnded() {
+        guard triggerDeferredByReservation, !v2.reservationLive else { return }
+        triggerDeferredByReservation = false
+        guard media.snapshot.playing || media.snapshot.inCall else {
+            return Log.write("V2: reservation ended; the audio that triggered a takeover has stopped")
+        }
+        Log.write("V2: reservation ended; running the deferred takeover trigger")
+        onMediaPlayingChanged(true)
+    }
 
     // MARK: Status text (menu and tooltip)
 
@@ -73,10 +109,16 @@ final class HandoverController {
         media.onPlaybackStopped = { [weak self] in self?.onMediaPlayingChanged(false) }
         media.onChange = { [weak self] in
             self?.scheduleCallState()
+            self?.v2.stateChanged()
             self?.onChange?()
         }
         peers.onPacket = { [weak self] data in self?.onIncomingPacket(data) }
         peers.onConnectionChange = { [weak self] address, connected in self?.onPeerConnectionChanged(address, connected) }
+        peers.onV2LinkChange = { [weak self] id, up in
+            if up { self?.v2.linkUp(id) } else { self?.v2.linkDown(id) }
+        }
+        peers.onV2Record = { [weak self] id, payload in self?.v2.onRecord(id, payload) }
+        v2.start()
         media.start()
         proximity.start()
         peers.start()
@@ -87,14 +129,29 @@ final class HandoverController {
 
     /// After sleep the Bluetooth stack takes a moment to come back, and macOS may have reconnected the AirPods
     /// by itself. Rebuild the phone links from scratch, then re-resolve who holds the AirPods.
+    /// Before system sleep: close the phone links and stop every Bluetooth scan. Left running, the scans and the
+    /// pending reconnects keep waking the Mac (DarkWake "bluetooth") up to ~190 times an hour.
+    func handleSleep() {
+        Log.write("Sleep: closing the phone links and stopping Bluetooth scans")
+        asleep = true
+        peers.stop()
+        proximity.stop()
+    }
+
     func handleWake() {
         Log.write("Wake: rebuilding the phone links")
+        asleep = false
         peers.stop()
+        proximity.start()
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
-            self?.peers.start()
-            self?.pollBluetooth()
+            guard let self, !self.asleep else { return }
+            self.peers.start()
+            self.pollBluetooth()
         }
     }
+
+    /// True between a sleep notification and the next full wake (dark wakes don't count).
+    private(set) var asleep = false
 
     // MARK: Ownership
 
@@ -104,6 +161,7 @@ final class HandoverController {
         guard state != ownership else { return false }
         ownership = state
         Log.write("State -> \(state)")
+        v2.stateChanged()
         router.setPersistent(state == .thisMac)
         if state == .thisMac {
             // Claiming the AirPods by any means resets the voluntary-release gate.
@@ -184,6 +242,14 @@ final class HandoverController {
             return
         }
 
+        // A phone's lid-open acquisition holds a grant from this Mac: do not take the AirPods out from under it.
+        // The trigger is replayed when the reservation ends (the normal takeover then asks the new holder to release).
+        if v2.reservationLive {
+            triggerDeferredByReservation = true
+            lastAction = Date.distantPast
+            return Log.write("Skip: a phone's acquisition holds a reservation on this Mac; deferring the takeover")
+        }
+
         // Not connected here. Do not poke Bluetooth when the AirPods are in their case.
         if !proximity.airPodsAvailable {
             return Log.write("Skip: AirPods appear to be in the case; not initiating a takeover")
@@ -227,6 +293,8 @@ final class HandoverController {
             return
         }
         guard !takeoverInFlight else { return }
+        // The user chose to connect here: the reservation yields instead of holding the click back.
+        v2.cancelReservationForUserTakeover()
         Log.write("Manual connect")
         startTakeover(.media)
     }

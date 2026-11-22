@@ -7,3 +7,7 @@ OUT=$(mktemp -d)
 cp Tests/PeerGattRecordsTests.swift "$OUT/main.swift"
 swiftc -target arm64-apple-macos13.0 Sources/PeerGattRecords.swift "$OUT/main.swift" -o "$OUT/records-tests"
 "$OUT/records-tests"
+# Protocol v2: codec, identity, participant decisions, central handshake (no Bluetooth, no Log).
+cp Tests/PeerV2Tests.swift "$OUT/main.swift"
+swiftc -target arm64-apple-macos13.0 Sources/PeerV2.swift Sources/PeerAcquisition.swift Sources/PeerV2Session.swift "$OUT/main.swift" -o "$OUT/v2-tests"
+"$OUT/v2-tests"

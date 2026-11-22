@@ -29,6 +29,10 @@ final class PeerRegistry {
     var onSetupAck: ((String, Data) -> Void)?
     /// `connected` is the state of the peer that changed.
     var onConnectionChange: ((String, Bool) -> Void)?
+    /// A configured phone's Bluetooth LE link came up (true) or went down (false), by installation ID: v2 runs per link.
+    var onV2LinkChange: ((String, Bool) -> Void)?
+    /// A v2 record (one frame) from a configured phone with a live link, by installation ID.
+    var onV2Record: ((String, Data) -> Void)?
 
     /// Configured peers by address, in the order they were added.
     private var addresses: [String] = []
@@ -69,6 +73,9 @@ final class PeerRegistry {
         gatt.onEnded = { [weak self] peer in self?.gattEnded(peer) }
         gatt.onRecord = { [weak self] peer, type, payload in
             if type == PeerGattRecords.setupAck { self?.onSetupAck?(peer.installationId, payload) }
+            if type == PeerGattRecords.v2, self?.gattLinks[peer.installationId] != nil {
+                self?.onV2Record?(peer.installationId, payload)
+            }
         }
         gatt.onPacket = { [weak self] peer, data in
             guard let self, self.gattLinks[peer.installationId] != nil else { return }
@@ -81,7 +88,9 @@ final class PeerRegistry {
         started = false
         gatt.stop()
         let linked = Array(gattLinks.values)
+        let linkedIds = Array(gattLinks.keys)
         gattLinks.removeAll()
+        linkedIds.forEach { onV2LinkChange?($0, false) }
         unmatched.removeAll()
         linked.forEach { onConnectionChange?($0, false) }
     }
@@ -161,10 +170,42 @@ final class PeerRegistry {
         guard let index = addresses.firstIndex(where: { sameAddress($0, address) }) else { return }
         addresses.remove(at: index)
         Settings.peers = Settings.peers.filter { !sameAddress($0, address) }
-        for (id, linked) in gattLinks where sameAddress(linked, address) { gattLinks[id] = nil }
+        for (id, linked) in gattLinks where sameAddress(linked, address) {
+            gattLinks[id] = nil
+            onV2LinkChange?(id, false)
+        }
         Settings.gattPeerAddresses = Settings.gattPeerAddresses.filter { !sameAddress($0.value, address) }
         Log.write("Peers: removed \(Self.name(of: address))")
         onConnectionChange?(address, false)
+    }
+
+    /// Sends one v2 record (a frame) to the configured phone with this installation ID.
+    func sendV2(_ payload: Data, to installationId: String) -> Bool {
+        gattLinks[installationId] != nil && gatt.sendRecord(type: PeerGattRecords.v2, payload: payload, to: installationId)
+    }
+
+    func isLinked(_ installationId: String) -> Bool { gattLinks[installationId] != nil }
+
+    /// The Bluetooth name of the configured phone behind this link, for the log.
+    func displayName(forInstallationId installationId: String) -> String {
+        gattLinks[installationId].map { Self.name(of: $0) } ?? String(installationId.prefix(8))
+    }
+
+    /// The installation ID of every configured peer, or nil when one is not known: a computer has no LE link, and a
+    /// phone that has not linked yet has not told this Mac its ID. Prefers the ID of a live link when the address
+    /// was remembered under several (a reinstalled phone).
+    func configuredInstallationIds() -> Set<String>? {
+        var ids = Set<String>()
+        for address in addresses {
+            if let live = gattLinks.first(where: { sameAddress($0.value, address) })?.key {
+                ids.insert(live)
+                continue
+            }
+            let known = Settings.gattPeerAddresses.filter { sameAddress($0.value, address) }.keys
+            guard known.count == 1, let id = known.first else { return nil }
+            ids.insert(id)
+        }
+        return ids
     }
 
     /// Sends to every linked peer; returns true if at least one accepted the packet.
@@ -208,12 +249,14 @@ final class PeerRegistry {
         unmatched[peer.installationId] = nil
         let wasReachable = isReachable(address)
         gattLinks[peer.installationId] = address
+        onV2LinkChange?(peer.installationId, true)
         if !wasReachable { onConnectionChange?(address, true) }
     }
 
     private func gattEnded(_ peer: PeerGattCentral.Peer) {
         unmatched[peer.installationId] = nil
         guard let address = gattLinks.removeValue(forKey: peer.installationId) else { return }
+        onV2LinkChange?(peer.installationId, false)
         if !isReachable(address) { onConnectionChange?(address, false) }
     }
 }
