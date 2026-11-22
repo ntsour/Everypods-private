@@ -23,6 +23,21 @@ enum Settings {
         set { defaults.set(newValue, forKey: "peers") }
     }
 
+    /// This Mac's EveryPods installation ID (sent in the Bluetooth LE HELLO), created on first use.
+    static var installationId: String {
+        if let id = defaults.string(forKey: "installationId"), UUID(uuidString: id) != nil { return id }
+        let id = UUID().uuidString.lowercased()
+        defaults.set(id, forKey: "installationId")
+        return id
+    }
+
+    /// Phones matched over Bluetooth LE: installation ID → the address the phone is configured under. CoreBluetooth
+    /// exposes no addresses, so the first match is by Bluetooth name and is then remembered.
+    static var gattPeerAddresses: [String: String] {
+        get { defaults.dictionary(forKey: "gattPeerAddresses") as? [String: String] ?? [:] }
+        set { defaults.set(newValue, forKey: "gattPeerAddresses") }
+    }
+
     static var airPodsAddress: String? {
         get { defaults.string(forKey: "airPodsAddress") }
         set { defaults.set(newValue, forKey: "airPodsAddress") }

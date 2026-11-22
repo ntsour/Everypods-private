@@ -37,6 +37,12 @@ final class AudioRouter {
         return ok
     }
 
+    /// True when the AirPods exist as an audio output and are the default one.
+    var airPodsAreDefaultOutput: Bool {
+        guard let address = Settings.airPodsAddress, let device = outputDevice(forAddress: address) else { return false }
+        return defaultOutput() == device
+    }
+
     // MARK: CoreAudio
 
     private func outputDevice(forAddress address: String) -> AudioDeviceID? {

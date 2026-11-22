@@ -1,7 +1,10 @@
 // PeerRegistry.swift
 //
-// The peers (phones and other computers) this Mac coordinates with: one RFCOMM link per peer, dialled by us or
-// accepted from the listener; packets are broadcast to every connected peer. Mirrors windows/src/PeerRegistry.
+// The peers (phones and other computers) this Mac coordinates with, and their links. Every link is Bluetooth LE
+// (PeerGattCentral, Everypods docs/peer-ble-transport.md): peers advertise the EveryPods GATT service and the Mac
+// connects. There is no RFCOMM: dialling over classic Bluetooth paged absent peers and held the radio, which
+// delayed connecting the AirPods by up to a minute, and macOS cannot keep RFCOMM channel numbers fresh.
+// Packets are broadcast to every linked peer.
 
 import Foundation
 import IOBluetooth
@@ -14,86 +17,123 @@ final class PeerRegistry {
     }
 
     var onPacket: ((Data) -> Void)?
-    /// `connected` is the state of the phone that changed.
+    /// `connected` is the state of the peer that changed.
     var onConnectionChange: ((String, Bool) -> Void)?
 
-    private var links: [PeerLink] = []
+    /// Configured peers by address, in the order they were added.
+    private var addresses: [String] = []
     private var started = false
-    private let server = PeerServer()
+    private let gatt = PeerGattCentral()
+    /// Ready links: installation ID → configured peer address.
+    private var gattLinks: [String: String] = [:]
 
-    var isAnyConnected: Bool { links.contains { $0.isConnected } }
-    var isEmpty: Bool { links.isEmpty }
+    var isAnyConnected: Bool { !gattLinks.isEmpty }
+    var isEmpty: Bool { addresses.isEmpty }
 
     var infos: [Info] {
-        links.map { Info(address: $0.address, name: $0.name, connected: $0.isConnected) }
+        addresses.map { Info(address: $0, name: Self.name(of: $0), connected: isReachable($0)) }
     }
 
-    /// Starts the links for the saved peers.
+    private static func name(of address: String) -> String {
+        IOBluetoothDevice(addressString: normalizedAddress(address))?.name ?? address
+    }
+
+    private func isReachable(_ address: String) -> Bool {
+        gattLinks.values.contains { sameAddress($0, address) }
+    }
+
+    /// Starts linking with the saved peers.
     func start() {
         started = true
-        for address in Settings.peers where !links.contains(where: { sameAddress($0.address, address) }) {
-            add(address, persist: false)
+        for address in Settings.peers where !addresses.contains(where: { sameAddress($0, address) }) {
+            addresses.append(address)
         }
-        server.onChannel = { [weak self] channel, device in self?.accept(channel, from: device) }
-        server.start()
-        links.forEach { $0.start() }
+        gatt.localHello = {
+            let name = IOBluetoothHostController.default()?.nameAsString() ?? Host.current().localizedName ?? "Mac"
+            return PeerGattRecords.Hello(installationId: Settings.installationId, name: name, capabilities: ["legacy1"])
+        }
+        gatt.onReady = { [weak self] peer in self?.gattReady(peer) }
+        gatt.onEnded = { [weak self] peer in self?.gattEnded(peer) }
+        gatt.onPacket = { [weak self] peer, data in
+            guard let self, self.gattLinks[peer.installationId] != nil else { return }
+            self.onPacket?(data)
+        }
+        gatt.start()
     }
 
     func stop() {
         started = false
-        server.stop()
-        links.forEach { $0.stop() }
+        gatt.stop()
+        let linked = Array(gattLinks.values)
+        gattLinks.removeAll()
+        linked.forEach { onConnectionChange?($0, false) }
     }
 
-    /// A peer opened a link to us. An unknown device is saved as a peer.
-    private func accept(_ channel: IOBluetoothRFCOMMChannel, from device: IOBluetoothDevice?) {
-        guard let address = device?.addressString else {
-            Log.write("Peers: incoming channel without an address; closing")
-            _ = channel.close()
-            return
-        }
-        if let known = links.first(where: { sameAddress($0.address, address) }) {
-            return known.adopt(channel)
-        }
-        Log.write("Peers: unknown device \(device?.name ?? address) dialled in; saving it as a peer")
-        add(address)
-        links.first(where: { sameAddress($0.address, address) })?.adopt(channel)
-    }
-
-    /// Rebuilds every link from scratch (after wake, or when the Bluetooth stack was reset).
+    /// Rebuilds the links (after wake, or when the Bluetooth stack was reset).
     func restart() {
-        links.forEach { $0.stop() }
-        links.forEach { $0.start() }
+        guard started else { return }
+        stop()
+        start()
     }
 
     func add(_ address: String, persist: Bool = true) {
-        guard !links.contains(where: { sameAddress($0.address, address) }) else { return }
-        let link = PeerLink(address: address)
-        link.onPacket = { [weak self] data in self?.onPacket?(data) }
-        link.onConnectionChange = { [weak self] connected in self?.onConnectionChange?(address, connected) }
-        links.append(link)
-        if persist {
-            Settings.peers = Settings.peers + [address]
-        }
-        if started { link.start() }
-        Log.write("Peers: added \(link.name)")
+        guard !addresses.contains(where: { sameAddress($0, address) }) else { return }
+        addresses.append(address)
+        if persist { Settings.peers = Settings.peers + [address] }
+        Log.write("Peers: added \(Self.name(of: address))")
     }
 
     func remove(_ address: String) {
-        guard let index = links.firstIndex(where: { sameAddress($0.address, address) }) else { return }
-        let link = links.remove(at: index)
-        link.stop()
+        guard let index = addresses.firstIndex(where: { sameAddress($0, address) }) else { return }
+        addresses.remove(at: index)
         Settings.peers = Settings.peers.filter { !sameAddress($0, address) }
-        Log.write("Peers: removed \(link.name)")
+        for (id, linked) in gattLinks where sameAddress(linked, address) { gattLinks[id] = nil }
+        Settings.gattPeerAddresses = Settings.gattPeerAddresses.filter { !sameAddress($0.value, address) }
+        Log.write("Peers: removed \(Self.name(of: address))")
         onConnectionChange?(address, false)
     }
 
-    /// Sends to every connected peer; returns true if at least one accepted the packet.
+    /// Sends to every linked peer; returns true if at least one accepted the packet.
     @discardableResult
     func send(_ bytes: [UInt8]) -> Bool {
         var sent = false
-        for link in links where link.isConnected { sent = link.send(bytes) || sent }
+        for id in gattLinks.keys { sent = gatt.send(bytes, to: id) || sent }
         return sent
+    }
+
+    // MARK: Matching a phone's HELLO to a configured peer
+
+    /// By remembered installation ID, else by a unique Bluetooth name (CoreBluetooth exposes no addresses).
+    private func match(_ peer: PeerGattCentral.Peer) -> String? {
+        if let address = Settings.gattPeerAddresses[peer.installationId],
+           addresses.contains(where: { sameAddress($0, address) }) {
+            return address
+        }
+        let name = peer.name.trimmingCharacters(in: .whitespaces)
+        let candidates = addresses.filter {
+            Self.name(of: $0).trimmingCharacters(in: .whitespaces).caseInsensitiveCompare(name) == .orderedSame
+        }
+        guard candidates.count == 1, let address = candidates.first else {
+            Log.write("Peers: Bluetooth LE peer '\(peer.name)' matches \(candidates.count) configured peers; not using it")
+            return nil
+        }
+        var known = Settings.gattPeerAddresses
+        known[peer.installationId] = address
+        Settings.gattPeerAddresses = known
+        Log.write("Peers: Bluetooth LE peer '\(peer.name)' is \(address); remembered")
+        return address
+    }
+
+    private func gattReady(_ peer: PeerGattCentral.Peer) {
+        guard let address = match(peer) else { return }
+        let wasReachable = isReachable(address)
+        gattLinks[peer.installationId] = address
+        if !wasReachable { onConnectionChange?(address, true) }
+    }
+
+    private func gattEnded(_ peer: PeerGattCentral.Peer) {
+        guard let address = gattLinks.removeValue(forKey: peer.installationId) else { return }
+        if !isReachable(address) { onConnectionChange?(address, false) }
     }
 }
 

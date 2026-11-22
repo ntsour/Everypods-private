@@ -64,7 +64,7 @@ final class SetupAuthorizer: NSObject, IOBluetoothRFCOMMChannelDelegate {
         onReply = completion
         let lookup = ServiceLookup(device: device, uuidBytes: ServiceUUID.handoverSetup)
         self.lookup = lookup
-        lookup.find { [weak self] channelID in
+        lookup.find(fresh: true) { [weak self] channelID in
             guard let self else { return }
             Log.write("Authorize: setup service channel \(channelID.map(String.init) ?? "not found")")
             guard let channelID else { return self.finish(.failure(Failure.serviceNotFound)) }

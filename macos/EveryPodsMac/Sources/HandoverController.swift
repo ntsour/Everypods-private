@@ -157,6 +157,9 @@ final class HandoverController {
             // inside it is our own pause during the handover.
             if since(lastVoluntaryRelease) > postReleaseWindow, voluntarilyReleased {
                 voluntarilyReleased = false
+                // Playback really stopped, so the next start is the user pressing play: the same app may take
+                // the AirPods again (the app window only guards against a player that never stopped).
+                voluntaryReleaseApp = ""
                 Log.write("Gate: voluntary release cleared (media stopped)")
             }
             return
@@ -241,6 +244,9 @@ final class HandoverController {
     /// release or after a short wait, whichever comes first.
     private func startTakeover(_ intent: TakeIntent) {
         takeoverInFlight = true
+        // Select the AirPods as output the moment their audio device appears, rather than after the connect
+        // completes, so audio does not start on the speakers.
+        if Settings.autoRoute { router.setPersistent(true) }
         let connect = { [weak self] in
             guard let self else { return }
             self.pods.connectWithRetries { success in
@@ -251,9 +257,11 @@ final class HandoverController {
                     if claimed { self.sendState() }
                     if Settings.autoRoute { self.router.routeToAirPods() }
                     Log.write("Take: connected")
+                    if Settings.autoRoute { self.verifyAudioClaimed() }
                 } else {
                     // Anti-ping-pong so a re-trigger does not retry immediately.
                     self.lastLostOwnership = Date()
+                    self.router.setPersistent(self.ownership == .thisMac)
                     Log.write("Take: failed after 3 attempts; AirPods not acquired")
                 }
             }
@@ -265,6 +273,17 @@ final class HandoverController {
             DispatchQueue.main.asyncAfter(deadline: .now() + ackWait, execute: go)
         } else {
             connect()
+        }
+    }
+
+    /// Logs whether the AirPods became the audio output shortly after connecting. When macOS keeps audio on the
+    /// speakers after a successful connect, check the Mac's pairing first: on 2026-11-22 a broken pairing record
+    /// made macOS drop the AirPods right after every connect, and re-pairing them in System Settings fixed it.
+    private func verifyAudioClaimed() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+            guard let self, self.ownership == .thisMac, self.pods.isConnected else { return }
+            Log.write(self.router.airPodsAreDefaultOutput ? "Take: AirPods are the audio output"
+                                                         : "Take: AirPods connected but not the audio output")
         }
     }
 
