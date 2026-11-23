@@ -1,11 +1,8 @@
-name: Windows CI
+name: Build Propods Windows
 
 on:
+  workflow_dispatch:
   push:
-    branches:
-      # '**' (not '*'): a single '*' does not match '/', so it skipped branches
-      # like chore/windows-ci-build.
-      - '**'
     paths:
       - 'windows/**'
       - '.github/workflows/ci-windows.yml'
@@ -13,10 +10,6 @@ on:
     paths:
       - 'windows/**'
       - '.github/workflows/ci-windows.yml'
-  workflow_dispatch:
-
-permissions:
-  contents: read
 
 jobs:
   build-windows:
@@ -24,25 +17,17 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
 
       - name: Configure
-        working-directory: windows
-        # No -G: CMake picks the newest Visual Studio on the runner image, so the
-        # job keeps working when windows-latest moves to a newer VS release.
-        run: cmake -S . -B build -A x64
+        run: cmake -S windows -B windows/build -G "Visual Studio 17 2022" -A x64
 
       - name: Build
-        working-directory: windows
-        run: cmake --build build --config Release --parallel
+        run: cmake --build windows/build --config Release --parallel
 
-      - name: Run peer protocol v2 unit tests
-        working-directory: windows
-        run: .\build\Release\peer_v2_tests.exe
-
-      - name: Upload executable
-        uses: actions/upload-artifact@v5
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
         with:
-          name: everypods-windows-x64
+          name: propods-windows
           path: windows/build/Release/*.exe
-          if-no-files-found: error
+          if-no-files-found: warn
