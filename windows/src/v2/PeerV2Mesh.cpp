@@ -602,6 +602,23 @@ void PeerV2Mesh::handleFrame(PeerSession& s, Link& l, const Frame& frame) {
     }
 }
 
+namespace {
+// True if the sorted `members` contains every id in the sorted `known`.
+bool containsAll(const std::vector<std::string>& members, const std::vector<std::string>& known) {
+    return std::includes(members.begin(), members.end(), known.begin(), known.end());
+}
+
+// Every revision this PC knows must match the requester's; revisions it can't see (the Mac's) are not checked.
+bool revisionsMatchKnown(const std::map<std::string, std::int64_t>& theirs,
+                         const std::map<std::string, std::int64_t>& known) {
+    for (const auto& [id, revision] : known) {
+        auto it = theirs.find(id);
+        if (it == theirs.end() || it->second != revision) return false;
+    }
+    return true;
+}
+}  // namespace
+
 std::optional<std::vector<std::string>> PeerV2Mesh::membershipLocked() {
     std::vector<std::string> ids{localIdentity().installationId};
     for (const auto& [a, s] : m_sessions) {
@@ -678,13 +695,16 @@ void PeerV2Mesh::handleAcquisition(PeerSession& s, Link& l, FrameType type, cons
     const bool localFree = m_state.ownership == Ownership::Released && m_state.audioUse == AudioUse::Idle;
 
     if (type == FrameType::AcquireRequest) {
+        // Computers don't link to each other, so a membership may name peers this PC doesn't know (the Mac). It must
+        // name every peer this PC does know (each was asked), plus this PC.
         const auto configured = membershipLocked();
-        if (!configured || *configured != members || std::find(members.begin(), members.end(), me.installationId) == members.end())
+        if (!configured || !containsAll(members, *configured) ||
+            std::find(members.begin(), members.end(), me.installationId) == members.end())
             return deny("MEMBERSHIP_MISMATCH");
         std::map<std::string, std::int64_t> theirs;
         for (const auto& [k, v] : obj(f, "snapshotRevisions")) theirs[k] = *v.integer();
         const auto ours = revisionsLocked();
-        if (!ours || *ours != theirs) {
+        if (!ours || !revisionsMatchKnown(theirs, *ours)) {
             if (ours) {
                 std::string diff;
                 for (const auto& [k, v] : theirs) {
@@ -739,12 +759,12 @@ void PeerV2Mesh::handleAcquisition(PeerSession& s, Link& l, FrameType type, cons
     const bool duplicate = r.phase == Phase::InProgress;
     if (!duplicate && r.phase != Phase::Preparing) return deny("UNKNOWN");
     const auto ours = revisionsLocked();
-    if (!ours || *ours != r.snapshotRevisions) {
+    if (!ours || !revisionsMatchKnown(r.snapshotRevisions, *ours)) {
         if (!duplicate) r.phase = Phase::Cancelled;
         return deny("STALE_SNAPSHOT");
     }
     const auto configured = membershipLocked();
-    if (!configured || *configured != members || membershipDigest(members) != r.membershipDigest) {
+    if (!configured || !containsAll(members, *configured) || membershipDigest(members) != r.membershipDigest) {
         if (!duplicate) r.phase = Phase::Cancelled;
         return deny("MEMBERSHIP_MISMATCH");
     }
