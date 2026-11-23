@@ -68,10 +68,15 @@ final class PeerV2Hub {
             // The link was matched to a configured peer by the LE HELLO; the v2 HELLO must claim the same identity.
             guard installationId == peerId else { throw V2Error("v2_identity_mismatch") }
         }
+        private var loggedReadySession: String?
+
         func observeSnapshot(remoteSessionId: String, snapshot: [String: JSONValue]) -> Bool {
             hub.observe(peerId, snapshot)
         }
         func markReady(remoteSessionId: String, acquisitionCapable: Bool) {
+            // Called on every acknowledged heartbeat: log only the first time per peer session.
+            guard loggedReadySession != remoteSessionId else { return }
+            loggedReadySession = remoteSessionId
             hub.log("V2[\(hub.peerName(peerId))]: ready\(acquisitionCapable ? "" : " (peer lacks acquire-v1)") (snapshot rev \(hub.currentRevision()), ownership \(hub.measuredOwnershipText()))")
         }
         func handleAcquisition(remoteSessionId: String, message: PeerV2Message.Validated) throws {
