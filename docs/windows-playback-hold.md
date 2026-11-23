@@ -96,6 +96,13 @@ area, light/dark theme, Windows 11 rounded corners. It never takes focus, so a f
 video keeps playing/fullscreen. Toasts were rejected: Do Not Disturb (auto-on during
 full-screen video) hides them, and unpackaged apps need an AUMID and COM activator.
 
+A drawn AirPods icon at the left shows the connection status by colour: blue while
+connecting, green when connected, red on failure. The same panel also replaces the tray
+toast that said PC audio was paused because the AirPods moved to another device: an amber
+icon, "AirPods moved to another device", what was paused/muted, an **Unmute** button
+when apps were muted, and ×. It hides itself after 8 s (15 s with Unmute), and a
+handover in progress always takes the panel over.
+
 ## Threading
 
 `PlaybackHold` runs all logic on one MTA worker thread; every public method posts and

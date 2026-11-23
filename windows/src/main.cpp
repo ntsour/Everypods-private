@@ -272,13 +272,17 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     silencer.setEnabled(settings.pauseOnRelease);
     silencer.restoreLeftovers();
     silencer.setStillReleased([&controller]() { return controller.state() != OwnershipState::LocalPc; });
-    silencer.setOnDone([&tray](const PlaybackSilencer::Result& r) {
+    // Tell the user in the same panel as the handover progress (not a toast).
+    silencer.setOnDone([&overlay](const PlaybackSilencer::Result& r) {
         std::wstring apps;
         for (const auto& n : r.names) { if (!apps.empty()) apps += L", "; apps += n; }
-        std::wstring text = std::format(L"Paused {}, muted {}: {}", r.paused, r.muted, apps);
-        if (r.muted > 0) text += L". Unmute from the tray if needed.";
-        tray.notify(L"PC audio stopped for another device", text);
+        std::wstring text = r.muted > 0
+            ? std::format(L"Paused {}, muted {}: {}", r.paused, r.muted, apps)
+            : std::format(L"Paused: {}", apps);
+        overlay.showNotice(L"AirPods moved to another device", text, /*offerUnmute=*/r.muted > 0);
     });
+    // The notice's Unmute button (UI thread, like the tray's Unmute item).
+    overlay.setOnUnmute([&silencer]() { silencer.restoreMutes("panel"); });
     auto restoreAsync = [&silencer](const char* reason) {
         if (!silencer.hasMuted()) return;
         std::thread([&silencer, reason]() {

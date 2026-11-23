@@ -24,6 +24,7 @@
 #include <functional>
 #include <mutex>
 #include <optional>
+#include <string>
 
 #include "PlaybackHold.hpp"
 
@@ -41,6 +42,13 @@ public:
     bool create();
     // Any thread. nullopt hides the panel. Marshals to the UI thread with PostMessage.
     void update(const std::optional<HoldStatus>& status);
+    // Any thread. A one-off notice in the same panel (e.g. "AirPods moved to
+    // another device, PC audio paused"). Hides itself after a few seconds or
+    // on \u00D7. With offerUnmute, an Unmute button calls the unmute callback.
+    // A handover in progress always wins the panel and drops the notice.
+    void showNotice(const std::wstring& title, const std::wstring& text, bool offerUnmute);
+    // UI thread callback for the notice's Unmute button.
+    void setOnUnmute(std::function<void()> cb) { m_onUnmute = std::move(cb); }
     // UI thread. Destroys the window.
     void destroy();
     // Called on the UI thread on WM_ENDSESSION (logoff / shutdown). The tray's
@@ -50,10 +58,15 @@ public:
 private:
     struct Theme {
         COLORREF bg = 0, text = 0, secondary = 0, accent = 0, border = 0,
-                 danger = 0, hover = 0, onAccent = 0;
+                 danger = 0, hover = 0, onAccent = 0, ok = 0, warn = 0;
     };
     struct Layout {
-        RECT retry{}, playHere{}, close{};
+        RECT retry{}, playHere{}, close{}, unmute{};
+    };
+    struct Notice {
+        std::wstring title;
+        std::wstring text;
+        bool offerUnmute = false;
     };
 
     static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -65,7 +78,9 @@ private:
     void freeFonts();
     void positionWindow(bool showButtons);
     Layout layout() const;
-    int hitTest(POINT pt) const;  // -1 none, 0 retry, 1 playHere, 2 close
+    int hitTest(POINT pt) const;  // -1 none, 0 retry, 1 playHere, 2 close, 3 unmute
+    bool hasButtons() const;      // failed hold, or a notice offering Unmute
+    void hideNotice();
     void paint(HWND hwnd);
     void invoke(int button);
     int scale(int logical) const;
@@ -73,14 +88,17 @@ private:
     HINSTANCE m_instance;
     PlaybackHoldActions& m_actions;
     std::function<void()> m_onEndSession;
+    std::function<void()> m_onUnmute;
     std::atomic<HWND> m_hwnd{nullptr};
 
     // Latest status from any thread.
     std::mutex m_mutex;
     std::optional<HoldStatus> m_pending;
+    std::optional<Notice> m_pendingNotice;  // set by showNotice, taken by the UI thread
 
     // UI-thread-only state.
     std::optional<HoldStatus> m_shown;
+    std::optional<Notice> m_notice;  // shown only while there is no hold status
     Theme m_theme;
     UINT m_dpi = 96;
     HFONT m_titleFont = nullptr;
@@ -90,6 +108,7 @@ private:
     bool m_tracking = false;
     bool m_timerOn = false;
     bool m_visible = false;
+    ULONG_PTR m_gdiplusToken = 0;  // GDI+ is used only for the antialiased AirPods icon
 };
 
 }

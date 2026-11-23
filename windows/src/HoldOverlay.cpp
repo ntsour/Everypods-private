@@ -6,6 +6,11 @@
 #include <winreg.h>
 
 #include <algorithm>
+
+// gdiplus.h uses min/max, which NOMINMAX removes.
+#include <objidl.h>
+namespace Gdiplus { using std::min; using std::max; }
+#include <gdiplus.h>
 #include <chrono>
 #include <cwchar>
 #include <string>
@@ -14,6 +19,7 @@
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "gdi32.lib")
+#pragma comment(lib, "gdiplus.lib")
 
 namespace Propods {
 
@@ -21,7 +27,11 @@ namespace {
 
 constexpr wchar_t kClassName[] = L"PropodsHoldOverlay";
 constexpr UINT kMsgUpdate = WM_APP + 41;
+constexpr UINT kMsgNotice = WM_APP + 42;
 constexpr UINT_PTR kTimerId = 1;
+constexpr UINT_PTR kNoticeTimerId = 2;
+constexpr UINT kNoticeMs = 8000;          // plain notice
+constexpr UINT kNoticeUnmuteMs = 15000;   // notice with an Unmute button
 constexpr UINT kTimerMs = 33;
 
 // Defined here in case the SDK is older than Windows 11.
@@ -33,8 +43,10 @@ constexpr int kHeightPlain = 96;
 constexpr int kHeightButtons = 124;
 constexpr int kMargin = 12;
 constexpr int kPad = 16;
+constexpr int kIcon = 36;     // AirPods icon box (logical px)
+constexpr int kIconGap = 12;  // icon -> text
 
-enum Button { kRetry = 0, kPlayHere = 1, kClose = 2 };
+enum Button { kRetry = 0, kPlayHere = 1, kClose = 2, kUnmute = 3 };
 
 COLORREF blend(COLORREF a, COLORREF b, int pctB) {
     auto mix = [&](int x, int y) { return x + (y - x) * pctB / 100; };
@@ -64,6 +76,44 @@ void drawText(HDC dc, const std::wstring& s, RECT r, HFONT font, COLORREF color,
     DrawTextW(dc, s.c_str(), static_cast<int>(s.size()), &r,
               flags | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
     SelectObject(dc, old);
+}
+
+// Multi-line text (word-wrapped, ellipsis on overflow).
+void drawWrapped(HDC dc, const std::wstring& s, RECT r, HFONT font, COLORREF color) {
+    HGDIOBJ old = SelectObject(dc, font);
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, color);
+    DrawTextW(dc, s.c_str(), static_cast<int>(s.size()), &r,
+              DT_LEFT | DT_TOP | DT_WORDBREAK | DT_EDITCONTROL | DT_END_ELLIPSIS | DT_NOPREFIX);
+    SelectObject(dc, old);
+}
+
+// A pair of AirPods Pro (bud, ear tip and stem each), drawn with GDI+ so it is
+// antialiased. Our own drawing in the spirit of the Mac panel's icon; Apple's
+// SF Symbols may not be used outside Apple platforms.
+void drawAirPods(HDC dc, RECT box, COLORREF color) {
+    using namespace Gdiplus;
+    Graphics g(dc);
+    g.SetSmoothingMode(SmoothingModeAntiAlias);
+    const Color c(255, GetRValue(color), GetGValue(color), GetBValue(color));
+    SolidBrush brush(c);
+    const REAL x0 = static_cast<REAL>(box.left), y0 = static_cast<REAL>(box.top);
+    const REAL W = static_cast<REAL>(box.right - box.left), H = static_cast<REAL>(box.bottom - box.top);
+    const REAL d = W * 0.34f;          // bud diameter
+    const REAL stemW = W * 0.12f;
+    Pen stem(c, stemW);
+    stem.SetStartCap(LineCapRound);
+    stem.SetEndCap(LineCapRound);
+    for (int side = 0; side < 2; ++side) {
+        const REAL dir = side == 0 ? 1.0f : -1.0f;        // +1: left bud, tip points right
+        const REAL cx = x0 + (side == 0 ? W * 0.28f : W * 0.72f);
+        const REAL cy = y0 + H * 0.30f;
+        g.FillEllipse(&brush, cx - d / 2, cy - d / 2, d, d);
+        const REAL tip = d * 0.5f;                        // ear tip, towards the middle
+        g.FillEllipse(&brush, cx + dir * d * 0.42f - tip / 2, cy - tip / 2 - d * 0.05f, tip, tip);
+        const REAL sx = cx - dir * d * 0.22f;             // stem on the outer side
+        g.DrawLine(&stem, sx, cy, sx - dir * W * 0.03f, y0 + H * 0.92f);
+    }
 }
 
 std::wstring statusLine(const HoldStatus& s) {
@@ -104,10 +154,16 @@ HoldOverlay::HoldOverlay(HINSTANCE instance, PlaybackHoldActions& actions)
 HoldOverlay::~HoldOverlay() {
     destroy();
     freeFonts();
+    if (m_gdiplusToken) Gdiplus::GdiplusShutdown(m_gdiplusToken);
 }
 
 bool HoldOverlay::create() {
     if (m_hwnd.load()) return true;
+
+    if (!m_gdiplusToken) {
+        Gdiplus::GdiplusStartupInput input;
+        if (Gdiplus::GdiplusStartup(&m_gdiplusToken, &input, nullptr) != Gdiplus::Ok) m_gdiplusToken = 0;
+    }
 
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
@@ -152,6 +208,26 @@ void HoldOverlay::update(const std::optional<HoldStatus>& status) {
     if (HWND hwnd = m_hwnd.load()) PostMessageW(hwnd, kMsgUpdate, 0, 0);
 }
 
+void HoldOverlay::showNotice(const std::wstring& title, const std::wstring& text, bool offerUnmute) {
+    {
+        std::scoped_lock lk{m_mutex};
+        m_pendingNotice = Notice{title, text, offerUnmute};
+    }
+    if (HWND hwnd = m_hwnd.load()) PostMessageW(hwnd, kMsgNotice, 0, 0);
+}
+
+void HoldOverlay::hideNotice() {
+    HWND hwnd = m_hwnd.load();
+    if (hwnd) KillTimer(hwnd, kNoticeTimerId);
+    m_notice.reset();
+    applyStatus();
+}
+
+bool HoldOverlay::hasButtons() const {
+    if (m_shown) return m_shown->phase == HoldPhase::Failed;
+    return m_notice && m_notice->offerUnmute;
+}
+
 void HoldOverlay::destroy() {
     HWND hwnd = m_hwnd.exchange(nullptr);
     if (hwnd) {
@@ -184,6 +260,8 @@ void HoldOverlay::loadTheme() {
         t.danger = RGB(0xE5, 0x48, 0x4D);
         t.hover = RGB(0x32, 0x32, 0x32);
         t.onAccent = RGB(0x00, 0x00, 0x00);  // white on #4CC2FF is unreadable
+        t.ok = RGB(0x6C, 0xCB, 0x5F);
+        t.warn = RGB(0xFF, 0xB9, 0x00);
     } else {
         t.bg = RGB(0xF3, 0xF3, 0xF3);
         t.text = RGB(0x1A, 0x1A, 0x1A);
@@ -193,6 +271,8 @@ void HoldOverlay::loadTheme() {
         t.danger = RGB(0xC4, 0x2B, 0x1C);
         t.hover = RGB(0xE5, 0xE5, 0xE5);
         t.onAccent = RGB(0xFF, 0xFF, 0xFF);
+        t.ok = RGB(0x0F, 0x7B, 0x0F);
+        t.warn = RGB(0x9D, 0x5D, 0x00);
     }
     m_theme = t;
 }
@@ -243,12 +323,18 @@ HoldOverlay::Layout HoldOverlay::layout() const {
     l.retry = RECT{right - scale(76), top, right, bottom};
     const int c = scale(24);
     l.close = RECT{w - scale(10) - c, scale(8), w - scale(10), scale(8) + c};
+    l.unmute = RECT{w - scale(kPad) - scale(84), top, w - scale(kPad), bottom};
     return l;
 }
 
 int HoldOverlay::hitTest(POINT pt) const {
-    if (!m_shown || m_shown->phase != HoldPhase::Failed) return -1;
     const Layout l = layout();
+    if (!m_shown && m_notice) {
+        if (m_notice->offerUnmute && PtInRect(&l.unmute, pt)) return kUnmute;
+        if (PtInRect(&l.close, pt)) return kClose;
+        return -1;
+    }
+    if (!m_shown || m_shown->phase != HoldPhase::Failed) return -1;
     if (PtInRect(&l.retry, pt)) return kRetry;
     if (PtInRect(&l.playHere, pt)) return kPlayHere;
     if (PtInRect(&l.close, pt)) return kClose;
@@ -261,6 +347,26 @@ void HoldOverlay::applyStatus() {
     {
         std::scoped_lock lk{m_mutex};
         m_shown = m_pending;
+    }
+    if (m_shown && m_notice) {  // a handover in progress replaces the notice
+        KillTimer(hwnd, kNoticeTimerId);
+        m_notice.reset();
+    }
+
+    if (!m_shown && m_notice) {
+        if (m_timerOn) KillTimer(hwnd, kTimerId);
+        m_timerOn = false;
+        UINT dpi = dpiFor(hwnd);
+        if (dpi != m_dpi) { m_dpi = dpi; recreateFonts(); }
+        positionWindow(m_notice->offerUnmute);
+        SetWindowTextW(hwnd, (m_notice->title + L". " + m_notice->text).c_str());
+        if (!m_visible) {
+            ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+            SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            m_visible = true;
+        }
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return;
     }
 
     if (!m_shown) {
@@ -305,7 +411,14 @@ void HoldOverlay::invoke(int button) {
     switch (button) {
         case kRetry: m_actions.retry(); break;
         case kPlayHere: m_actions.playHere(); break;
-        case kClose: m_actions.dismiss(); break;
+        case kClose:
+            if (!m_shown && m_notice) hideNotice();
+            else m_actions.dismiss();
+            break;
+        case kUnmute:
+            if (m_onUnmute) m_onUnmute();
+            hideNotice();
+            break;
         default: break;
     }
 }
@@ -342,18 +455,45 @@ void HoldOverlay::paint(HWND hwnd) {
         DeleteObject(bd);
     }
 
+    if (!m_shown && m_notice) {
+        const Notice& n = *m_notice;
+        const int pad = scale(kPad);
+        const int textLeft = pad + scale(kIcon) + scale(kIconGap);
+        // Amber: the AirPods left this PC.
+        if (m_gdiplusToken) drawAirPods(mem, RECT{pad, scale(16), pad + scale(kIcon), scale(16) + scale(kIcon)}, t.warn);
+        RECT title{textLeft, scale(14), w - pad - scale(28), scale(34)};
+        drawText(mem, n.title, title, m_titleFont, t.text, DT_LEFT | DT_END_ELLIPSIS);
+        const int textBottom = n.offerUnmute ? scale(80) : h - scale(12);
+        RECT body{textLeft, scale(37), w - pad, textBottom};
+        drawWrapped(mem, n.text, body, m_textFont, t.secondary);
+        const Layout l = layout();
+        const int r = scale(6);
+        if (n.offerUnmute) {
+            COLORREF fill = (m_hover == kUnmute) ? blend(t.accent, RGB(255, 255, 255), 15) : t.accent;
+            roundRect(mem, l.unmute, r, fill, nullptr);
+            drawText(mem, L"Unmute", l.unmute, m_textFont, t.onAccent, DT_CENTER);
+        }
+        if (m_hover == kClose) roundRect(mem, l.close, r, t.hover, nullptr);
+        drawText(mem, L"\u00D7", l.close, m_titleFont, t.secondary, DT_CENTER);
+    }
+
     if (m_shown) {
         const HoldStatus& s = *m_shown;
         const bool failed = s.phase == HoldPhase::Failed;
         const bool call = s.kind == HoldKind::Call;
         const int pad = scale(kPad);
+        const bool connected = s.phase == HoldPhase::Connected;
+        // Icon colour = connection status: blue connecting, green connected, red failed.
+        const COLORREF statusColor = failed ? t.danger : connected ? t.ok : t.accent;
+        const int textLeft = pad + scale(kIcon) + scale(kIconGap);
+        if (m_gdiplusToken) drawAirPods(mem, RECT{pad, scale(16), pad + scale(kIcon), scale(16) + scale(kIcon)}, statusColor);
 
         // Title.
-        RECT title{pad, scale(14), w - pad - (failed ? scale(28) : 0), scale(34)};
+        RECT title{textLeft, scale(14), w - pad - (failed ? scale(28) : 0), scale(34)};
         drawText(mem, s.deviceName, title, m_titleFont, t.text, DT_LEFT | DT_END_ELLIPSIS);
 
         // Status line.
-        RECT status{pad, scale(37), w - pad, scale(57)};
+        RECT status{textLeft, scale(37), w - pad, scale(57)};
         drawText(mem, statusLine(s), status, m_textFont, t.secondary, DT_LEFT | DT_END_ELLIPSIS);
 
         // Progress bar.
@@ -369,7 +509,7 @@ void HoldOverlay::paint(HWND hwnd) {
             fillW = (std::max)(fillW, barH);
             RECT fill{pad, barTop, pad + fillW, barTop + barH};
             roundRect(mem, RECT{fill.left, fill.top, fill.right - 1, fill.bottom - 1}, barH,
-                      failed ? t.danger : t.accent, nullptr);
+                      statusColor, nullptr);
         }
 
         if (failed) {
@@ -431,6 +571,21 @@ LRESULT HoldOverlay::handle(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             applyStatus();
             return 0;
 
+        case kMsgNotice: {
+            std::optional<Notice> n;
+            {
+                std::scoped_lock lk{m_mutex};
+                n.swap(m_pendingNotice);
+            }
+            if (!n) return 0;
+            if (m_shown) return 0;  // a handover owns the panel; drop the notice
+            m_notice = std::move(n);
+            m_hover = m_pressed = -1;
+            SetTimer(hwnd, kNoticeTimerId, m_notice->offerUnmute ? kNoticeUnmuteMs : kNoticeMs, nullptr);
+            applyStatus();
+            return 0;
+        }
+
         case WM_ERASEBKGND:
             return 1;
 
@@ -443,13 +598,14 @@ LRESULT HoldOverlay::handle(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
         case WM_TIMER:
             if (wParam == kTimerId) InvalidateRect(hwnd, nullptr, FALSE);
+            else if (wParam == kNoticeTimerId) hideNotice();
             return 0;
 
         case WM_DPICHANGED:
             m_dpi = HIWORD(wParam);
             if (m_dpi == 0) m_dpi = 96;
             recreateFonts();
-            positionWindow(m_shown && m_shown->phase == HoldPhase::Failed);
+            positionWindow(hasButtons());
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
 
