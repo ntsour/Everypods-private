@@ -143,6 +143,10 @@ private:
     std::string m_voluntaryReleaseAppId;
     static constexpr std::chrono::seconds kVoluntaryReleaseSuppressWindow{30};
 
+    // A peer reported an active call/meeting (kPeerAudioActive); cleared by
+    // kPeerAudioIdle or when the last peer link drops. Suppresses our call takeover.
+    std::atomic<bool> m_peerAudioActive{false};
+
     std::atomic<bool>    m_autoRoute{true};
     StateChangedCallback m_onStateChanged;
     std::function<bool()> m_availabilityProbe;

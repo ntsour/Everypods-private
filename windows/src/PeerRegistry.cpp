@@ -1,7 +1,17 @@
 ﻿#include "PeerRegistry.hpp"
 
+#include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.Foundation.Collections.h>
+#include <winrt/Windows.Networking.h>
+#include <winrt/Windows.Networking.Sockets.h>
+#include <winrt/Windows.Devices.Bluetooth.h>
+#include <winrt/Windows.Devices.Bluetooth.Rfcomm.h>
+
 #include "Logger.hpp"
 #include "SettingsStore.hpp"
+#include "crossdevice_protocol.hpp"
+#include "v2/PeerV2Arbitration.hpp"
+#include "v2/PeerV2Identity.hpp"
 
 namespace Propods {
 
@@ -13,6 +23,98 @@ void PeerRegistry::setOnPacket(PacketCallback cb) {
 void PeerRegistry::setOnState(StateCallback cb) {
     std::scoped_lock lk{m_mutex};
     m_onState = std::move(cb);
+}
+
+void PeerRegistry::setOnPeerAdded(PeerAddedCallback cb) {
+    std::scoped_lock lk{m_mutex};
+    m_onPeerAdded = std::move(cb);
+}
+
+void PeerRegistry::setOnPeerLinkUp(PeerLinkUpCallback cb) {
+    std::scoped_lock lk{m_linkUp->mutex};
+    m_linkUp->callback = std::move(cb);
+}
+
+void PeerRegistry::revokeWatch(Entry& e) {
+    // Called with no registry lock held.
+    if (e.device && e.statusToken) {
+        try { e.device.ConnectionStatusChanged(e.statusToken); } catch (...) {}
+    }
+    e.statusToken = {};
+    e.device = nullptr;
+}
+
+// Android CrossDeviceClient.retryNow on ACL_CONNECTED: when the peer's Bluetooth
+// link comes up, dial at once instead of waiting out the backoff.
+void PeerRegistry::watchBluetoothDevice(std::uint64_t address) {
+    std::weak_ptr<BluetoothRfcommClient> weakClient;
+    {
+        std::scoped_lock lk{m_mutex};
+        for (auto& e : m_entries)
+            if (e.address == address) { weakClient = e.client; break; }
+    }
+    if (weakClient.expired()) return;
+    auto slot = m_linkUp;
+    auto op = winrt::Windows::Devices::Bluetooth::BluetoothDevice::FromBluetoothAddressAsync(address);
+    op.Completed([this, address, weakClient, slot](
+            winrt::Windows::Foundation::IAsyncOperation<winrt::Windows::Devices::Bluetooth::BluetoothDevice> const& done,
+            winrt::Windows::Foundation::AsyncStatus status) {
+        using namespace winrt::Windows::Devices::Bluetooth;
+        if (status != winrt::Windows::Foundation::AsyncStatus::Completed) return;
+        BluetoothDevice device{nullptr};
+        try { device = done.GetResults(); } catch (...) { return; }
+        if (!device) return;  // not paired
+        // Handlers capture no registry state: only the client and the slot.
+        winrt::event_token token = device.ConnectionStatusChanged(
+            [address, weakClient, slot](BluetoothDevice const& sender,
+                                        winrt::Windows::Foundation::IInspectable const&) {
+                try {
+                    if (sender.ConnectionStatus() != BluetoothConnectionStatus::Connected) return;
+                } catch (...) { return; }
+                auto client = weakClient.lock();
+                if (!client || client->isConnected()) return;
+                log::info("PeerRegistry: Bluetooth link to {} is up",
+                    SettingsStore::formatBluetoothAddress(address));
+                client->retryNow();
+                PeerLinkUpCallback cb;
+                { std::scoped_lock lk{slot->mutex}; cb = slot->callback; }
+                if (cb) cb(address);
+            });
+        bool kept = false;
+        {
+            std::scoped_lock lk{m_mutex};
+            for (auto& e : m_entries) {
+                if (e.address == address && !e.device) {
+                    e.device = device;
+                    e.statusToken = token;
+                    kept = true;
+                    break;
+                }
+            }
+        }
+        if (!kept) {  // the peer was removed meanwhile
+            try { device.ConnectionStatusChanged(token); } catch (...) {}
+        }
+    });
+}
+
+void PeerRegistry::startClient(BluetoothRfcommClient& client, std::uint64_t address) const {
+    // The peer with the smaller installationId dials at once; the other waits 3 s
+    // before its first dial and then dials anyway, so a link forms even when the
+    // other side never dials us. Ids are read on the worker thread, when it is
+    // time to dial; an unknown peer id means no delay.
+    client.start(address, crossdevice::kServiceUuid,
+        [address] {
+            return v2::firstDialDelay(v2::localIdentity().installationId,
+                                      v2::knownPeerInstallationId(address));
+        },
+        [address] {
+            // Both links are up and the peer's came up first: keep ours only if
+            // both ids are known and ours is the smaller.
+            return v2::chooseLegacyLink(v2::localIdentity().installationId,
+                                        v2::knownPeerInstallationId(address),
+                                        /*existingDialledByUs=*/false) == v2::LegacyLinkChoice::UseNew;
+        });
 }
 
 void PeerRegistry::wireCallbacks(Entry& e) {
@@ -48,10 +150,11 @@ void PeerRegistry::addPeer(std::uint64_t address) {
             }
         }
         auto& e = m_entries.emplace_back(
-            Entry{address, /*name=*/{}, std::make_unique<BluetoothRfcommClient>()});
+            Entry{address, /*name=*/{}, std::make_shared<BluetoothRfcommClient>()});
         wireCallbacks(e);
         shouldStart = m_started;
     }
+    watchBluetoothDevice(address);
     if (shouldStart) {
         // Find the entry again outside the lock to call start() without holding it.
         // (BluetoothRfcommClient::start launches a thread; holding m_mutex during
@@ -64,7 +167,7 @@ void PeerRegistry::addPeer(std::uint64_t address) {
             }
         }
         if (clientPtr) {
-            clientPtr->start(address);
+            startClient(*clientPtr, address);
             log::info("PeerRegistry: added and started peer {}",
                 SettingsStore::formatBluetoothAddress(address));
         }
@@ -74,18 +177,70 @@ void PeerRegistry::addPeer(std::uint64_t address) {
     }
 }
 
+void PeerRegistry::acceptInbound(std::uint64_t address,
+                                 winrt::Windows::Networking::Sockets::StreamSocket socket) {
+    const auto label = SettingsStore::formatBluetoothAddress(address);
+    const std::string ownId = v2::localIdentity().installationId;
+    const std::string peerId = v2::knownPeerInstallationId(address);
+    BluetoothRfcommClient* client = nullptr;
+    bool added = false;
+    bool keepOurs = false;
+    PeerAddedCallback onAdded;
+    {
+        std::scoped_lock lk{m_mutex};
+        if (!m_started) {
+            log::info("PeerRegistry: peer {} dialled before startup finished; closing", label);
+            try { socket.Close(); } catch (...) {}
+            return;
+        }
+        for (auto& e : m_entries) {
+            if (e.address != address) continue;
+            client = e.client.get();
+            break;
+        }
+        if (!client) {
+            auto& e = m_entries.emplace_back(
+                Entry{address, /*name=*/{}, std::make_shared<BluetoothRfcommClient>()});
+            wireCallbacks(e);
+            client = e.client.get();
+            added = true;
+            onAdded = m_onPeerAdded;
+        } else if (client->isConnected() && !client->isInbound()) {
+            // Both sides dialled and our link is already up. Keep the link dialled
+            // by the smaller installationId; with unknown ids keep ours (first up).
+            keepOurs = v2::chooseLegacyLink(ownId, peerId, /*existingDialledByUs=*/true) ==
+                       v2::LegacyLinkChoice::KeepExisting;
+        }
+    }
+    if (keepOurs) {
+        log::info("PeerRegistry: peer {} dialled while our link to it is up; keeping ours", label);
+        try { socket.Close(); } catch (...) {}
+        return;
+    }
+    if (added) {
+        watchBluetoothDevice(address);
+        startClient(*client, address);
+        log::info("PeerRegistry: {} dialled us; added it as a peer", label);
+    }
+    client->adoptInbound(socket);
+    if (added && onAdded) onAdded(address);
+}
+
 void PeerRegistry::removePeer(std::uint64_t address) {
-    std::unique_ptr<BluetoothRfcommClient> toStop;
+    std::shared_ptr<BluetoothRfcommClient> toStop;
+    Entry removed;
     {
         std::scoped_lock lk{m_mutex};
         for (auto it = m_entries.begin(); it != m_entries.end(); ++it) {
             if (it->address == address) {
-                toStop = std::move(it->client);
+                toStop = it->client;
+                removed = std::move(*it);
                 m_entries.erase(it);
                 break;
             }
         }
     }
+    revokeWatch(removed);
     if (toStop) {
         toStop->stop();
         log::info("PeerRegistry: removed peer {}",
@@ -98,16 +253,17 @@ void PeerRegistry::removePeer(std::uint64_t address) {
 
 void PeerRegistry::start() {
     // Collect (address, client*) pairs without holding the lock during start().
-    std::vector<std::pair<std::uint64_t, BluetoothRfcommClient*>> toStart;
+    struct Pending { std::uint64_t address; BluetoothRfcommClient* client; };
+    std::vector<Pending> toStart;
     {
         std::scoped_lock lk{m_mutex};
         if (m_started) return;
         m_started = true;
         for (auto& e : m_entries)
-            toStart.emplace_back(e.address, e.client.get());
+            toStart.push_back({e.address, e.client.get()});
     }
-    for (auto& [addr, client] : toStart)
-        client->start(addr);
+    for (auto& p : toStart)
+        startClient(*p.client, p.address);
     log::info("PeerRegistry: started {} peer(s)", toStart.size());
 }
 
@@ -123,8 +279,10 @@ void PeerRegistry::stop() {
         toStop = std::move(m_entries);
         m_entries.clear();
     }
-    for (auto& e : toStop)
+    for (auto& e : toStop) {
+        revokeWatch(e);
         e.client->stop();
+    }
     log::info("PeerRegistry: stopped {} peer(s)", toStop.size());
 }
 

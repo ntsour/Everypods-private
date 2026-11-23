@@ -39,7 +39,7 @@ OS A2DP/HFP profiles, so the AirPods appear as a normal Bluetooth headset.
 | Windows → Android | `kRequestDisconnect` | Windows started media, please release AirPods |
 | Android → Windows | `kRequestDisconnect` | Android needs them back, please release AirPods |
 | Either way | `kAirPodsConnected` / `kAirPodsDisconnected` | Ownership status broadcast |
-| Either way | `kWindowsAudioActive` / `kWindowsAudioIdle` | Windows is/is-not in a *call* — peers should hold off on takeovers during a call |
+| Either way | `kPeerAudioActive` / `kPeerAudioIdle` | The sender is/is-not in a *call* — the receiver holds off its own call takeover (see ../docs/peer-link.md) |
 
 Multiple peers can be connected simultaneously (Pixel + Xiaomi, for example);
 `kRequestDisconnect` is broadcast to *all* peers, and any peer can claim the

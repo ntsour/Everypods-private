@@ -2,6 +2,8 @@
 // run in CI after the build. Vectors cross-checked against Android's
 // PeerIdentityStore.headsetIdFromAddress and membership digest in Python.
 
+#include "PeerDialPolicy.hpp"
+#include "v2/PeerV2Arbitration.hpp"
 #include "v2/PeerV2Frame.hpp"
 #include "v2/PeerV2Identity.hpp"
 #include "v2/PeerV2Json.hpp"
@@ -108,11 +110,61 @@ static void messageTests() {
     CHECK(throwsCode([&] { encode(FrameType::RelayData, relayBad); }, "invalid_relay_data"));
 }
 
+static void arbitrationTests() {
+    using namespace std::chrono;
+    // Smallest (initiatorId, connectionId) wins; both ends compute the same.
+    CHECK(preferredConnection({}) == -1);
+    CHECK(preferredConnection({{kB, "c1"}, {kA, "c9"}}) == 1);
+    CHECK(preferredConnection({{kA, "c2"}, {kA, "c1"}}) == 1);
+    CHECK(preferredConnection({{kA, "c1"}}) == 0);
+    // First dial: smaller installationId at once, the other after 3 s, unknown peer at once.
+    CHECK(firstDialDelay(kA, kB) == milliseconds{0});
+    CHECK(firstDialDelay(kB, kA) == milliseconds{3000});
+    CHECK(firstDialDelay(kB, "") == milliseconds{0});
+    CHECK(firstDialDelay("", kA) == milliseconds{0});
+    CHECK(firstDialDelay(kA, kA) == milliseconds{0});
+    // Duplicate legacy links.
+    CHECK(chooseLegacyLink(kA, kB, true) == LegacyLinkChoice::KeepExisting);   // ours, we are smaller
+    CHECK(chooseLegacyLink(kA, kB, false) == LegacyLinkChoice::UseNew);        // theirs was first, but ours is wanted
+    CHECK(chooseLegacyLink(kB, kA, true) == LegacyLinkChoice::UseNew);         // peer is smaller: use its link
+    CHECK(chooseLegacyLink(kB, kA, false) == LegacyLinkChoice::KeepExisting);
+    CHECK(chooseLegacyLink(kA, "", true) == LegacyLinkChoice::KeepExisting);   // unknown id: first up wins
+    CHECK(chooseLegacyLink(kA, "", false) == LegacyLinkChoice::KeepExisting);
+}
+
+static void dialPolicyTests() {
+    using namespace std::chrono;
+    using namespace Propods;
+    // Android PeerRetryPolicy: 2, 4, 8, then 15 s, repeating; jitter 0.8..1.2.
+    CHECK(peerRetryDelay(0, 1.0) == milliseconds{2000});
+    CHECK(peerRetryDelay(1, 1.0) == milliseconds{4000});
+    CHECK(peerRetryDelay(2, 1.0) == milliseconds{8000});
+    CHECK(peerRetryDelay(3, 1.0) == milliseconds{15000});
+    CHECK(peerRetryDelay(4, 1.0) == milliseconds{15000});
+    CHECK(peerRetryDelay(99, 1.0) == milliseconds{15000});
+    CHECK(peerRetryDelay(-1, 1.0) == milliseconds{2000});
+    CHECK(peerRetryDelay(0, 0.8) == milliseconds{1600});
+    CHECK(peerRetryDelay(0, 1.2) == milliseconds{2400});
+    CHECK(peerRetryDelay(3, 0.8) == milliseconds{12000});
+    CHECK(peerRetryDelay(3, 1.2) == milliseconds{18000});
+    CHECK(peerRetryDelay(0, 5.0) == milliseconds{2400});   // clamped
+    CHECK(peerRetryDelay(0, 0.1) == milliseconds{1600});
+    CHECK(peerRetryDelay(0, 1.0, true) == milliseconds{15000});  // audio floor
+    CHECK(peerRetryDelay(3, 1.0, true) == milliseconds{15000});
+    for (int i = 0; i < 1000; ++i) {
+        const double j = peerRetryJitter();
+        CHECK(j >= 0.8 && j <= 1.2);
+    }
+    CHECK(kPeerConnectTimeout == milliseconds{8000});
+}
+
 int main() {
     identityTests();
     jsonTests();
     frameTests();
     messageTests();
+    arbitrationTests();
+    dialPolicyTests();
     std::printf("%d passed, %d failed\n", g_passed, g_failed);
     return g_failed == 0 ? 0 : 1;
 }

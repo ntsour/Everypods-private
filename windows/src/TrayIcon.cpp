@@ -157,11 +157,11 @@ void TrayIcon::showContextMenu(HWND hwnd) {
 
     InsertMenuW(menu, static_cast<UINT>(-1), MF_BYPOSITION | MF_SEPARATOR, 0u, nullptr);
 
-    // ── Android peers ─────────────────────────────────────────────────────────
+    // ── Peers ────────────────────────────────────
     if (!status.peers.empty()) {
         InsertMenuW(menu, static_cast<UINT>(-1),
             MF_BYPOSITION | MF_STRING | MF_DISABLED | MF_GRAYED,
-            0u, L"Android peers:");
+            0u, L"Peers:");
         for (int i = 0; i < (int)status.peers.size(); ++i) {
             auto& peer = status.peers[i];
             UINT peerFlags = MF_BYPOSITION | MF_STRING | MF_DISABLED | MF_GRAYED;
@@ -176,7 +176,7 @@ void TrayIcon::showContextMenu(HWND hwnd) {
 
     // ── Actions ───────────────────────────────────────────────────────────────
     InsertMenuW(menu, static_cast<UINT>(-1), MF_BYPOSITION | MF_STRING,
-        static_cast<UINT_PTR>(kCmdPairAndroid), L"Add Android peer...");
+        static_cast<UINT_PTR>(kCmdPairAndroid), L"Add peer...");
     InsertMenuW(menu, static_cast<UINT>(-1), MF_BYPOSITION | MF_STRING,
         static_cast<UINT_PTR>(kCmdPairAirPods), L"Select AirPods...");
     InsertMenuW(menu, static_cast<UINT>(-1), MF_BYPOSITION | MF_STRING,
@@ -195,7 +195,7 @@ void TrayIcon::showContextMenu(HWND hwnd) {
     UINT unmuteFlags = MF_BYPOSITION | MF_STRING;
     if (!status.hasMutedApps) unmuteFlags |= MF_GRAYED | MF_DISABLED;
     InsertMenuW(menu, static_cast<UINT>(-1), unmuteFlags,
-        static_cast<UINT_PTR>(kCmdUnmuteApps), L"Unmute apps muted for the phone");
+        static_cast<UINT_PTR>(kCmdUnmuteApps), L"Unmute apps muted for another device");
 
     UINT autoStartFlags = MF_BYPOSITION | MF_STRING;
     if (isAutoStartEnabled()) autoStartFlags |= MF_CHECKED;
@@ -205,7 +205,7 @@ void TrayIcon::showContextMenu(HWND hwnd) {
     InsertMenuW(menu, static_cast<UINT>(-1), MF_BYPOSITION | MF_STRING,
         static_cast<UINT_PTR>(kCmdOpenTraces), L"Open traces folder");
     InsertMenuW(menu, static_cast<UINT>(-1), MF_BYPOSITION | MF_STRING,
-        static_cast<UINT_PTR>(kCmdSendTraces), L"Send traces to phone");
+        static_cast<UINT_PTR>(kCmdSendTraces), L"Send traces to peers");
 
     InsertMenuW(menu, static_cast<UINT>(-1), MF_BYPOSITION | MF_SEPARATOR, 0u, nullptr);
     InsertMenuW(menu, static_cast<UINT>(-1), MF_BYPOSITION | MF_STRING,

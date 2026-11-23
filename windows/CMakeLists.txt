@@ -49,12 +49,14 @@ set(SRC
     src/v2/PeerV2Message.cpp
     src/v2/PeerV2Mesh.cpp
     src/BtHandoverSetup.cpp
+    src/PeerServer.cpp
     src/Propods.rc
 )
 
 set(HDR
     common/crossdevice_protocol.hpp
     src/BluetoothRfcommClient.hpp
+    src/PeerDialPolicy.hpp
     src/MediaPlaybackWatcher.hpp
     src/AirPodsConnector.hpp
     src/HandoverController.hpp
@@ -62,11 +64,13 @@ set(HDR
     src/SettingsStore.hpp
     src/TeamsCallWatcher.hpp
     src/PeerRegistry.hpp
+    src/PeerServer.hpp
     src/BleProximityWatcher.hpp
     src/TraceUploader.hpp
     src/PlaybackSilencer.hpp
     src/BtHandoverSetup.hpp
     src/Logger.hpp
+    src/v2/PeerV2Arbitration.hpp
 )
 
 add_executable(Propods WIN32 ${SRC} ${HDR})
