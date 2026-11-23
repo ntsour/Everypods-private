@@ -23,6 +23,8 @@ final class HandoverController {
     let media = MediaWatcher()
     let router = AudioRouter()
     let proximity = ProximityWatcher()
+    /// Holds audio (media) or shows progress (calls) while a takeover connects the AirPods.
+    let hold = PlaybackHold()
     private(set) var ownership: Ownership = .unknown
     var onChange: (() -> Void)?
 
@@ -105,6 +107,19 @@ final class HandoverController {
     // MARK: Lifecycle
 
     func start() {
+        hold.retryTakeover = { [weak self] kind in
+            guard let self, !self.takeoverInFlight else { return }
+            self.startTakeover(kind == .call ? .call : .media)
+        }
+        hold.airPodsAreOutput = { [weak self] in self?.router.airPodsAreDefaultOutput ?? false }
+        hold.airPodsAddress = { Settings.airPodsAddress }
+        hold.isPlaying = { [weak self] in self?.media.snapshot.playing ?? false }
+        hold.playingApps = { [weak self] in self?.media.snapshot.playingApps ?? [] }
+        media.fastStart = { Settings.holdPlayback }
+        media.onPlaybackSeen = { [weak self] in
+            guard let self, self.mediaTakeoverLikely() else { return }
+            self.hold.preMute()
+        }
         media.onPlaybackStarted = { [weak self] in self?.onMediaPlayingChanged(true) }
         media.onPlaybackStopped = { [weak self] in self?.onMediaPlayingChanged(false) }
         media.onChange = { [weak self] in
@@ -163,6 +178,7 @@ final class HandoverController {
         Log.write("State -> \(state)")
         v2.stateChanged()
         router.setPersistent(state == .thisMac)
+        if state == .otherDevice { hold.onLost("AirPods went to another device") }
         if state == .thisMac {
             // Claiming the AirPods by any means resets the voluntary-release gate.
             voluntarilyReleased = false
@@ -199,6 +215,7 @@ final class HandoverController {
         } else if !connected && lastBluetoothConnected {
             if ownership == .thisMac {
                 Log.write("Bluetooth: AirPods left this Mac (falling edge); releasing")
+                hold.onLost("AirPods left this Mac")
                 lastLostOwnership = Date()
                 if setState(.otherDevice) { sendState() }
             }
@@ -207,6 +224,15 @@ final class HandoverController {
     }
 
     // MARK: Media and call triggers
+
+    /// A cheap preview of `onMediaPlayingChanged`'s guards, used to mute the speakers the moment audio appears.
+    /// A wrong guess only costs a short mute (`PlaybackHold.preMute` lifts it after 1.5 s).
+    private func mediaTakeoverLikely() -> Bool {
+        Settings.holdPlayback && Settings.takeOnMediaStart && pods.isConfigured && !pods.isConnected
+            && !media.snapshot.inCall && proximity.airPodsAvailable && !v2.reservationLive && !takeoverInFlight
+            && since(lastLostOwnership) >= antiPingPong
+            && !(!voluntaryReleaseApp.isEmpty && since(lastVoluntaryRelease) < voluntarySuppress)
+    }
 
     /// Port of onMediaPlayingChanged: audio started (or stopped) on this Mac.
     func onMediaPlayingChanged(_ playing: Bool) {
@@ -276,6 +302,7 @@ final class HandoverController {
     }
 
     private func onCallEnded() {
+        hold.callEnded()
         if voluntarilyReleased {
             voluntarilyReleased = false
             Log.write("Gate: voluntary release cleared (call ended)")
@@ -317,9 +344,11 @@ final class HandoverController {
         if Settings.autoRoute { router.setPersistent(true) }
         let connect = { [weak self] in
             guard let self else { return }
+            self.hold.onConnecting()
             self.pods.connectWithRetries { success in
                 self.takeoverInFlight = false
                 if success {
+                    self.hold.onConnected()
                     let claimed = self.setState(.thisMac)
                     self.lastLocalTakeover = Date()
                     if claimed { self.sendState() }
@@ -331,10 +360,13 @@ final class HandoverController {
                     self.lastLostOwnership = Date()
                     self.router.setPersistent(self.ownership == .thisMac)
                     Log.write("Take: failed after 3 attempts; AirPods not acquired")
+                    self.hold.onConnectFailed()
                 }
             }
         }
-        if peers.send(intent == .call ? Packet.requestHandover : Packet.requestDisconnect) {
+        let peerAsked = peers.send(intent == .call ? Packet.requestHandover : Packet.requestDisconnect)
+        hold.start(kind: intent == .call ? .call : .media, deviceName: pods.name, peerAsked: peerAsked)
+        if peerAsked {
             var started = false
             let go = { if !started { started = true; connect() } }
             ackWaiters.append(go)
@@ -359,6 +391,7 @@ final class HandoverController {
     /// disconnect, lets the link close on its own and forces it only if it is still up after 4.5 s. The peers
     /// are told once it is down (the phone's acknowledgement timeout is 6 s).
     private func giveUp() {
+        hold.onLost("giving the AirPods up")
         let pause = Settings.pauseOnHandover && media.snapshot.playing
         // Set before the pause wait too: a status ping answered "connected" in that window reads as a refusal.
         releasing = true

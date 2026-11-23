@@ -10,6 +10,8 @@ import ServiceManagement
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let controller = HandoverController()
+    /// Floating handover-progress panel, driven by the controller's playback hold.
+    private var holdPanel: HoldPanel?
     private var gattAuthorizer: GattSetupAuthorizer?
     private var menuCandidates: [PeerRegistry.Candidate] = []
 
@@ -30,6 +32,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         firstRunSetup()
         controller.onChange = { [weak self] in self?.updateIcon() }
         controller.start()
+        holdPanel = HoldPanel(hold: controller.hold)
         NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
             self?.controller.handleWake()
@@ -139,6 +142,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(toggle("Take over when receiving a call", #selector(toggleTakeCall), Settings.takeOnCall))
         menu.addItem(toggle("Auto-set AirPods as audio device", #selector(toggleAutoRoute), Settings.autoRoute))
         menu.addItem(toggle("Pause playback when handing over", #selector(togglePause), Settings.pauseOnHandover))
+        menu.addItem(toggle("Hold audio until AirPods connect", #selector(toggleHold), Settings.holdPlayback))
         if !MediaControl.hasPermission {
             menu.addItem(action("Allow Pausing Playback (Accessibility)…", #selector(grantAccessibility)))
         }
@@ -191,6 +195,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func toggleTakeCall() { Settings.takeOnCall.toggle() }
     @objc private func toggleAutoRoute() { Settings.autoRoute.toggle() }
     @objc private func togglePause() { Settings.pauseOnHandover.toggle() }
+    @objc private func toggleHold() {
+        Settings.holdPlayback.toggle()
+        // Pausing needs the Accessibility permission (the speakers are muted either way).
+        if Settings.holdPlayback, !MediaControl.hasPermission { MediaControl.requestPermission() }
+    }
     @objc private func grantAccessibility() { MediaControl.requestPermission() }
 
     @objc private func chooseAirPods(_ sender: NSMenuItem) {
