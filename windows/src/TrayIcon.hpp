@@ -25,6 +25,7 @@ public:
     static constexpr int kCmdUnmuteApps      = 1010;
     static constexpr int kCmdToggleTakeOnMedia = 1011;
     static constexpr int kCmdToggleTakeOnCall  = 1012;
+    static constexpr int kCmdToggleHold        = 1013;
     // kCmdRemovePeer+i removes the peer at index i in the StatusInfo::peers list.
     static constexpr int kCmdRemovePeer      = 2000;
 
@@ -42,6 +43,7 @@ public:
         bool                    pauseOnRelease{true};
         bool                    takeOnMediaStart{true};
         bool                    takeOnCall{true};
+        bool                    holdPlayback{false};
         bool                    hasMutedApps{false};
         std::vector<PeerStatus> peers;
     };

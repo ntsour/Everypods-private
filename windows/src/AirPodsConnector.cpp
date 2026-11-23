@@ -1180,6 +1180,55 @@ bool AirPodsConnector::isClassicallyConnectedWinRT() {
     }
 }
 
+std::wstring AirPodsConnector::displayName() {
+    const std::uint64_t addr = m_address;
+    {
+        std::scoped_lock lk{m_nameMutex};
+        if (addr != 0 && addr == m_nameForAddress && !m_name.empty()) return m_name;
+    }
+    std::wstring name;
+    if (addr != 0) {
+        try {
+            using namespace winrt::Windows::Devices::Bluetooth;
+            auto device = BluetoothDevice::FromBluetoothAddressAsync(addr).get();
+            if (device) name = std::wstring(device.Name());
+        } catch (const winrt::hresult_error&) {}
+    }
+    if (name.empty()) return L"AirPods";
+    std::scoped_lock lk{m_nameMutex};
+    m_name = name;
+    m_nameForAddress = addr;
+    return name;
+}
+
+bool AirPodsConnector::isDefaultRenderDevice() {
+    HRESULT coInitHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    const bool balance = (coInitHr == S_OK || coInitHr == S_FALSE);
+    bool result = false;
+    {
+        ComPtr<IMMDeviceEnumerator> enumerator;
+        ComPtr<IMMDevice> current;
+        LPWSTR rawId = nullptr;
+        if (SUCCEEDED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
+                __uuidof(IMMDeviceEnumerator), (void**)enumerator.GetAddressOf())) &&
+            SUCCEEDED(enumerator->GetDefaultAudioEndpoint(eRender, eMultimedia, &current)) && current &&
+            SUCCEEDED(current->GetId(&rawId)) && rawId) {
+            const std::wstring defaultId = rawId;
+            CoTaskMemFree(rawId);
+            for (const auto& ep : findAirPodsEndpoints(enumerator.Get(), eRender)) {
+                if (ep.id != defaultId) continue;
+                const std::wstring n = foldLower(ep.name);
+                const bool handsFree = n.find(L"hands-free") != std::wstring::npos ||
+                                       n.find(L"hands free") != std::wstring::npos;
+                result = ep.state == DEVICE_STATE_ACTIVE && !handsFree;
+                break;
+            }
+        }
+    }
+    if (balance) CoUninitialize();
+    return result;
+}
+
 bool AirPodsConnector::disconnect() {
     if (m_address == 0) return false;
     std::lock_guard<std::mutex> lk(m_mutex);

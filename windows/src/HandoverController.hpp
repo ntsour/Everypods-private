@@ -11,6 +11,7 @@
 #include "AirPodsConnector.hpp"
 #include "MediaPlaybackWatcher.hpp"
 #include "PeerRegistry.hpp"
+#include "PlaybackHold.hpp"
 
 namespace Propods {
 
@@ -44,10 +45,21 @@ public:
     void setAutoRoute(bool enabled) { m_autoRoute.store(enabled); }
     bool autoRoute() const          { return m_autoRoute.load(); }
 
+    // Optional playback hold + progress panel (not owned). Set before start.
+    void setPlaybackHold(PlaybackHold* hold) { m_hold = hold; }
+
     void onMediaPlayingChanged(bool playing);
     // Teams/WASAPI-specific trigger — goes through the voluntary-release gate.
     // Wire TeamsCallWatcher::setOnTriggered to this instead of onMediaPlayingChanged.
-    void onCallActive();
+    // isCall=false for media apps outside the media controls (VLC).
+    void onCallActive(bool isCall = true);
+
+    // Hold panel actions. Retry skips the probe / anti-pingpong / same-app gates
+    // (the user asked); cancel stops the remaining connect attempts.
+    void retryTakeover(HoldKind kind);
+    void cancelTakeover();
+    // Cheap check for the hold's pre-mute: would a media start take the AirPods now?
+    bool mediaTakeoverLikely();
     // Called when the Teams audio session expires (call truly ended).
     // Clears the voluntary-release gate so the next new call can trigger a claim.
     void onTeamsCallEnded();
@@ -63,6 +75,7 @@ private:
     // two threads race to resolve the same Unknown→X transition.
     bool setState(OwnershipState s);
     bool withinDebounceWindow();
+    void requestTakeover(HoldKind kind, bool userRetry, const std::wstring& holdAppId);
     void startAudioWatcher();
 
     // Helpers to store/load anti-pingpong timestamps atomically.
@@ -146,6 +159,10 @@ private:
     // A peer reported an active call/meeting (kPeerAudioActive); cleared by
     // kPeerAudioIdle or when the last peer link drops. Suppresses our call takeover.
     std::atomic<bool> m_peerAudioActive{false};
+
+    // Set by cancelTakeover(): the connect thread stops before its next attempt.
+    std::atomic<bool> m_cancelTakeover{false};
+    PlaybackHold* m_hold{nullptr};
 
     std::atomic<bool>    m_autoRoute{true};
     StateChangedCallback m_onStateChanged;

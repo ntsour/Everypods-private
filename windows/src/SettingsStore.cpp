@@ -103,6 +103,9 @@ Settings SettingsStore::load() const {
         } else if (key == "takeoncall") {
             s.takeOnCall = (val != "0");
             log::debug("  takeoncall = {}", s.takeOnCall);
+        } else if (key == "holdplayback") {
+            s.holdPlayback = (val != "0");
+            log::debug("  holdplayback = {}", s.holdPlayback);
         }
     }
     return s;
@@ -123,6 +126,7 @@ void SettingsStore::save(const Settings& s) const {
     f << "pauseonrelease=" << (s.pauseOnRelease ? "1" : "0") << '\n';
     f << "takeonmedia=" << (s.takeOnMediaStart ? "1" : "0") << '\n';
     f << "takeoncall=" << (s.takeOnCall ? "1" : "0") << '\n';
+    f << "holdplayback=" << (s.holdPlayback ? "1" : "0") << '\n';
 }
 
 }

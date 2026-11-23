@@ -22,6 +22,9 @@
 #include "v2/PeerV2Identity.hpp"
 #include "v2/PeerV2Mesh.hpp"
 #include "PlaybackSilencer.hpp"
+#include "PlaybackHold.hpp"
+#include "HoldOverlay.hpp"
+#include "SessionMute.hpp"
 #include "TraceUploader.hpp"
 #include "TrayIcon.hpp"
 #include "crossdevice_protocol.hpp"
@@ -185,6 +188,13 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     AirPodsConnector airpods{settings.airpodsAddress.value_or(0)};
     PeerRegistry peers;
     MediaPlaybackWatcher media;
+    // Playback hold (off by default): holds this PC's audio while the AirPods
+    // connect and drives the progress panel. Declared before the controller so
+    // it outlives every thread that may still signal it.
+    SessionMute holdMute;
+    holdMute.restoreLeftovers();  // undo per-app mutes left by a crash or kill
+    PlaybackHold hold{media, holdMute};
+    hold.setEnabled(settings.holdPlayback);
     HandoverController controller{peers, airpods, media};
     TeamsCallWatcher teamsWatcher;
     BleProximityWatcher bleWatcher;
@@ -231,6 +241,28 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
 
     if (!tray.create(hInstance)) return 1;
     tray.setStatus(stateLabel(controller.state()));
+
+    // Progress panel for handovers to this PC (never takes focus).
+    HoldOverlay overlay{hInstance, hold};
+    overlay.create();
+    overlay.setOnEndSession([&holdMute]() { holdMute.restoreAll("Windows is signing out"); });
+    hold.setOnStatusChange([&overlay](const std::optional<HoldStatus>& s) { overlay.update(s); });
+    hold.setHooks({
+        /*deviceName=*/[&airpods]() { return airpods.displayName(); },
+        /*airPodsAreDefaultOutput=*/[&airpods]() { return airpods.isDefaultRenderDevice(); },
+        /*preMuteAllowed=*/[&controller, &takeOnMediaStart]() {
+            return takeOnMediaStart.load() && controller.mediaTakeoverLikely();
+        },
+        /*retryTakeover=*/[&controller](HoldKind kind) { controller.retryTakeover(kind); },
+        /*cancelTakeover=*/[&controller]() { controller.cancelTakeover(); },
+    });
+    controller.setPlaybackHold(&hold);
+    media.setOnSessionPlayback([&hold](const std::wstring& appId, bool playing) {
+        hold.onSessionPlaybackChanged(appId, playing);
+    });
+    teamsWatcher.setOnRenderSessionActive([&hold](const AudioSessionRef& session) {
+        hold.onRenderSessionActive(session);
+    });
 
     // When the AirPods leave this PC, stop PC audio so it doesn't continue out of
     // the speakers: pause every playing media session, then mute what is still
@@ -282,6 +314,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
         info.pauseOnRelease = silencer.enabled();
         info.takeOnMediaStart = takeOnMediaStart.load();
         info.takeOnCall = takeOnCall.load();
+        info.holdPlayback = hold.enabled();
         info.hasMutedApps = silencer.hasMuted();
         for (auto& p : peers.peerInfos())
             info.peers.push_back({p.address, p.name, p.connected});
@@ -352,7 +385,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     // the standard debounce and anti-pingpong guards. This prevents an ongoing
     // Teams call from re-triggering a claim after Windows voluntarily released
     // AirPods to a peer.
-    teamsWatcher.setOnTriggered([&controller, &callActive, &takeOnCall, &peerV2, &silencer, &lostOwnershipAtMs]() {
+    teamsWatcher.setOnTriggered([&controller, &callActive, &takeOnCall, &peerV2, &silencer, &lostOwnershipAtMs](bool comms) {
         const std::int64_t sinceLost = static_cast<std::int64_t>(GetTickCount64()) - lostOwnershipAtMs.load();
         if (lostOwnershipAtMs.load() != 0 && sinceLost < 15'000) {
             log::handover("SKIP    audio-session trigger {} ms after the AirPods left (output moved to speakers)", sinceLost);
@@ -366,7 +399,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
             return;
         }
         callActive.store(true);
-        if (takeOnCall.load()) controller.onCallActive();
+        if (takeOnCall.load()) controller.onCallActive(/*isCall=*/comms);
         peerV2.refreshLocalState();
     });
 
@@ -508,6 +541,14 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
                 log::info("Take AirPods when a call starts on this PC: {}", nowEnabled ? "ON" : "OFF");
                 break;
             }
+            case TrayIcon::kCmdToggleHold: {
+                const bool nowEnabled = !hold.enabled();
+                hold.setEnabled(nowEnabled);
+                settings.holdPlayback = nowEnabled;
+                store.save(settings);
+                log::info("Hold PC audio while AirPods connect: {}", nowEnabled ? "ON" : "OFF");
+                break;
+            }
             case TrayIcon::kCmdUnmuteApps: {
                 const int n = silencer.restoreMutes("tray");
                 tray.notify(L"PC audio", std::format(L"Unmuted {} app(s).", n));
@@ -564,6 +605,11 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     teamsWatcher.start();
 
     tray.runMessageLoop();
+
+    // Undo any hold mute now (media a hold paused stays paused); the hold
+    // object itself lives on until the controller and its threads are gone.
+    hold.shutdown();
+    overlay.destroy();
 
     peers.setOnPeerLinkUp({});
     peerV2.stop();

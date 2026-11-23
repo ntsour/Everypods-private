@@ -200,6 +200,10 @@ void TrayIcon::showContextMenu(HWND hwnd) {
     if (status.takeOnCall) takeCallFlags |= MF_CHECKED;
     InsertMenuW(menu, static_cast<UINT>(-1), takeCallFlags,
         static_cast<UINT_PTR>(kCmdToggleTakeOnCall), L"Take AirPods when a call starts on this PC");
+    UINT holdFlags = MF_BYPOSITION | MF_STRING;
+    if (status.holdPlayback) holdFlags |= MF_CHECKED;
+    InsertMenuW(menu, static_cast<UINT>(-1), holdFlags,
+        static_cast<UINT_PTR>(kCmdToggleHold), L"Hold PC audio while AirPods connect");
     UINT unmuteFlags = MF_BYPOSITION | MF_STRING;
     if (!status.hasMutedApps) unmuteFlags |= MF_GRAYED | MF_DISABLED;
     InsertMenuW(menu, static_cast<UINT>(-1), unmuteFlags,
