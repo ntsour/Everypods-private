@@ -46,6 +46,7 @@ set(SRC
     src/PlaybackHold.cpp
     src/SessionMute.cpp
     src/HoldOverlay.cpp
+    src/AirPodsIcon.cpp
     src/v2/PeerV2Json.cpp
     src/v2/PeerV2Frame.cpp
     src/v2/PeerV2Identity.cpp
@@ -74,6 +75,7 @@ set(HDR
     src/PlaybackHold.hpp
     src/SessionMute.hpp
     src/HoldOverlay.hpp
+    src/AirPodsIcon.hpp
     src/BtHandoverSetup.hpp
     src/Logger.hpp
     src/v2/PeerV2Arbitration.hpp

@@ -241,12 +241,23 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
 
     if (!tray.create(hInstance)) return 1;
     tray.setStatus(stateLabel(controller.state()));
+    // Tray icon colour: green on this PC, blue while a handover to this PC
+    // runs, grey on another device.
+    auto ownershipIcon = [](OwnershipState s) {
+        return s == OwnershipState::LocalPc ? TrayIcon::IconState::Here : TrayIcon::IconState::Away;
+    };
+    tray.setIconState(ownershipIcon(controller.state()));
 
     // Progress panel for handovers to this PC (never takes focus).
     HoldOverlay overlay{hInstance, hold};
     overlay.create();
     overlay.setOnEndSession([&holdMute]() { holdMute.restoreAll("Windows is signing out"); });
-    hold.setOnStatusChange([&overlay](const std::optional<HoldStatus>& s) { overlay.update(s); });
+    hold.setOnStatusChange([&overlay, &tray, &controller, ownershipIcon](const std::optional<HoldStatus>& s) {
+        overlay.update(s);
+        const bool connecting = s && (s->phase == HoldPhase::RequestingRelease ||
+                                      s->phase == HoldPhase::Connecting || s->phase == HoldPhase::Routing);
+        tray.setIconState(connecting ? TrayIcon::IconState::Connecting : ownershipIcon(controller.state()));
+    });
     hold.setHooks({
         /*deviceName=*/[&airpods]() { return airpods.displayName(); },
         /*airPodsAreDefaultOutput=*/[&airpods]() { return airpods.isDefaultRenderDevice(); },
@@ -298,8 +309,10 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     // back from the Pixel within 5 s), so audio-session triggers are ignored
     // for a short while after losing ownership.
     std::atomic<std::int64_t> lostOwnershipAtMs{0};
-    controller.setOnStateChanged([&tray, &bleWatcher, &silencer, &lastOwnership, &lostOwnershipAtMs, restoreAsync](OwnershipState s) {
+    controller.setOnStateChanged([&tray, &hold, ownershipIcon, &bleWatcher, &silencer, &lastOwnership, &lostOwnershipAtMs, restoreAsync](OwnershipState s) {
         tray.setStatus(stateLabel(s));
+        // While a handover runs the icon stays "connecting"; the hold sets it after.
+        if (!hold.isActive()) tray.setIconState(ownershipIcon(s));
         bleWatcher.setPaused(s == OwnershipState::LocalPc);
         const OwnershipState previous = lastOwnership.exchange(s);
         if (previous == OwnershipState::LocalPc && s != OwnershipState::LocalPc) {

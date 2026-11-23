@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include <functional>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -50,6 +51,13 @@ public:
 
     using StatusProvider  = std::function<StatusInfo()>;
 
+    // What the tray icon's colour shows (the icon is an AirPods glyph).
+    enum class IconState {
+        Here,        // AirPods on this PC: green
+        Away,        // on another device / unknown: grey (dimmed, like the Mac menu bar)
+        Connecting,  // a handover to this PC is in progress: blue
+    };
+
     TrayIcon();
     ~TrayIcon();
 
@@ -58,6 +66,9 @@ public:
 
     bool create(HINSTANCE hInstance);
     void setStatus(const std::wstring& text);
+    // Safe from any thread. Redraws the icon in the state's colour for the
+    // current taskbar theme; keeps the old icon if drawing fails.
+    void setIconState(IconState state);
     // Windows notification from the tray icon (safe to call from any thread).
     void notify(const std::wstring& title, const std::wstring& text);
     void setMenuHandler(MenuHandler h)       { m_menuHandler    = std::move(h); }
@@ -77,6 +88,10 @@ private:
     std::wstring m_statusText{L"Propods"};
     MenuHandler     m_menuHandler;
     StatusProvider  m_statusProvider;
+    std::mutex      m_iconMutex;      // guards m_ownIcon / m_iconState
+    HICON           m_ownIcon{};      // icon we drew (destroyed when replaced)
+    IconState       m_iconState{IconState::Away};
+    bool            m_iconSet{false};
     static constexpr UINT WM_TRAY = WM_APP + 1;
 };
 

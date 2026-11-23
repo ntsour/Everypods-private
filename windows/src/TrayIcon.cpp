@@ -1,5 +1,6 @@
 ﻿#include "TrayIcon.hpp"
 
+#include "AirPodsIcon.hpp"
 #include "Logger.hpp"
 
 #include <strsafe.h>
@@ -54,6 +55,7 @@ TrayIcon::~TrayIcon() {
         DestroyWindow(m_hwnd);
         m_hwnd = nullptr;
     }
+    if (m_ownIcon) DestroyIcon(m_ownIcon);
     g_instance = nullptr;
 }
 
@@ -96,6 +98,49 @@ void TrayIcon::setStatus(const std::wstring& text) {
     m_nid.uFlags = NIF_TIP;
     StringCchCopyW(m_nid.szTip, ARRAYSIZE(m_nid.szTip), m_statusText.c_str());
     Shell_NotifyIconW(NIM_MODIFY, &m_nid);
+}
+
+namespace {
+// The taskbar has its own light/dark setting, separate from apps'.
+bool taskbarIsLight() {
+    DWORD value = 0;  // missing = dark taskbar (the Windows 11 default)
+    DWORD size = sizeof(value);
+    if (RegGetValueW(HKEY_CURRENT_USER,
+                     L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+                     L"SystemUsesLightTheme", RRF_RT_REG_DWORD, nullptr, &value, &size) != ERROR_SUCCESS)
+        return false;
+    return value != 0;
+}
+}
+
+void TrayIcon::setIconState(IconState state) {
+    if (!m_hwnd) return;
+    std::scoped_lock lk{m_iconMutex};
+    if (m_iconSet && state == m_iconState) return;
+    const bool light = taskbarIsLight();
+    COLORREF color = 0;
+    switch (state) {
+        case IconState::Here:       color = light ? RGB(0x0F, 0x7B, 0x0F) : RGB(0x6C, 0xCB, 0x5F); break;
+        case IconState::Connecting: color = light ? RGB(0x00, 0x5F, 0xB8) : RGB(0x4C, 0xC2, 0xFF); break;
+        case IconState::Away:       color = light ? RGB(0x70, 0x70, 0x70) : RGB(0x9A, 0x9A, 0x9A); break;
+    }
+    HICON icon = createAirPodsIcon(GetSystemMetrics(SM_CXSMICON), color);
+    if (!icon) {
+        log::warn("Tray: could not draw the AirPods icon; keeping the current one");
+        return;
+    }
+    NOTIFYICONDATAW nid = m_nid;  // copy: only the icon changes
+    nid.uFlags = NIF_ICON;
+    nid.hIcon = icon;
+    if (!Shell_NotifyIconW(NIM_MODIFY, &nid)) {
+        DestroyIcon(icon);
+        return;
+    }
+    m_nid.hIcon = icon;
+    if (m_ownIcon) DestroyIcon(m_ownIcon);
+    m_ownIcon = icon;
+    m_iconState = state;
+    m_iconSet = true;
 }
 
 void TrayIcon::notify(const std::wstring& title, const std::wstring& text) {

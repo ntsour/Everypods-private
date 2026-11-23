@@ -7,10 +7,6 @@
 
 #include <algorithm>
 
-// gdiplus.h uses min/max, which NOMINMAX removes.
-#include <objidl.h>
-namespace Gdiplus { using std::min; using std::max; }
-#include <gdiplus.h>
 #include <chrono>
 #include <cwchar>
 #include <string>
@@ -19,7 +15,6 @@ namespace Gdiplus { using std::min; using std::max; }
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "gdi32.lib")
-#pragma comment(lib, "gdiplus.lib")
 
 namespace Propods {
 
@@ -43,8 +38,6 @@ constexpr int kHeightPlain = 96;
 constexpr int kHeightButtons = 124;
 constexpr int kMargin = 12;
 constexpr int kPad = 16;
-constexpr int kIcon = 36;     // AirPods icon box (logical px)
-constexpr int kIconGap = 12;  // icon -> text
 
 enum Button { kRetry = 0, kPlayHere = 1, kClose = 2, kUnmute = 3 };
 
@@ -88,34 +81,6 @@ void drawWrapped(HDC dc, const std::wstring& s, RECT r, HFONT font, COLORREF col
     SelectObject(dc, old);
 }
 
-// A pair of AirPods Pro (bud, ear tip and stem each), drawn with GDI+ so it is
-// antialiased. Our own drawing in the spirit of the Mac panel's icon; Apple's
-// SF Symbols may not be used outside Apple platforms.
-void drawAirPods(HDC dc, RECT box, COLORREF color) {
-    using namespace Gdiplus;
-    Graphics g(dc);
-    g.SetSmoothingMode(SmoothingModeAntiAlias);
-    const Color c(255, GetRValue(color), GetGValue(color), GetBValue(color));
-    SolidBrush brush(c);
-    const REAL x0 = static_cast<REAL>(box.left), y0 = static_cast<REAL>(box.top);
-    const REAL W = static_cast<REAL>(box.right - box.left), H = static_cast<REAL>(box.bottom - box.top);
-    const REAL d = W * 0.34f;          // bud diameter
-    const REAL stemW = W * 0.12f;
-    Pen stem(c, stemW);
-    stem.SetStartCap(LineCapRound);
-    stem.SetEndCap(LineCapRound);
-    for (int side = 0; side < 2; ++side) {
-        const REAL dir = side == 0 ? 1.0f : -1.0f;        // +1: left bud, tip points right
-        const REAL cx = x0 + (side == 0 ? W * 0.28f : W * 0.72f);
-        const REAL cy = y0 + H * 0.30f;
-        g.FillEllipse(&brush, cx - d / 2, cy - d / 2, d, d);
-        const REAL tip = d * 0.5f;                        // ear tip, towards the middle
-        g.FillEllipse(&brush, cx + dir * d * 0.42f - tip / 2, cy - tip / 2 - d * 0.05f, tip, tip);
-        const REAL sx = cx - dir * d * 0.22f;             // stem on the outer side
-        g.DrawLine(&stem, sx, cy, sx - dir * W * 0.03f, y0 + H * 0.92f);
-    }
-}
-
 std::wstring statusLine(const HoldStatus& s) {
     const bool isCall = s.kind == HoldKind::Call;
     const std::wstring& name = s.deviceName;
@@ -154,16 +119,10 @@ HoldOverlay::HoldOverlay(HINSTANCE instance, PlaybackHoldActions& actions)
 HoldOverlay::~HoldOverlay() {
     destroy();
     freeFonts();
-    if (m_gdiplusToken) Gdiplus::GdiplusShutdown(m_gdiplusToken);
 }
 
 bool HoldOverlay::create() {
     if (m_hwnd.load()) return true;
-
-    if (!m_gdiplusToken) {
-        Gdiplus::GdiplusStartupInput input;
-        if (Gdiplus::GdiplusStartup(&m_gdiplusToken, &input, nullptr) != Gdiplus::Ok) m_gdiplusToken = 0;
-    }
 
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
@@ -260,8 +219,6 @@ void HoldOverlay::loadTheme() {
         t.danger = RGB(0xE5, 0x48, 0x4D);
         t.hover = RGB(0x32, 0x32, 0x32);
         t.onAccent = RGB(0x00, 0x00, 0x00);  // white on #4CC2FF is unreadable
-        t.ok = RGB(0x6C, 0xCB, 0x5F);
-        t.warn = RGB(0xFF, 0xB9, 0x00);
     } else {
         t.bg = RGB(0xF3, 0xF3, 0xF3);
         t.text = RGB(0x1A, 0x1A, 0x1A);
@@ -271,8 +228,6 @@ void HoldOverlay::loadTheme() {
         t.danger = RGB(0xC4, 0x2B, 0x1C);
         t.hover = RGB(0xE5, 0xE5, 0xE5);
         t.onAccent = RGB(0xFF, 0xFF, 0xFF);
-        t.ok = RGB(0x0F, 0x7B, 0x0F);
-        t.warn = RGB(0x9D, 0x5D, 0x00);
     }
     m_theme = t;
 }
@@ -458,13 +413,10 @@ void HoldOverlay::paint(HWND hwnd) {
     if (!m_shown && m_notice) {
         const Notice& n = *m_notice;
         const int pad = scale(kPad);
-        const int textLeft = pad + scale(kIcon) + scale(kIconGap);
-        // Amber: the AirPods left this PC.
-        if (m_gdiplusToken) drawAirPods(mem, RECT{pad, scale(16), pad + scale(kIcon), scale(16) + scale(kIcon)}, t.warn);
-        RECT title{textLeft, scale(14), w - pad - scale(28), scale(34)};
+        RECT title{pad, scale(14), w - pad - scale(28), scale(34)};
         drawText(mem, n.title, title, m_titleFont, t.text, DT_LEFT | DT_END_ELLIPSIS);
         const int textBottom = n.offerUnmute ? scale(80) : h - scale(12);
-        RECT body{textLeft, scale(37), w - pad, textBottom};
+        RECT body{pad, scale(37), w - pad, textBottom};
         drawWrapped(mem, n.text, body, m_textFont, t.secondary);
         const Layout l = layout();
         const int r = scale(6);
@@ -482,18 +434,13 @@ void HoldOverlay::paint(HWND hwnd) {
         const bool failed = s.phase == HoldPhase::Failed;
         const bool call = s.kind == HoldKind::Call;
         const int pad = scale(kPad);
-        const bool connected = s.phase == HoldPhase::Connected;
-        // Icon colour = connection status: blue connecting, green connected, red failed.
-        const COLORREF statusColor = failed ? t.danger : connected ? t.ok : t.accent;
-        const int textLeft = pad + scale(kIcon) + scale(kIconGap);
-        if (m_gdiplusToken) drawAirPods(mem, RECT{pad, scale(16), pad + scale(kIcon), scale(16) + scale(kIcon)}, statusColor);
 
         // Title.
-        RECT title{textLeft, scale(14), w - pad - (failed ? scale(28) : 0), scale(34)};
+        RECT title{pad, scale(14), w - pad - (failed ? scale(28) : 0), scale(34)};
         drawText(mem, s.deviceName, title, m_titleFont, t.text, DT_LEFT | DT_END_ELLIPSIS);
 
         // Status line.
-        RECT status{textLeft, scale(37), w - pad, scale(57)};
+        RECT status{pad, scale(37), w - pad, scale(57)};
         drawText(mem, statusLine(s), status, m_textFont, t.secondary, DT_LEFT | DT_END_ELLIPSIS);
 
         // Progress bar.
@@ -509,7 +456,7 @@ void HoldOverlay::paint(HWND hwnd) {
             fillW = (std::max)(fillW, barH);
             RECT fill{pad, barTop, pad + fillW, barTop + barH};
             roundRect(mem, RECT{fill.left, fill.top, fill.right - 1, fill.bottom - 1}, barH,
-                      statusColor, nullptr);
+                      failed ? t.danger : t.accent, nullptr);
         }
 
         if (failed) {

@@ -58,7 +58,7 @@ public:
 private:
     struct Theme {
         COLORREF bg = 0, text = 0, secondary = 0, accent = 0, border = 0,
-                 danger = 0, hover = 0, onAccent = 0, ok = 0, warn = 0;
+                 danger = 0, hover = 0, onAccent = 0;
     };
     struct Layout {
         RECT retry{}, playHere{}, close{}, unmute{};
@@ -108,7 +108,6 @@ private:
     bool m_tracking = false;
     bool m_timerOn = false;
     bool m_visible = false;
-    ULONG_PTR m_gdiplusToken = 0;  // GDI+ is used only for the antialiased AirPods icon
 };
 
 }
