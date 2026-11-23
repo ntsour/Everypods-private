@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <chrono>
 #include <random>
+#include <stdexcept>
 
 namespace Propods {
 
@@ -31,6 +32,26 @@ inline std::chrono::milliseconds peerRetryDelay(int attempt, double jitterFactor
     if (localAudioActive) base = std::max(base, kPeerMinDelayDuringAudio.count());
     const double j = std::clamp(jitterFactor, kPeerJitterMin, kPeerJitterMax);
     return std::chrono::milliseconds{static_cast<long long>(static_cast<double>(base) * j)};
+}
+
+// Thrown by dialRfcomm() when the peer's Bluetooth device answers but has no
+// EveryPods service (EveryPods not running there, or a device that only links
+// over Bluetooth LE, such as the Mac).
+struct PeerServiceMissing : std::runtime_error {
+    using std::runtime_error::runtime_error;
+};
+
+// Delay after `misses` dials in a row (1 or more) that found no EveryPods
+// service: 15 s, 30 s, 1 min, 2 min, then 5 min. Every dial pages the device and
+// runs an SDP query; doing that every 15 s while the AirPods were idle on this
+// PC made them drop within a minute (2026-11-22: 4,902 dials to the Mac in 10 h).
+// The Bluetooth link-up wake does not cut this wait short: our own dials bring
+// that link up.
+inline std::chrono::milliseconds peerServiceMissingDelay(int misses, double jitterFactor) {
+    static constexpr long long kStepsMs[] = {15000, 30000, 60000, 120000, 300000};
+    const int idx = std::clamp(misses - 1, 0, 4);
+    const double j = std::clamp(jitterFactor, kPeerJitterMin, kPeerJitterMax);
+    return std::chrono::milliseconds{static_cast<long long>(static_cast<double>(kStepsMs[idx]) * j)};
 }
 
 inline double peerRetryJitter() {

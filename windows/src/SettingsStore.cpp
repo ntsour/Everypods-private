@@ -73,9 +73,13 @@ Settings SettingsStore::load() const {
         if (eq == std::string::npos) continue;
         std::string key = line.substr(0, eq);
         std::string val = line.substr(eq + 1);
-        // "android" is the historical key for every peer. "computer" (an earlier
-        // test build) and "peer" are read too; all go into the one list.
-        if (key == "android" || key == "computer" || key == "peer") {
+        // "android" is the historical key for every peer; "peer" is read too.
+        // "computer" lines come from a test build (2026-11-21) and are ignored:
+        // the Mac links over Bluetooth LE only, so dialling it never succeeds
+        // and only keeps the radio busy. The next save drops them.
+        if (key == "computer") {
+            log::warn("  computer = {} -> ignored (left by an earlier test build)", val);
+        } else if (key == "android" || key == "peer") {
             if (auto addr = parseBluetoothAddress(val)) {
                 if (std::find(s.peerAddresses.begin(), s.peerAddresses.end(), *addr) == s.peerAddresses.end())
                     s.peerAddresses.push_back(*addr);

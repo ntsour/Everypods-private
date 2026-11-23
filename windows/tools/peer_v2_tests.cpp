@@ -195,6 +195,17 @@ static void dialPolicyTests() {
         CHECK(j >= 0.8 && j <= 1.2);
     }
     CHECK(kPeerConnectTimeout == milliseconds{8000});
+    // No EveryPods service on the peer: 15 s, 30 s, 1 min, 2 min, then 5 min.
+    CHECK(peerServiceMissingDelay(1, 1.0) == milliseconds{15000});
+    CHECK(peerServiceMissingDelay(2, 1.0) == milliseconds{30000});
+    CHECK(peerServiceMissingDelay(3, 1.0) == milliseconds{60000});
+    CHECK(peerServiceMissingDelay(4, 1.0) == milliseconds{120000});
+    CHECK(peerServiceMissingDelay(5, 1.0) == milliseconds{300000});
+    CHECK(peerServiceMissingDelay(600, 1.0) == milliseconds{300000});
+    CHECK(peerServiceMissingDelay(0, 1.0) == milliseconds{15000});
+    CHECK(peerServiceMissingDelay(5, 0.8) == milliseconds{240000});
+    CHECK(peerServiceMissingDelay(5, 9.0) == milliseconds{360000});  // clamped
+    CHECK(std::string(PeerServiceMissing("x").what()) == "x");
 }
 
 int main() {

@@ -204,10 +204,15 @@ StreamSocket dialRfcomm(std::uint64_t peerAddress, const winrt::guid& serviceUui
     // stale channel after the peer restarts); fall back to the cache once.
     auto rfcommId = RfcommServiceId::FromUuid(serviceUuid);
     RfcommDeviceService service{nullptr};
+    // True when the device answered the fresh lookup without our service: it is
+    // in range, and EveryPods is not listening there. An unreachable device
+    // reports an error instead and gets the normal retry.
+    bool answeredWithoutService = false;
     try {
         auto op = device.GetRfcommServicesForIdAsync(rfcommId, BluetoothCacheMode::Uncached);
         waitOrCancel(op, "RFCOMM service lookup (uncached)");
         auto result = op.GetResults();
+        answeredWithoutService = result.Error() == BluetoothError::Success && result.Services().Size() == 0;
         if (result.Services().Size() > 0) {
             service = result.Services().GetAt(0);
             log::info("{} {:012X}: service resolved (uncached)", tag, peerAddress);
@@ -228,8 +233,10 @@ StreamSocket dialRfcomm(std::uint64_t peerAddress, const winrt::guid& serviceUui
         }
     }
     if (!service) {
-        throw std::runtime_error(
-            "RFCOMM service not advertised -- is EveryPods running on that device?");
+        if (answeredWithoutService)
+            throw PeerServiceMissing(
+                "RFCOMM service not advertised -- is EveryPods running on that device?");
+        throw std::runtime_error("RFCOMM service not found (device did not answer the lookup)");
     }
     log::debug("{} {:012X}: connecting to host='{}' service='{}'", tag, peerAddress,
         to_string(service.ConnectionHostName().DisplayName()),
@@ -299,6 +306,7 @@ void BluetoothRfcommClient::runConnection(std::uint64_t peerAddress, StreamSocke
 
 void BluetoothRfcommClient::runLoop(std::uint64_t peerAddress) {
     int attempt = 0;  // failed dials since the last link (Android retryAttempt)
+    int misses = 0;   // dials in a row that found no EveryPods service
     if (m_firstDialDelay) {
         std::chrono::milliseconds delay{0};
         try { delay = m_firstDialDelay(); } catch (...) {}
@@ -337,15 +345,21 @@ void BluetoothRfcommClient::runLoop(std::uint64_t peerAddress) {
                 }
             }
             attempt = 0;
+            misses = 0;
             {   // A wake-up that arrived while dialling is spent now that a link is up.
                 std::scoped_lock lk{m_pendingMutex};
                 m_retryRequested = false;
             }
             runConnection(peerAddress, socket, inbound);
+        } catch (const PeerServiceMissing& e) {
+            ++misses;
+            log::warn("RFCOMM {:012X} connection error: {}", peerAddress, e.what());
         } catch (const winrt::hresult_error& e) {
+            misses = 0;
             log::warn("RFCOMM {:012X} connection error: 0x{:08X} {}", peerAddress,
                 (std::uint32_t)e.code().value, winrt::to_string(e.message()));
         } catch (const std::exception& e) {
+            misses = 0;
             log::warn("RFCOMM {:012X} connection error: {}", peerAddress, e.what());
         }
 
@@ -367,10 +381,14 @@ void BluetoothRfcommClient::runLoop(std::uint64_t peerAddress) {
             std::scoped_lock lk{m_pendingMutex};
             if (m_pendingInbound) continue;
         }
-        const auto backoff = peerRetryDelay(attempt, peerRetryJitter());
+        const auto backoff = misses > 0 ? peerServiceMissingDelay(misses, peerRetryJitter())
+                                        : peerRetryDelay(attempt, peerRetryJitter());
         ++attempt;
-        log::info("RFCOMM {:012X}: reconnecting in {} ms (attempt {})...", peerAddress, backoff.count(), attempt);
-        waitFor(backoff, /*interruptibleByRetry=*/true);
+        log::info("RFCOMM {:012X}: reconnecting in {} ms (attempt {}{})...", peerAddress, backoff.count(), attempt,
+            misses > 0 ? ", no EveryPods service there" : "");
+        // The link-up wake does not end a wait for a missing service: our own
+        // dials bring that link up.
+        waitFor(backoff, /*interruptibleByRetry=*/misses == 0);
     }
 }
 
