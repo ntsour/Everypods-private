@@ -1,6 +1,7 @@
 #include "BleProximityWatcher.hpp"
 
 #include "Logger.hpp"
+#include "ProximityRules.hpp"
 
 #include <chrono>
 #include <vector>
@@ -40,8 +41,8 @@ void BleProximityWatcher::start() {
         m_receivedToken = m_watcher.Received({this, &BleProximityWatcher::onReceived});
         m_startedAtMs.store(nowMs());
         m_watcher.Start();
-        log::info("BleProximityWatcher: started (Apple 0x004C proximity scan, {}s availability window)",
-                  kStaleWindowMs / 1000);
+        log::info("BleProximityWatcher: started (Apple 0x004C proximity scan, {}s out-of-case window)",
+                  kOutOfCaseWindowMs / 1000);
     } catch (const winrt::hresult_error& e) {
         // Fail-open: leave m_running false so airpodsAvailable() returns true and
         // handover behaves exactly as before this feature existed.
@@ -61,6 +62,7 @@ void BleProximityWatcher::stop() {
         }
     } catch (...) {}
     m_watcher = nullptr;
+    m_loggedFirstBeacon.store(false);
     log::info("BleProximityWatcher: stopped");
 }
 
@@ -87,45 +89,14 @@ bool BleProximityWatcher::airpodsAvailable() const {
     const std::int64_t startedAt = m_startedAtMs.load();
     if (startedAt != 0 && now - startedAt < kWarmupMs) return true;
 
-    const std::int64_t inCase  = m_lastInCaseMs.load();
-    const std::int64_t outCase = m_lastOutOfCaseMs.load();
-
-    // Block ONLY when the most recent fresh observation is positively in-case.
-    // Otherwise (out-of-case latest, or no beacons, or stale) allow — a connect()
-    // to cased pods fails harmlessly, while a missing beacon must never block a
-    // legitimate handover of pods that are actually in use on a peer.
-    if (inCase > outCase && (now - inCase) < kStaleWindowMs)
-        return false;
-    return true;
+    // Block ONLY when the latest beacon said in case and no out-of-case beacon
+    // came within kOutOfCaseWindowMs (see ProximityRules.hpp). A missing beacon
+    // must never block a legitimate handover of pods in use on a peer.
+    return airpodsAvailableFor(now, m_lastInCaseMs.load(), m_lastOutOfCaseMs.load());
 }
 
 bool BleProximityWatcher::parseProximity(const uint8_t* data, uint32_t len, bool& inCase) {
-    // Apple proximity-pairing message layout (manufacturer data after company id):
-    //   data[0]   = 0x07 (type: proximity pairing / "nearby")
-    //   data[1]   = 0x19 (length, 25)
-    //   data[5]   = status byte (primary-pod + in-case + in-ear bits)
-    //   data[8]   = lid state (bit 3: 0 = open, 1 = closed)
-    // We only need indices up to 8.
-    if (len < 9 || data[0] != 0x07) return false;
-
-    const int status = data[5];
-    const int lid     = data[8];
-
-    // In-ear detection (ported verbatim from Android BLEManager.parseProximityMessage):
-    const bool primaryLeft = ((status >> 5) & 0x01) == 1;
-    const bool thisInCase  = ((status >> 6) & 0x01) == 1;
-    const bool xorFactor   = primaryLeft ^ thisInCase;
-    const bool leftInEar   = xorFactor ? (status & 0x08) != 0 : (status & 0x02) != 0;
-    const bool rightInEar  = xorFactor ? (status & 0x02) != 0 : (status & 0x08) != 0;
-
-    const bool lidOpen = ((lid >> 3) & 0x01) == 0;
-
-    // "In case" = lid closed AND neither pod in an ear, i.e. both pods stowed in
-    // a closed case. This is the only state in which we suppress a takeover.
-    // Pods in ears (case closed in a pocket) report in-ear → NOT in-case → we
-    // still allow the handover. Anything ambiguous defaults to NOT in-case.
-    inCase = !lidOpen && !leftInEar && !rightInEar;
-    return true;
+    return parseProximityBeacon(data, len, inCase);
 }
 
 void BleProximityWatcher::onReceived(
@@ -151,6 +122,10 @@ void BleProximityWatcher::onReceived(
 
             bool inCase = false;
             if (!parseProximity(bytes.data(), len, inCase)) continue;
+
+            if (!m_loggedFirstBeacon.exchange(true))
+                log::info("BleProximityWatcher: first beacon — AirPods {} (RSSI {} dBm)",
+                          inCase ? "in case" : "out of case", rssi);
 
             // Logged at debug to avoid flooding (beacons arrive ~1/s).
             if (inCase) {
