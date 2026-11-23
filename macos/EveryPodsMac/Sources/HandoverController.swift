@@ -228,7 +228,7 @@ final class HandoverController {
     /// A cheap preview of `onMediaPlayingChanged`'s guards, used to mute the speakers the moment audio appears.
     /// A wrong guess only costs a short mute (`PlaybackHold.preMute` lifts it after 1.5 s).
     private func mediaTakeoverLikely() -> Bool {
-        Settings.holdPlayback && Settings.takeOnMediaStart && pods.isConfigured && !pods.isConnected
+        Settings.holdPlayback && v2.anyPeerHoldsAirPods && Settings.takeOnMediaStart && pods.isConfigured && !pods.isConnected
             && !media.snapshot.inCall && proximity.airPodsAvailable && !v2.reservationLive && !takeoverInFlight
             && since(lastLostOwnership) >= antiPingPong
             && !(!voluntaryReleaseApp.isEmpty && since(lastVoluntaryRelease) < voluntarySuppress)
@@ -365,7 +365,14 @@ final class HandoverController {
             }
         }
         let peerAsked = peers.send(intent == .call ? Packet.requestHandover : Packet.requestDisconnect)
-        hold.start(kind: intent == .call ? .call : .media, deviceName: pods.name, peerAsked: peerAsked)
+        // Hold and show progress only when a phone's V2 snapshot says it holds the AirPods. Otherwise they may be in
+        // their case (the proximity check fails open when a closed case goes quiet) and the panel would only report a
+        // failure; the takeover still tries quietly, as it did before the hold existed.
+        if v2.anyPeerHoldsAirPods {
+            hold.start(kind: intent == .call ? .call : .media, deviceName: pods.name, peerAsked: peerAsked)
+        } else if !hold.isActive, intent == .call || Settings.holdPlayback {
+            Log.write("Hold: skipped, no phone holds the AirPods")
+        }
         if peerAsked {
             var started = false
             let go = { if !started { started = true; connect() } }
