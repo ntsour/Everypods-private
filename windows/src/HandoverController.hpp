@@ -39,6 +39,12 @@ public:
     // simply stowed. Does not affect the manual "Connect AirPods now" path.
     void setAvailabilityProbe(std::function<bool()> probe) { m_availabilityProbe = std::move(probe); }
 
+    // True when a peer (v2 snapshot) holds the AirPods. The playback hold, its
+    // pre-mute and the progress panel start only then: otherwise the AirPods may
+    // be in their case (the BLE check fails open once a closed case goes quiet)
+    // and the panel would only report a failure. The takeover still runs quietly.
+    void setPeerHoldsProbe(std::function<bool()> probe) { m_peerHoldsProbe = std::move(probe); }
+
     // When disabled, the controller will NOT automatically set AirPods as the
     // default audio device on takeover. The user can still trigger it manually
     // via the tray menu "Connect AirPods now" item.
@@ -167,6 +173,7 @@ private:
     std::atomic<bool>    m_autoRoute{true};
     StateChangedCallback m_onStateChanged;
     std::function<bool()> m_availabilityProbe;
+    std::function<bool()> m_peerHoldsProbe;
 };
 
 }

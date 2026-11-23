@@ -89,6 +89,10 @@ struct PeerV2Mesh::Link {
     // Latest accepted snapshot from this peer on this link.
     bool hasSnapshot = false;
     std::int64_t snapshotRevision = 0;
+    // That snapshot says the peer holds our AirPods. A phone measures this from
+    // its own Bluetooth profile, so it clears when the AirPods leave it (e.g.
+    // into the case), unlike the legacy kAirPods* packets.
+    bool holdsOurAirPods = false;
 };
 
 struct PeerV2Mesh::PeerSession {
@@ -221,6 +225,14 @@ bool PeerV2Mesh::reservationActive() {
     std::scoped_lock lk{m_mutex};
     expireReservationLocked();
     return m_reservation && (m_reservation->phase == Phase::Preparing || m_reservation->phase == Phase::InProgress);
+}
+
+bool PeerV2Mesh::anyPeerHoldsAirPods() {
+    std::scoped_lock lk{m_mutex};
+    for (const auto& [addr, session] : m_sessions)
+        for (const auto& l : session->links)
+            if (l->connected && l->hasSnapshot && l->holdsOurAirPods) return true;
+    return false;
 }
 
 // ── v2 server (every peer listens) ──────────────────────────────────────────
@@ -449,6 +461,7 @@ void PeerV2Mesh::runLink(std::shared_ptr<PeerSession> session, std::shared_ptr<L
         l.remoteSessionId.clear();
         l.outstandingNonce.clear();
         l.hasSnapshot = false;
+        l.holdsOurAirPods = false;
         std::erase(s.links, link);
     }
     closeLink(l);
@@ -571,6 +584,16 @@ void PeerV2Mesh::handleFrame(PeerSession& s, Link& l, const Frame& frame) {
             const Json* ownership = field(snap, "ownership");
             l.snapshotRevision = rev;
             l.hasSnapshot = true;
+            {
+                const Json* hs = field(snap, "headsetId");
+                const bool sameHeadset = !m_state.headsetId ||
+                    (hs && hs->string() && *hs->string() == *m_state.headsetId);
+                const bool holds = *ownership->string() == "held" && sameHeadset;
+                if (holds != l.holdsOurAirPods) {
+                    l.holdsOurAirPods = holds;
+                    log::handover("V2      peer {:012X} {} the AirPods", s.address, holds ? "holds" : "no longer holds");
+                }
+            }
             if (m.type == FrameType::Pong) {
                 if (str(f, "nonce") != l.outstandingNonce) break;  // stale/unsolicited PONG: ignore
                 l.outstandingNonce.clear();

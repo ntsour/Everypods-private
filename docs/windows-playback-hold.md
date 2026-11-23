@@ -75,6 +75,12 @@ The media stays paused. The panel shows **Retry**, **Play on PC** (calls: **Use 
 - Auto-route off: no media hold (the release condition might never come).
 - Apps outside the media controls (VLC 3, games): no session to pause; progress only
   (VLC is not pre-muted either).
+- No peer holds the AirPods (no linked phone/computer's v2 snapshot says `held`, e.g.
+  they are in their case): no hold, no pre-mute, no panel, for media and calls. The BLE
+  in-case check fails open once a closed case stops advertising, and the legacy
+  `kAirPodsDisconnected` packet is only sent around a handover, so neither can tell.
+  The takeover still runs quietly. Same rule as the Mac (`anyPeerHoldsAirPods`); Android
+  requires fresh evidence a bud is worn.
 
 ## Mute safety
 

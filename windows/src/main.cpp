@@ -238,6 +238,8 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
         }
         return bleWatcher.airpodsAvailable();
     });
+    // The hold, pre-mute and panel need a peer that holds the AirPods (not in the case).
+    controller.setPeerHoldsProbe([&peerV2]() { return peerV2.anyPeerHoldsAirPods(); });
 
     if (!tray.create(hInstance)) return 1;
     tray.setStatus(stateLabel(controller.state()));
