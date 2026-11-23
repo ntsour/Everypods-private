@@ -372,6 +372,7 @@ void PeerV2Mesh::runPeer(std::shared_ptr<PeerSession> session) {
     PeerSession& s = *session;
     const auto keepGoing = [this, &s] { return s.running.load() && m_running.load(); };
     int attempt = 0;  // failed dials since the last link (Android retryAttempt)
+    int misses = 0;   // dials in a row that found no EveryPods service
 
     const auto delay = firstDialDelay(localIdentity().installationId, knownPeerInstallationId(s.address));
     if (delay.count() > 0) {
@@ -403,18 +404,29 @@ void PeerV2Mesh::runPeer(std::shared_ptr<PeerSession> session) {
                 s.links.push_back(link);
             }
             attempt = 0;
+            misses = 0;
             s.wake.store(false);
             runLink(session, link);
+        } catch (const PeerServiceMissing& e) {
+            ++misses;
+            log::debug("V2 {:012X} dial failed: {}", s.address, e.what());
         } catch (const winrt::hresult_error& e) {
+            misses = 0;
             log::debug("V2 {:012X} dial error 0x{:08X} {}", s.address,
                 static_cast<std::uint32_t>(e.code().value), winrt::to_string(e.message()));
         } catch (const std::exception& e) {
+            misses = 0;
             log::debug("V2 {:012X} dial failed: {}", s.address, e.what());
         }
-        const auto backoff = peerRetryDelay(attempt, peerRetryJitter());
+        const auto backoff = misses > 0 ? peerServiceMissingDelay(misses, peerRetryJitter())
+                                        : peerRetryDelay(attempt, peerRetryJitter());
         ++attempt;
-        log::debug("V2 {:012X} redialling in {} ms (attempt {})", s.address, backoff.count(), attempt);
-        if (!sleepWhile(keepGoing, backoff, &s.wake)) return;
+        log::debug("V2 {:012X} redialling in {} ms (attempt {}{})", s.address, backoff.count(), attempt,
+            misses > 0 ? ", no EveryPods service there" : "");
+        // The link-up wake does not end a wait for a missing service: our own
+        // dials bring that link up.
+        if (!sleepWhile(keepGoing, backoff, misses > 0 ? nullptr : &s.wake)) return;
+        if (misses > 0) s.wake.store(false);
     }
 }
 
