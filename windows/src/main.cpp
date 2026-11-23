@@ -203,6 +203,8 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     // sessions (polling made Windows drop idle AirPods in June).
     std::atomic<bool> mediaPlaying{false};
     std::atomic<bool> callActive{false};
+    std::atomic<bool> takeOnMediaStart{settings.takeOnMediaStart};
+    std::atomic<bool> takeOnCall{settings.takeOnCall};
     v2::PeerV2Mesh peerV2([&]() {
         v2::LocalState st;
         const std::uint64_t addr = airpods.address();
@@ -278,6 +280,8 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
         info.airpodsConnected = airpods.isClassicallyConnected();
         info.autoRouteEnabled = controller.autoRoute();
         info.pauseOnRelease = silencer.enabled();
+        info.takeOnMediaStart = takeOnMediaStart.load();
+        info.takeOnCall = takeOnCall.load();
         info.hasMutedApps = silencer.hasMuted();
         for (auto& p : peers.peerInfos())
             info.peers.push_back({p.address, p.name, p.connected});
@@ -334,10 +338,12 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
         controller.onPeerConnectionChanged(connected);
     });
 
-    media.setCallback([&controller, &mediaPlaying, &peerV2, restoreAsync](bool playing) {
+    media.setCallback([&controller, &mediaPlaying, &takeOnMediaStart, &peerV2, restoreAsync](bool playing) {
         mediaPlaying.store(playing);
         if (playing) restoreAsync("media started on this PC");
-        controller.onMediaPlayingChanged(playing);
+        // "Take AirPods when this PC starts playing media" off: never raise a
+        // media-start takeover (stop notifications still pass through).
+        if (!playing || takeOnMediaStart.load()) controller.onMediaPlayingChanged(playing);
         peerV2.refreshLocalState();
     });
 
@@ -346,7 +352,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     // the standard debounce and anti-pingpong guards. This prevents an ongoing
     // Teams call from re-triggering a claim after Windows voluntarily released
     // AirPods to a peer.
-    teamsWatcher.setOnTriggered([&controller, &callActive, &peerV2, &silencer, &lostOwnershipAtMs]() {
+    teamsWatcher.setOnTriggered([&controller, &callActive, &takeOnCall, &peerV2, &silencer, &lostOwnershipAtMs]() {
         const std::int64_t sinceLost = static_cast<std::int64_t>(GetTickCount64()) - lostOwnershipAtMs.load();
         if (lostOwnershipAtMs.load() != 0 && sinceLost < 15'000) {
             log::handover("SKIP    audio-session trigger {} ms after the AirPods left (output moved to speakers)", sinceLost);
@@ -360,7 +366,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
             return;
         }
         callActive.store(true);
-        controller.onCallActive();
+        if (takeOnCall.load()) controller.onCallActive();
         peerV2.refreshLocalState();
     });
 
@@ -484,6 +490,22 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
                 settings.pauseOnRelease = nowEnabled;
                 store.save(settings);
                 log::info("Pause PC audio when AirPods leave: {}", nowEnabled ? "ON" : "OFF");
+                break;
+            }
+            case TrayIcon::kCmdToggleTakeOnMedia: {
+                const bool nowEnabled = !takeOnMediaStart.load();
+                takeOnMediaStart.store(nowEnabled);
+                settings.takeOnMediaStart = nowEnabled;
+                store.save(settings);
+                log::info("Take AirPods when this PC starts playing media: {}", nowEnabled ? "ON" : "OFF");
+                break;
+            }
+            case TrayIcon::kCmdToggleTakeOnCall: {
+                const bool nowEnabled = !takeOnCall.load();
+                takeOnCall.store(nowEnabled);
+                settings.takeOnCall = nowEnabled;
+                store.save(settings);
+                log::info("Take AirPods when a call starts on this PC: {}", nowEnabled ? "ON" : "OFF");
                 break;
             }
             case TrayIcon::kCmdUnmuteApps: {

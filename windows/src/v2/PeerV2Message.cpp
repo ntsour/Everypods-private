@@ -17,10 +17,20 @@ const Keys kSnapshotFields{"sessionId", "revision", "headsetId", "ownership", "a
                            "lastOwnerId", "lastOwnerRevision", "acquisition"};
 const Keys kRequestFields{"requestId", "headsetId", "requesterId", "requesterSessionId",
                           "membership", "membershipDigest", "snapshotRevisions"};
-const Keys kCapabilities{"acquire-v1", "snapshot"};
+const Keys kIntents{"call", "manual", "media", "passive"};
+// Capability names are open-ended: unknown but well-formed names are ignored.
+bool validCapabilityName(const std::string& s) {
+    if (s.empty() || s.size() > 32) return false;
+    for (std::size_t i = 0; i < s.size(); ++i) {
+        const char c = s[i];
+        const bool alnum = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
+        if (!(alnum || (c == '-' && i > 0))) return false;
+    }
+    return true;
+}
 const Keys kOwnership{"unknown", "held", "released"};
 const Keys kAudioUse{"unknown", "idle", "media", "call"};
-const Keys kDenials{"HELD", "UNKNOWN", "STALE_SNAPSHOT", "MEMBERSHIP_MISMATCH", "BUSY", "UNSUPPORTED", "SESSION_CHANGED"};
+const Keys kDenials{"HELD", "UNKNOWN", "STALE_SNAPSHOT", "MEMBERSHIP_MISMATCH", "BUSY", "UNSUPPORTED", "SESSION_CHANGED", "CALL_ACTIVE", "POLICY"};
 const Keys kRelayTypes{"battery", "anc", "ear_state"};
 
 Keys with(Keys base, std::initializer_list<const char*> add, std::initializer_list<const char*> remove = {}) {
@@ -139,7 +149,7 @@ void validate(FrameType type, const JsonObject& f) {
             if (!caps->array()) invalid("invalid_capabilities");
             std::vector<std::string> list;
             for (const auto& c : *caps->array()) {
-                if (!c.string() || !kCapabilities.count(*c.string())) invalid("invalid_capabilities");
+                if (!c.string() || !validCapabilityName(*c.string())) invalid("invalid_capabilities");
                 list.push_back(*c.string());
             }
             auto sorted = list;
@@ -159,7 +169,13 @@ void validate(FrameType type, const JsonObject& f) {
             break;
         }
         case FrameType::AcquireRequest: {
-            exact(f, kRequestFields);
+            // "intent" is optional (absent = legacy request); any other extra field is rejected.
+            if (field(f, "intent")) {
+                inSet(f, "intent", kIntents, "invalid_intent");
+                exact(f, with(kRequestFields, {"intent"}));
+            } else {
+                exact(f, kRequestFields);
+            }
             acquireIdentity(f, false);
             const auto members = membership(f);
             const Json* revs = field(f, "snapshotRevisions");

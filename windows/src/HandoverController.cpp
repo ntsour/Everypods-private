@@ -390,13 +390,10 @@ void HandoverController::onIncomingPacket(std::span<const std::uint8_t> data) {
                 break;
             }
 
-            // Requester always wins: every peer takeover is an explicit user action on
-            // the requesting device (media start / call answered), so the holder yields
-            // unconditionally. The prior holder-side call veto was removed for symmetry
-            // with Android's Phase 3 design (see docs/handover.md "Requester Always Wins"
-            // and docs/windows-multipeer.md). The anti-pingpong reject above is kept —
-            // it guards against our own just-completed takeover bouncing back, not a
-            // holder veto.
+            // Otherwise whoever asks wins: every peer takeover is an explicit user action
+            // on the requesting device (media start / call answered), so the holder
+            // yields. The call-hold veto above and the anti-pingpong reject guard the
+            // exceptions.
             log::handover("IN      kRequestDisconnect — ACCEPTED, releasing AirPods to Android");
 
             // Mark voluntary release so onCallActive() suppresses Teams/WASAPI re-triggers
@@ -438,11 +435,16 @@ void HandoverController::onIncomingPacket(std::span<const std::uint8_t> data) {
                     m_peers.sendPacket(kAirPodsDisconnected);
                 break;
             }
-            // Call-priority handover request from peer. Unlike RequestDisconnect,
-            // this is never rejected — the peer is taking AirPods for a call, which
-            // is peak user attention. Even mid-Teams-meeting on Windows, we yield.
-            // The user's principle: calls always win, on whichever device they're on.
-            log::handover("IN      kRequestHandover — ACCEPTED unconditionally (call priority)");
+            // Call-hold veto, same as Android: a holder that is in a call (Teams / Zoom /
+            // etc.) never lets go, even for a call-priority handover request. Re-assert
+            // ownership so the requester stops waiting.
+            if (m_airpods.hasActiveCallSessions()) {
+                log::handover("IN      kRequestHandover — REJECTED (call-hold veto: active call/meeting session)");
+                if (m_peers.isAnyConnected())
+                    m_peers.sendPacket(crossdevice::kAirPodsConnected);   // re-assert to caller
+                break;
+            }
+            log::handover("IN      kRequestHandover — ACCEPTED (no active call here)");
             // Mark voluntary release (same reasoning as RequestDisconnect above).
             m_voluntarilyReleased.store(true);
             log::handover("STATE   m_voluntarilyReleased = true (voluntary handover)");
