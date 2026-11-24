@@ -106,6 +106,12 @@ Settings SettingsStore::load() const {
         } else if (key == "holdplayback") {
             s.holdPlayback = (val != "0");
             log::debug("  holdplayback = {}", s.holdPlayback);
+        } else if (key == "lidopenconnect") {
+            s.lidOpenConnect = (val != "0");
+            log::debug("  lidopenconnect = {}", s.lidOpenConnect);
+        } else if (key == "lidlease") {
+            s.lidLease = (val != "0");
+            log::debug("  lidlease = {}", s.lidLease);
         }
     }
     return s;
@@ -127,6 +133,8 @@ void SettingsStore::save(const Settings& s) const {
     f << "takeonmedia=" << (s.takeOnMediaStart ? "1" : "0") << '\n';
     f << "takeoncall=" << (s.takeOnCall ? "1" : "0") << '\n';
     f << "holdplayback=" << (s.holdPlayback ? "1" : "0") << '\n';
+    f << "lidopenconnect=" << (s.lidOpenConnect ? "1" : "0") << '\n';
+    f << "lidlease=" << (s.lidLease ? "1" : "0") << '\n';
 }
 
 }

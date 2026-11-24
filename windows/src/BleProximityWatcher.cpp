@@ -102,8 +102,9 @@ bool BleProximityWatcher::budLikelyWorn() const {
     return worn != 0 && nowMs() - worn < kWornWindowMs;
 }
 
-bool BleProximityWatcher::parseProximity(const uint8_t* data, uint32_t len, bool& inCase, bool& worn) {
-    return parseProximityBeacon(data, len, inCase, worn);
+bool BleProximityWatcher::parseProximity(const uint8_t* data, uint32_t len, bool& inCase, bool& worn,
+                                         bool& lidOpen) {
+    return parseProximityBeacon(data, len, inCase, worn, lidOpen);
 }
 
 void BleProximityWatcher::onReceived(
@@ -127,9 +128,22 @@ void BleProximityWatcher::onReceived(
             auto reader = DataReader::FromBuffer(buffer);
             reader.ReadBytes(bytes);
 
-            bool inCase = false, worn = false;
-            if (!parseProximity(bytes.data(), len, inCase, worn)) continue;
+            bool inCase = false, worn = false, lidOpen = false;
+            if (!parseProximity(bytes.data(), len, inCase, worn, lidOpen)) continue;
             if (worn) m_lastWornMs.store(nowMs());
+            {
+                const std::int64_t now = nowMs();
+                if (lidOpen) {
+                    const bool starts = lidOpeningStarts(now, m_lastLidOpenMs.load(), m_lastLidClosedMs.load());
+                    m_lastLidOpenMs.store(now);
+                    if (starts) {
+                        log::info("BleProximityWatcher: case lid opened (RSSI {} dBm)", rssi);
+                        if (m_onLidOpened) { try { m_onLidOpened(); } catch (...) {} }
+                    }
+                } else {
+                    m_lastLidClosedMs.store(now);
+                }
+            }
 
             if (!m_loggedFirstBeacon.exchange(true))
                 log::info("BleProximityWatcher: first beacon — AirPods {} (RSSI {} dBm)",

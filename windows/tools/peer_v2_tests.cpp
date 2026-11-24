@@ -238,6 +238,20 @@ static void proximityTests() {
     CHECK(!parseProximityBeacon(other, sizeof other, inCase));
     CHECK(!parseProximityBeacon(inEars, 8, inCase));  // truncated
 
+    // Lid bit: byte 8 bit 3 set = closed.
+    bool worn2 = false, lidOpen = true;
+    stowed[8] = 0x08;
+    CHECK(parseProximityBeacon(stowed, sizeof stowed, inCase, worn2, lidOpen) && !lidOpen);
+    stowed[8] = 0x00;
+    CHECK(parseProximityBeacon(stowed, sizeof stowed, inCase, worn2, lidOpen) && lidOpen);
+
+    // A lid opening starts once, again after a close or after a minute without one.
+    CHECK(lidOpeningStarts(5000, 0, 0));                 // first lid-open beacon
+    CHECK(!lidOpeningStarts(6000, 5000, 0));             // same opening, 1 s later
+    CHECK(lidOpeningStarts(9000, 6000, 8000));           // closed in between
+    CHECK(!lidOpeningStarts(60000, 6000, 1000));         // still open, 54 s later
+    CHECK(lidOpeningStarts(66000, 6000, 1000));          // a minute without lid-open beacons
+
     // Availability: in case never expires; a recent out-of-case beacon wins.
     constexpr std::int64_t t = 1'000'000;
     CHECK(airpodsAvailableFor(t, 0, 0));                                  // nothing seen

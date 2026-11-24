@@ -20,7 +20,9 @@ inline constexpr std::int64_t kOutOfCaseWindowMs = 20'000;
 // state flip several times a second. "In case" = lid closed and neither pod in
 // an ear; anything ambiguous is NOT in case.
 // worn = at least one pod in an ear (gates the playback hold).
-inline bool parseProximityBeacon(const std::uint8_t* data, std::uint32_t len, bool& inCase, bool& worn) {
+// lidOpen = the case lid is open (lid-open connect).
+inline bool parseProximityBeacon(const std::uint8_t* data, std::uint32_t len, bool& inCase, bool& worn,
+                                 bool& lidOpenOut) {
     if (len < 9 || data[0] != 0x07 || data[1] != 0x19 || data[2] != 0x01) return false;
 
     const int status = data[5];
@@ -36,7 +38,25 @@ inline bool parseProximityBeacon(const std::uint8_t* data, std::uint32_t len, bo
     const bool lidOpen = ((lid >> 3) & 0x01) == 0;
     inCase = !lidOpen && !leftInEar && !rightInEar;
     worn = leftInEar || rightInEar;
+    lidOpenOut = lidOpen;
     return true;
+}
+
+inline bool parseProximityBeacon(const std::uint8_t* data, std::uint32_t len, bool& inCase, bool& worn) {
+    bool lidOpen = false;
+    return parseProximityBeacon(data, len, inCase, worn, lidOpen);
+}
+
+// A lid-open beacon that starts a new opening: the first one ever, the first
+// after a lid-closed beacon, or the first after kLidOpenRearmMs without one
+// (an open case advertises every second or so). Buds worn with the case shut
+// in a pocket report the lid closed, so they never count. Steady-clock ms,
+// 0 = never seen.
+inline constexpr std::int64_t kLidOpenRearmMs = 60'000;
+inline bool lidOpeningStarts(std::int64_t now, std::int64_t lastLidOpenMs, std::int64_t lastLidClosedMs) {
+    if (lastLidOpenMs == 0) return true;
+    if (lastLidClosedMs > lastLidOpenMs) return true;
+    return now - lastLidOpenMs >= kLidOpenRearmMs;
 }
 
 inline bool parseProximityBeacon(const std::uint8_t* data, std::uint32_t len, bool& inCase) {
