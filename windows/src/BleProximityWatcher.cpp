@@ -47,6 +47,7 @@ void BleProximityWatcher::start() {
         // Fail-open: leave m_running false so airpodsAvailable() returns true and
         // handover behaves exactly as before this feature existed.
         m_running.store(false);
+        m_startFailed.store(true);
         log::warn("BleProximityWatcher: failed to start BLE scan: 0x{:08X} {} — "
                   "in-case detection disabled (handover proceeds as before)",
                   (std::uint32_t)e.code().value, winrt::to_string(e.message()));
@@ -95,8 +96,14 @@ bool BleProximityWatcher::airpodsAvailable() const {
     return airpodsAvailableFor(now, m_lastInCaseMs.load(), m_lastOutOfCaseMs.load());
 }
 
-bool BleProximityWatcher::parseProximity(const uint8_t* data, uint32_t len, bool& inCase) {
-    return parseProximityBeacon(data, len, inCase);
+bool BleProximityWatcher::budLikelyWorn() const {
+    if (m_startFailed.load()) return true;  // no BLE at all: don't disable the hold
+    const std::int64_t worn = m_lastWornMs.load();
+    return worn != 0 && nowMs() - worn < kWornWindowMs;
+}
+
+bool BleProximityWatcher::parseProximity(const uint8_t* data, uint32_t len, bool& inCase, bool& worn) {
+    return parseProximityBeacon(data, len, inCase, worn);
 }
 
 void BleProximityWatcher::onReceived(
@@ -120,8 +127,9 @@ void BleProximityWatcher::onReceived(
             auto reader = DataReader::FromBuffer(buffer);
             reader.ReadBytes(bytes);
 
-            bool inCase = false;
-            if (!parseProximity(bytes.data(), len, inCase)) continue;
+            bool inCase = false, worn = false;
+            if (!parseProximity(bytes.data(), len, inCase, worn)) continue;
+            if (worn) m_lastWornMs.store(nowMs());
 
             if (!m_loggedFirstBeacon.exchange(true))
                 log::info("BleProximityWatcher: first beacon — AirPods {} (RSSI {} dBm)",

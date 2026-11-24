@@ -19,7 +19,8 @@ inline constexpr std::int64_t kOutOfCaseWindowMs = 20'000;
 // whose byte 8 is 0xff, which reads as "lid closed": accepting it made the
 // state flip several times a second. "In case" = lid closed and neither pod in
 // an ear; anything ambiguous is NOT in case.
-inline bool parseProximityBeacon(const std::uint8_t* data, std::uint32_t len, bool& inCase) {
+// worn = at least one pod in an ear (gates the playback hold).
+inline bool parseProximityBeacon(const std::uint8_t* data, std::uint32_t len, bool& inCase, bool& worn) {
     if (len < 9 || data[0] != 0x07 || data[1] != 0x19 || data[2] != 0x01) return false;
 
     const int status = data[5];
@@ -34,7 +35,13 @@ inline bool parseProximityBeacon(const std::uint8_t* data, std::uint32_t len, bo
 
     const bool lidOpen = ((lid >> 3) & 0x01) == 0;
     inCase = !lidOpen && !leftInEar && !rightInEar;
+    worn = leftInEar || rightInEar;
     return true;
+}
+
+inline bool parseProximityBeacon(const std::uint8_t* data, std::uint32_t len, bool& inCase) {
+    bool worn = false;
+    return parseProximityBeacon(data, len, inCase, worn);
 }
 
 // False only when the latest beacon said in case AND no out-of-case beacon

@@ -222,6 +222,11 @@ static void proximityTests() {
     stowed[8] = 0x00;  // lid open
     CHECK(parseProximityBeacon(stowed, sizeof stowed, inCase) && !inCase);
 
+    // Worn = a pod in an ear (gates the playback hold).
+    bool worn = false;
+    CHECK(parseProximityBeacon(inEars, sizeof inEars, inCase, worn) && worn);
+    CHECK(parseProximityBeacon(stowed, sizeof stowed, inCase, worn) && !worn);
+
     // Shorter type-0x07 message from a nearby Apple device: byte 8 is 0xff.
     const std::uint8_t shortMsg[] = {0x07, 0x11, 0x06, 0x29, 0x20, 0x0a, 0x51, 0xff, 0xff, 0x5a};
     CHECK(!parseProximityBeacon(shortMsg, sizeof shortMsg, inCase));
