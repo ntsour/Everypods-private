@@ -223,7 +223,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
         const bool held = airpods.isClassicallyConnectedWinRT();
         st.ownership = held ? v2::Ownership::Held : v2::Ownership::Released;
         st.audioUse = !held ? v2::AudioUse::Idle
-                    : callActive.load() ? v2::AudioUse::Call
+                    : (controller.callMicOpen() || callActive.load()) ? v2::AudioUse::Call
                     : mediaPlaying.load() ? v2::AudioUse::Media
                     : v2::AudioUse::Idle;
         return st;
@@ -433,6 +433,11 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
         if (takeOnCall.load()) controller.onCallActive(/*isCall=*/comms);
         peerV2.refreshLocalState();
     });
+
+    // Teams mic open = in a call or meeting: protects the AirPods from a phone
+    // call takeover while they are on this PC (kPeerAudioActive to peers).
+    controller.setOnCallMicSettled([&peerV2]() { peerV2.refreshLocalState(); });
+    teamsWatcher.setOnCallMicChanged([&controller](bool open) { controller.onCallMicChanged(open); });
 
     // When the Teams audio session expires (call ended), clear the voluntary-release
     // gate so the next new call can trigger a fresh claim.

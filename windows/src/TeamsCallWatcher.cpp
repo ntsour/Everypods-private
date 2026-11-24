@@ -4,6 +4,7 @@
 
 #include <shlwapi.h>
 
+#include <algorithm>
 #include <future>
 #include <set>
 #include <string>
@@ -108,8 +109,13 @@ public:
           m_flow(flow), m_role(role), m_watched(watched),
           m_endpointId(std::move(endpointId)), m_instanceId(std::move(instanceId)) {}
 
-    void clearOwner() { m_owner = nullptr; }
+    void clearOwner() {
+        if (TeamsCallWatcher* owner = m_owner) owner->setCallMicActive(this, false);
+        m_owner = nullptr;
+    }
     const std::wstring& instanceId() const { return m_instanceId; }
+    // A Teams capture session: Active means its mic is open (a call or meeting).
+    bool isCallMic() const { return m_watched && m_flow == eCapture && isCommsApp(m_exe); }
 
     ULONG STDMETHODCALLTYPE AddRef() override { return ++m_refs; }
     ULONG STDMETHODCALLTYPE Release() override {
@@ -126,6 +132,7 @@ public:
     HRESULT STDMETHODCALLTYPE OnStateChanged(AudioSessionState state) override {
         TeamsCallWatcher* owner = m_owner;
         if (!owner) return S_OK;
+        if (isCallMic()) owner->setCallMicActive(this, state == AudioSessionStateActive);
         if (state == AudioSessionStateActive) {
             if (m_watched)
                 owner->onTeamsSessionActive(m_pid, m_exe, m_flow, m_role);
@@ -288,6 +295,23 @@ void TeamsCallWatcher::onRenderSessionActive(const AudioSessionRef& session) {
     if (cb) cb(session);
 }
 
+void TeamsCallWatcher::setCallMicActive(const void* session, bool active) {
+    bool edge = false, open = false;
+    {
+        std::scoped_lock lk{m_callMicMutex};
+        auto it = std::find(m_callMicSessions.begin(), m_callMicSessions.end(), session);
+        const bool wasOpen = !m_callMicSessions.empty();
+        if (active && it == m_callMicSessions.end()) m_callMicSessions.push_back(session);
+        if (!active && it != m_callMicSessions.end()) m_callMicSessions.erase(it);
+        open = !m_callMicSessions.empty();
+        edge = open != wasOpen;
+    }
+    if (!edge) return;
+    log::info("TeamsCallWatcher: Teams mic {}", open ? "open (call or meeting)" : "closed");
+    CallMicCallback cb = m_onCallMicChanged;
+    if (cb) cb(open);
+}
+
 void TeamsCallWatcher::onTeamsSessionEnded(DWORD pid, const std::wstring& exe) {
     // Dedup: render and capture sessions both fire Expired when a call ends.
     // Suppress duplicate notifications within a 20 s window.
@@ -370,6 +394,8 @@ void TeamsCallWatcher::watchSession(IAudioSessionControl* ctrl,
     ComPtr<SessionEvents> ev;
     ev.Attach(new SessionEvents(this, exe, pid, flow, role, watched, deviceId, std::move(instanceId)));
     const bool registered = SUCCEEDED(ctrl->RegisterAudioSessionNotification(ev.Get()));
+    // A call already in progress when we (re)subscribed.
+    if (registered && ev->isCallMic() && state == AudioSessionStateActive) setCallMicActive(ev.Get(), true);
     // A brand-new session can be Active before we got to register for its
     // events (it reached us via the STA queue): report that start now.
     if (isNew && state == AudioSessionStateActive && flow == eRender && pid != GetCurrentProcessId()) {

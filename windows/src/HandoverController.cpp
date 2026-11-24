@@ -165,6 +165,9 @@ bool HandoverController::setState(OwnershipState s) {
             scheduleHandsFreeCheck(std::chrono::seconds{8}, /*allowWhilePlaying=*/false, "connected");
         }
 
+        // A call on this PC only protects the AirPods while they are here.
+        publishCallAudio("ownership changed");
+
         if (s == OwnershipState::LocalPc) {
             m_voluntarilyReleased.store(false);
             // Clear the W4 app-suppress window so the next voluntary release starts fresh.
@@ -688,6 +691,9 @@ void HandoverController::onPeerConnectionChanged(bool connected) {
                 airpodsHere ? "LocalPc" : "RemoteAndroid");
         }
 
+        // Tell a peer that just (re)connected that we are mid-call.
+        publishCallAudio("peer connected", /*resend=*/true);
+
         // If we held ownership (LocalPc) but the AirPods are gone, the peer grabbed them
         // via Bluetooth before the RFCOMM coordination channel was established (bypassing
         // the protocol). Now that RFCOMM is up, reclaim them.
@@ -733,6 +739,36 @@ void HandoverController::onCallActive(bool isCall) {
     // A media app outside the media controls (VLC) has no session to pause: the
     // hold shows progress only.
     requestTakeover(isCall ? HoldKind::Call : HoldKind::Media, /*userRetry=*/false, std::wstring{});
+}
+
+void HandoverController::onCallMicChanged(bool open) {
+    const std::uint64_t gen = ++m_callMicGen;
+    if (open) {
+        if (!m_callMicOpen.exchange(true) && m_onCallMicSettled) m_onCallMicSettled();
+        publishCallAudio("Teams mic open");
+        return;
+    }
+    // The watcher re-subscribes on every default-device change, which reads as
+    // a brief close: only a close that lasts 3 s ends the call.
+    std::thread([this, gen] {
+        for (int i = 0; i < 30; ++i) {
+            if (m_callMicGen.load() != gen) return;
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        if (m_callMicGen.load() != gen) return;
+        if (m_callMicOpen.exchange(false) && m_onCallMicSettled) m_onCallMicSettled();
+        publishCallAudio("Teams mic closed");
+    }).detach();
+}
+
+void HandoverController::publishCallAudio(const char* why, bool resend) {
+    std::scoped_lock lk{m_callAudioMutex};
+    const bool active = m_callMicOpen.load() && m_state.load() == OwnershipState::LocalPc;
+    if (resend ? !active : active == m_callAudioActiveSent) return;
+    m_callAudioActiveSent = active;
+    if (!m_peers.isAnyConnected()) return;  // a peer that connects later gets the resend
+    log::handover("OUT     {} -> all peers ({})", active ? "kPeerAudioActive" : "kPeerAudioIdle", why);
+    m_peers.sendPacket(active ? crossdevice::kPeerAudioActive : crossdevice::kPeerAudioIdle);
 }
 
 void HandoverController::onTeamsCallEnded() {
