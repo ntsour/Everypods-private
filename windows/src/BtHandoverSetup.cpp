@@ -1,6 +1,9 @@
 #include "BtHandoverSetup.hpp"
 
+#include "BluetoothRfcommClient.hpp"
 #include "Logger.hpp"
+
+#include <objbase.h>
 
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Foundation.Collections.h>
@@ -92,11 +95,102 @@ std::string encode(const BtHandoverSetupServer::State& s) {
         s.revision, s.origin, s.enabled ? "true" : "false");
 }
 
+std::string newOrigin() {
+    GUID g{};
+    if (FAILED(CoCreateGuid(&g))) throw std::runtime_error("CoCreateGuid failed");
+    return std::format("{:08x}-{:04x}-{:04x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        g.Data1, g.Data2, g.Data3, g.Data4[0], g.Data4[1], g.Data4[2], g.Data4[3],
+        g.Data4[4], g.Data4[5], g.Data4[6], g.Data4[7]);
+}
+
+// One request and one reply on a fresh connection to the phone's setup
+// service, the phone's side of BtHandoverSync (u32 big-endian length + JSON).
+BtHandoverSetupServer::State exchangeWithPhone(std::uint64_t phone, const BtHandoverSetupServer::State& request) {
+    StreamSocket socket = dialRfcomm(phone, kSetupService, "SETUP");
+    std::atomic<bool> done{false};
+    std::thread watchdog([&done, socket]() {
+        const auto deadline = std::chrono::steady_clock::now() + kExchangeTimeout;
+        while (!done.load() && std::chrono::steady_clock::now() < deadline)
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        if (!done.load()) { try { socket.Close(); } catch (...) {} }
+    });
+    const auto finish = [&] {
+        done.store(true);
+        watchdog.join();
+        try { socket.Close(); } catch (...) {}
+    };
+    try {
+        DataWriter writer{socket.OutputStream()};  // big-endian by default
+        DataReader reader{socket.InputStream()};
+        const std::string body = encode(request);
+        writer.WriteUInt32(static_cast<std::uint32_t>(body.size()));
+        writer.WriteBytes(winrt::array_view<const std::uint8_t>(
+            reinterpret_cast<const std::uint8_t*>(body.data()),
+            reinterpret_cast<const std::uint8_t*>(body.data()) + body.size()));
+        writer.StoreAsync().get();
+        log::info("BT handover setup request to {:012X}: {}", phone, body);
+        if (reader.LoadAsync(4).get() != 4)
+            throw std::runtime_error("no reply (has this PC been added on that device?)");
+        const std::uint32_t length = reader.ReadUInt32();
+        if (length < 1 || length > kMaxMessageBytes) throw std::runtime_error("bad reply length");
+        if (reader.LoadAsync(length).get() != length) throw std::runtime_error("short reply");
+        const std::string reply = winrt::to_string(reader.ReadString(length));
+        log::info("BT handover setup reply from {:012X}: {}", phone, reply);
+        auto state = decode(reply);
+        finish();
+        return state;
+    } catch (...) {
+        finish();
+        throw;
+    }
+}
+
 }  // namespace
 
 BtHandoverSetupServer::BtHandoverSetupServer() { load(); }
 
-BtHandoverSetupServer::~BtHandoverSetupServer() { stop(); }
+BtHandoverSetupServer::~BtHandoverSetupServer() {
+    stop();
+    std::scoped_lock lk{m_authMutex};
+    if (m_authThread.joinable()) m_authThread.join();
+}
+
+void BtHandoverSetupServer::authorize(std::uint64_t phoneAddress) {
+    std::scoped_lock lk{m_authMutex};
+    if (m_authBusy.load()) return;
+    const auto now = std::chrono::steady_clock::now();
+    auto it = m_lastAuthorize.find(phoneAddress);
+    if (it != m_lastAuthorize.end() && now - it->second < kAuthorizeInterval) return;
+    m_lastAuthorize[phoneAddress] = now;
+    if (m_authThread.joinable()) m_authThread.join();  // the last run has finished
+    m_authBusy.store(true);
+    m_authThread = std::thread([this, phoneAddress] {
+        winrt::init_apartment(winrt::apartment_type::multi_threaded);
+        runAuthorize(phoneAddress);
+        m_authBusy.store(false);
+    });
+}
+
+void BtHandoverSetupServer::runAuthorize(std::uint64_t phone) {
+    log::handover("SETUP   {:012X} refuses our links: asking it to finish adding this PC", phone);
+    try {
+        // Revision 1 loses the phone's merge, so it answers with its own state;
+        // echoing that back clears the phone's pending setup (the Mac's
+        // GattSetupAuthorizer does the same over Bluetooth LE).
+        const State first{1, newOrigin(), true};
+        const State phoneState = exchangeWithPhone(phone, first);
+        std::this_thread::sleep_for(std::chrono::seconds{1});
+        const State confirmed = exchangeWithPhone(phone, phoneState);
+        const State winner = merge(phone, confirmed);
+        log::handover("SETUP   {:012X} authorized this PC (revision {}, {})", phone, winner.revision,
+            winner.enabled ? "enabled" : "removed");
+    } catch (const winrt::hresult_error& e) {
+        log::warn("BT handover setup with {:012X} not finished: 0x{:08X} {}", phone,
+            static_cast<std::uint32_t>(e.code().value), winrt::to_string(e.message()));
+    } catch (const std::exception& e) {
+        log::warn("BT handover setup with {:012X} not finished: {}", phone, e.what());
+    }
+}
 
 bool BtHandoverSetupServer::start() {
     if (m_running.exchange(true)) return true;

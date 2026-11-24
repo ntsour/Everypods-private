@@ -384,7 +384,9 @@ void PeerV2Mesh::runPeer(std::shared_ptr<PeerSession> session) {
     PeerSession& s = *session;
     const auto keepGoing = [this, &s] { return s.running.load() && m_running.load(); };
     int attempt = 0;  // failed dials since the last link (Android retryAttempt)
-    int misses = 0;   // dials in a row that found no EveryPods service
+    int misses = 0;   // dials in a row that found no EveryPods service, or links
+                      // the peer closed at once (peerLinkTooShort)
+    bool shortLink = false;  // the last miss was a link closed at once
 
     const auto delay = firstDialDelay(localIdentity().installationId, knownPeerInstallationId(s.address));
     if (delay.count() > 0) {
@@ -399,6 +401,8 @@ void PeerV2Mesh::runPeer(std::shared_ptr<PeerSession> session) {
         if (haveLink) {  // the peer dialled us; nothing to dial
             s.wake.store(false);
             attempt = 0;
+            misses = 0;  // a link is up (e.g. ours lost the duplicate arbitration)
+            shortLink = false;
             if (!sleepWhile(keepGoing, std::chrono::milliseconds{1000})) return;
             continue;
         }
@@ -416,27 +420,34 @@ void PeerV2Mesh::runPeer(std::shared_ptr<PeerSession> session) {
                 s.links.push_back(link);
             }
             attempt = 0;
-            misses = 0;
             s.wake.store(false);
+            const auto linkUp = std::chrono::steady_clock::now();
             runLink(session, link);
+            const auto lasted = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - linkUp);
+            bool otherLinkUp;
+            { std::scoped_lock lk{m_mutex}; otherLinkUp = !s.links.empty(); }
+            if (peerLinkTooShort(lasted) && !otherLinkUp) { ++misses; shortLink = true; }
+            else { misses = 0; shortLink = false; }
         } catch (const PeerServiceMissing& e) {
             ++misses;
+            shortLink = false;
             log::debug("V2 {:012X} dial failed: {}", s.address, e.what());
         } catch (const winrt::hresult_error& e) {
-            misses = 0;
+            if (!shortLink) misses = 0;
             log::debug("V2 {:012X} dial error 0x{:08X} {}", s.address,
                 static_cast<std::uint32_t>(e.code().value), winrt::to_string(e.message()));
         } catch (const std::exception& e) {
-            misses = 0;
+            if (!shortLink) misses = 0;
             log::debug("V2 {:012X} dial failed: {}", s.address, e.what());
         }
         const auto backoff = misses > 0 ? peerServiceMissingDelay(misses, peerRetryJitter())
                                         : peerRetryDelay(attempt, peerRetryJitter());
         ++attempt;
         log::debug("V2 {:012X} redialling in {} ms (attempt {}{})", s.address, backoff.count(), attempt,
-            misses > 0 ? ", no EveryPods service there" : "");
-        // The link-up wake does not end a wait for a missing service: our own
-        // dials bring that link up.
+            misses == 0 ? "" : shortLink ? ", the peer closed the link at once" : ", no EveryPods service there");
+        // The link-up wake does not end a wait for a missing service or a peer
+        // that closes at once: our own dials bring that link up.
         if (!sleepWhile(keepGoing, backoff, misses > 0 ? nullptr : &s.wake)) return;
         if (misses > 0) s.wake.store(false);
     }

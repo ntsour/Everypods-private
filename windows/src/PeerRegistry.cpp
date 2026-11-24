@@ -35,6 +35,11 @@ void PeerRegistry::setOnPeerLinkUp(PeerLinkUpCallback cb) {
     m_linkUp->callback = std::move(cb);
 }
 
+void PeerRegistry::setOnPeerRejected(PeerRejectedCallback cb) {
+    std::scoped_lock lk{m_rejected->mutex};
+    m_rejected->callback = std::move(cb);
+}
+
 void PeerRegistry::revokeWatch(Entry& e) {
     // Called with no registry lock held.
     if (e.device && e.statusToken) {
@@ -129,6 +134,11 @@ void PeerRegistry::wireCallbacks(Entry& e) {
         StateCallback cb;
         { std::scoped_lock lk{m_mutex}; cb = m_onState; }
         if (cb) cb(connected);
+    });
+    e.client->setOnRejected([slot = m_rejected, addr] {
+        PeerRejectedCallback cb;
+        { std::scoped_lock lk{slot->mutex}; cb = slot->callback; }
+        if (cb) cb(addr);
     });
     // Store the device display name the first time we successfully connect.
     e.client->setOnName([this, addr](const std::string& name) {

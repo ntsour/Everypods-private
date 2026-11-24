@@ -207,6 +207,10 @@ static void dialPolicyTests() {
     CHECK(peerServiceMissingDelay(5, 0.8) == milliseconds{240000});
     CHECK(peerServiceMissingDelay(5, 9.0) == milliseconds{360000});  // clamped
     CHECK(std::string(PeerServiceMissing("x").what()) == "x");
+    CHECK(peerLinkTooShort(milliseconds{500}));     // accepted, then closed at once
+    CHECK(peerLinkTooShort(milliseconds{9999}));
+    CHECK(!peerLinkTooShort(milliseconds{10000}));
+    CHECK(!peerLinkTooShort(milliseconds{600000}));
 }
 
 // Beacon bytes as captured on 2026-11-23 (after the company id).

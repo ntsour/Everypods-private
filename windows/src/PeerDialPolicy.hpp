@@ -54,6 +54,18 @@ inline std::chrono::milliseconds peerServiceMissingDelay(int misses, double jitt
     return std::chrono::milliseconds{static_cast<long long>(static_cast<double>(kStepsMs[idx]) * j)};
 }
 
+// A link that ends this soon after it came up counts like a dial that found no
+// EveryPods service (peerServiceMissingDelay), so the next dial backs off. A
+// peer that accepts and closes at once (e.g. an app version that no longer
+// takes this link) otherwise reset the retry count on every connect: the PC
+// redialled it every 2-3 s on both services, about 4,000 dials in 90 min
+// (2026-11-24), the radio load that made idle AirPods drop before.
+inline constexpr std::chrono::milliseconds kPeerShortLink{10000};
+
+inline bool peerLinkTooShort(std::chrono::milliseconds lasted) {
+    return lasted < kPeerShortLink;
+}
+
 inline double peerRetryJitter() {
     thread_local std::mt19937 rng{std::random_device{}()};
     return std::uniform_real_distribution<double>(kPeerJitterMin, kPeerJitterMax)(rng);
