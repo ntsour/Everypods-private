@@ -20,7 +20,9 @@ inline constexpr std::int64_t kOutOfCaseWindowMs = 20'000;
 // state flip several times a second. "In case" = lid closed and neither pod in
 // an ear; anything ambiguous is NOT in case.
 // worn = at least one pod in an ear (gates the playback hold).
-inline bool parseProximityBeacon(const std::uint8_t* data, std::uint32_t len, bool& inCase, bool& worn) {
+// lidOpen = the case lid is open (lid-open connect).
+inline bool parseProximityBeacon(const std::uint8_t* data, std::uint32_t len, bool& inCase, bool& worn,
+                                 bool& lidOpenOut) {
     if (len < 9 || data[0] != 0x07 || data[1] != 0x19 || data[2] != 0x01) return false;
 
     const int status = data[5];
@@ -36,7 +38,33 @@ inline bool parseProximityBeacon(const std::uint8_t* data, std::uint32_t len, bo
     const bool lidOpen = ((lid >> 3) & 0x01) == 0;
     inCase = !lidOpen && !leftInEar && !rightInEar;
     worn = leftInEar || rightInEar;
+    lidOpenOut = lidOpen;
     return true;
+}
+
+inline bool parseProximityBeacon(const std::uint8_t* data, std::uint32_t len, bool& inCase, bool& worn) {
+    bool lidOpen = false;
+    return parseProximityBeacon(data, len, inCase, worn, lidOpen);
+}
+
+// A lid-open beacon that starts a new opening. We need evidence the lid was
+// shut first, because an open case advertises every second or so and the scan
+// is paused while this PC holds the AirPods (so a lid left open, a manual
+// disconnect or a drop must not look like an opening):
+//  - a lid-closed beacon since the last lid-open one (or since the scan started);
+//  - the first lid-open beacon only after kLidQuietMs of scanning with no lid
+//    beacons at all (a shut case goes quiet);
+//  - or kLidOpenRearmMs without a lid-open beacon.
+// The watcher feeds it only beacons with no bud in an ear (worn buds can report
+// the lid as open) and resets the lid times when the scan starts. Steady-clock
+// ms, 0 = never seen.
+inline constexpr std::int64_t kLidQuietMs = 10'000;
+inline constexpr std::int64_t kLidOpenRearmMs = 60'000;
+constexpr bool lidOpeningStarts(std::int64_t now, std::int64_t scanStartMs, std::int64_t lastLidOpenMs,
+                             std::int64_t lastLidClosedMs) {
+    if (lastLidClosedMs != 0 && lastLidClosedMs > lastLidOpenMs) return true;
+    if (lastLidOpenMs == 0) return now - scanStartMs >= kLidQuietMs;
+    return now - lastLidOpenMs >= kLidOpenRearmMs;
 }
 
 inline bool parseProximityBeacon(const std::uint8_t* data, std::uint32_t len, bool& inCase) {

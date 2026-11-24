@@ -49,6 +49,24 @@ public:
     // default audio device on takeover. The user can still trigger it manually
     // via the tray menu "Connect AirPods now" item.
     void setAutoRoute(bool enabled) { m_autoRoute.store(enabled); }
+
+    // ── Lid-open connect (the phones' "Auto-connect on case open (last
+    // device)"). The phones leave a lid opening to the device that used the
+    // AirPods last; when that was this PC, it connects them here.
+    //
+    // The lease ("this PC used them last") is set when the AirPods come to this
+    // PC and kept when they go into the case. It is cleared when a peer claims
+    // them (kAirPodsConnected) or this PC releases them to a peer. Persisted by
+    // the owner through the change callback.
+    void setLidOpenConnect(bool enabled) { m_lidOpenConnect.store(enabled); }
+    bool lidOpenConnect() const { return m_lidOpenConnect.load(); }
+    void setLidLease(bool held) { m_lidLease.store(held); }  // initial value, no callback
+    bool lidLease() const { return m_lidLease.load(); }
+    void setOnLidLeaseChanged(std::function<void(bool held)> cb) { m_onLidLeaseChanged = std::move(cb); }
+    // True when a peer's v2 snapshot says it holds the AirPods.
+    void setPeerHoldsProbe(std::function<bool()> probe) { m_peerHoldsProbe = std::move(probe); }
+    // A case lid was opened near this PC (BleProximityWatcher). Any thread.
+    void onLidOpened();
     bool autoRoute() const          { return m_autoRoute.load(); }
 
     // Optional playback hold + progress panel (not owned). Set before start.
@@ -69,6 +87,15 @@ public:
     // Called when the Teams audio session expires (call truly ended).
     // Clears the voluntary-release gate so the next new call can trigger a claim.
     void onTeamsCallEnded();
+
+    // Teams opened or closed its mic (TeamsCallWatcher). While it is open and
+    // the AirPods are on this PC, peers get kPeerAudioActive, so a phone call
+    // ringing on a phone does not take the AirPods mid-call (Android
+    // CrossDevice.peerAudioActive). A close is debounced 3 s.
+    void onCallMicChanged(bool open);
+    bool callMicOpen() const { return m_callMicOpen.load(); }
+    // Called after callMicOpen() changes (set before the watcher starts).
+    void setOnCallMicSettled(std::function<void()> cb) { m_onCallMicSettled = std::move(cb); }
     void onIncomingPacket(std::span<const std::uint8_t> data);
     void onPeerConnectionChanged(bool connected);
 
@@ -154,6 +181,13 @@ private:
     // loop that floods peers with REQUEST_DISCONNECT at the connect-backoff cadence.
     std::atomic<bool> m_takeoverInFlight{false};
 
+    void updateLidLease(bool held, const char* why);
+    std::atomic<bool> m_lidOpenConnect{true};
+    std::atomic<bool> m_lidLease{false};
+    std::atomic<bool> m_lidConnectInFlight{false};
+    std::function<void(bool)> m_onLidLeaseChanged;
+    std::function<bool()> m_peerHoldsProbe;
+
     // The AirPods mic (hands-free link). Windows sometimes brings the AirPods up
     // with stereo only, e.g. when they reconnect by themselves (2026-11-24: mic
     // "Disconnected" for 33 min, Teams saw no AirPods mic). 8 s after they come
@@ -178,6 +212,14 @@ private:
     // A peer reported an active call/meeting (kPeerAudioActive); cleared by
     // kPeerAudioIdle or when the last peer link drops. Suppresses our call takeover.
     std::atomic<bool> m_peerAudioActive{false};
+
+    // Our own call, told to peers (onCallMicChanged / publishCallAudio).
+    void publishCallAudio(const char* why, bool resend = false);
+    std::atomic<bool> m_callMicOpen{false};
+    std::function<void()> m_onCallMicSettled;
+    std::atomic<std::uint64_t> m_callMicGen{0};
+    std::mutex m_callAudioMutex;
+    bool m_callAudioActiveSent{false};  // guarded by m_callAudioMutex
 
     // Set by cancelTakeover(): the connect thread stops before its next attempt.
     std::atomic<bool> m_cancelTakeover{false};

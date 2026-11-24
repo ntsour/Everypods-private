@@ -201,6 +201,10 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     TrayIcon tray;
 
     controller.setAutoRoute(settings.autoRoute);
+    controller.setLidOpenConnect(settings.lidOpenConnect);
+    controller.setLidLease(settings.lidLease);
+    // A case lid opened near this PC: connect if this PC used the AirPods last.
+    bleWatcher.setOnLidOpened([&controller]() { controller.onLidOpened(); });
 
     // BLE proximity gate: don't initiate a takeover when the AirPods are stowed
     // in their case (would otherwise hijack audio from a Jabra/Dell headset the
@@ -223,7 +227,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
         const bool held = airpods.isClassicallyConnectedWinRT();
         st.ownership = held ? v2::Ownership::Held : v2::Ownership::Released;
         st.audioUse = !held ? v2::AudioUse::Idle
-                    : callActive.load() ? v2::AudioUse::Call
+                    : (controller.callMicOpen() || callActive.load()) ? v2::AudioUse::Call
                     : mediaPlaying.load() ? v2::AudioUse::Media
                     : v2::AudioUse::Idle;
         return st;
@@ -241,6 +245,8 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     // The hold, pre-mute and panel need a peer that holds the AirPods AND fresh
     // BLE evidence a bud is worn: a phone still reports "held" with the AirPods
     // in their case while its Bluetooth profile stays up.
+    // Lid-open connect stands aside when a peer holds the AirPods.
+    controller.setPeerHoldsProbe([&peerV2]() { return peerV2.anyPeerHoldsAirPods(); });
     controller.setHoldProbe([&peerV2, &bleWatcher]() {
         const bool held = peerV2.anyPeerHoldsAirPods();
         const bool worn = bleWatcher.budLikelyWorn();
@@ -342,6 +348,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
         info.takeOnMediaStart = takeOnMediaStart.load();
         info.takeOnCall = takeOnCall.load();
         info.holdPlayback = hold.enabled();
+        info.lidOpenConnect = controller.lidOpenConnect();
         info.hasMutedApps = silencer.hasMuted();
         for (auto& p : peers.peerInfos())
             info.peers.push_back({p.address, p.name, p.connected});
@@ -352,6 +359,20 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     // keeps the PC pending and refuses its CrossDevice connection.
     // When a peer enables handover with this PC, start coordinating with it.
     std::mutex settingsMutex;
+    // Persist the lid-open lease ("this PC used the AirPods last") across restarts.
+    controller.setOnLidLeaseChanged([&](bool held) {
+        std::scoped_lock lk{settingsMutex};
+        if (settings.lidLease == held) return;
+        settings.lidLease = held;
+        store.save(settings);
+    });
+    {   // It may have changed before the callback was set (e.g. AirPods already here).
+        std::scoped_lock lk{settingsMutex};
+        if (settings.lidLease != controller.lidLease()) {
+            settings.lidLease = controller.lidLease();
+            store.save(settings);
+        }
+    }
     BtHandoverSetupServer handoverSetup;
     handoverSetup.setOnChange([&](std::uint64_t peer, bool enabled) {
         if (!enabled) {
@@ -433,6 +454,11 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
         if (takeOnCall.load()) controller.onCallActive(/*isCall=*/comms);
         peerV2.refreshLocalState();
     });
+
+    // Teams mic open = in a call or meeting: protects the AirPods from a phone
+    // call takeover while they are on this PC (kPeerAudioActive to peers).
+    controller.setOnCallMicSettled([&peerV2]() { peerV2.refreshLocalState(); });
+    teamsWatcher.setOnCallMicChanged([&controller](bool open) { controller.onCallMicChanged(open); });
 
     // When the Teams audio session expires (call ended), clear the voluntary-release
     // gate so the next new call can trigger a fresh claim.
@@ -588,6 +614,17 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
                 settings.takeOnCall = nowEnabled;
                 store.save(settings);
                 log::info("Take AirPods when a call starts on this PC: {}", nowEnabled ? "ON" : "OFF");
+                break;
+            }
+            case TrayIcon::kCmdToggleLidOpen: {
+                const bool nowEnabled = !controller.lidOpenConnect();
+                controller.setLidOpenConnect(nowEnabled);
+                {
+                    std::scoped_lock lk{settingsMutex};
+                    settings.lidOpenConnect = nowEnabled;
+                    store.save(settings);
+                }
+                log::info("Connect AirPods when the case opens (last device): {}", nowEnabled ? "ON" : "OFF");
                 break;
             }
             case TrayIcon::kCmdToggleHold: {

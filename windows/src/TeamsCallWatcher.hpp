@@ -59,6 +59,14 @@ public:
     using SessionEndedCallback = std::function<void()>;
     void setOnSessionEnded(SessionEndedCallback cb) { m_onSessionEnded = std::move(cb); }
 
+    // Called when Teams opens its mic (any Teams capture session Active: a
+    // call or meeting) or closes it (none Active). Raw edges: subscriptions
+    // are dropped and re-made on every default-device change, so the receiver
+    // should debounce the close. Called on a WASAPI or the watcher's STA
+    // thread; return quickly. Set before start().
+    using CallMicCallback = std::function<void(bool open)>;
+    void setOnCallMicChanged(CallMicCallback cb) { m_onCallMicChanged = std::move(cb); }
+
     bool start();
     void stop();
 
@@ -68,6 +76,7 @@ public:
     void onNewSession(IAudioSessionControl* ctrl, EDataFlow flow, ERole role,
                       const std::wstring& deviceId);
     void onRenderSessionActive(const AudioSessionRef& session);
+    void setCallMicActive(const void* session, bool active);
 
 private:
     class Notification;          // IAudioSessionNotification — watches for new sessions
@@ -115,6 +124,10 @@ private:
     TriggerCallback       m_onTriggered;
     SessionEndedCallback  m_onSessionEnded;
     RenderSessionActiveCallback m_onRenderSessionActive;
+    CallMicCallback       m_onCallMicChanged;
+
+    std::mutex m_callMicMutex;
+    std::vector<const void*> m_callMicSessions;  // Teams capture sessions now Active
 
     std::mutex m_dedupeMutex;
     DWORD m_lastReportedPid{0};

@@ -125,6 +125,7 @@ final class HandoverController {
         peers.onV2Record = { [weak self] id, payload in self?.v2.onRecord(id, payload) }
         v2.start()
         media.start()
+        proximity.onLidOpened = { [weak self] in self?.onLidOpened() }
         proximity.start()
         peers.start()
         lastBluetoothConnected = pods.isConnected
@@ -169,6 +170,7 @@ final class HandoverController {
         v2.stateChanged()
         router.setPersistent(state == .thisMac)
         if state == .thisMac {
+            updateLidLease(true, "the AirPods are on this Mac")
             // Claiming the AirPods by any means resets the voluntary-release gate.
             voluntarilyReleased = false
             voluntaryReleaseApp = ""
@@ -209,6 +211,51 @@ final class HandoverController {
             }
         }
         lastBluetoothConnected = connected
+    }
+
+    // MARK: Lid-open connect
+
+    /// The phones' "Auto-connect on case open (last device)": a lid opening is left to the device that used the
+    /// AirPods last. The lease says that was this Mac: set when the AirPods come here and kept while they sit in
+    /// the case; cleared when a phone claims them or this Mac releases them.
+    private func updateLidLease(_ held: Bool, _ why: String) {
+        guard Settings.lidLease != held else { return }
+        Settings.lidLease = held
+        Log.write("LID: this Mac is \(held ? "" : "no longer ")the last device to use the AirPods (\(why))")
+    }
+
+    /// A case lid opened near this Mac: connect the AirPods here if this Mac used them last.
+    private func onLidOpened() {
+        guard Settings.lidOpenConnect, pods.isConfigured else { return }
+        guard Settings.lidLease else {
+            return Log.write("LID: case opened; another device used the AirPods last, leaving it to that one")
+        }
+        if ownership == .thisMac || pods.isConnected { return }
+        if v2.anyPeerHoldsAirPods { return updateLidLease(false, "a phone holds the AirPods") }
+        if v2.reservationLive { return Log.write("LID: case opened during a phone's acquisition; not connecting") }
+        guard !takeoverInFlight else { return }
+        takeoverInFlight = true
+        // The phones wait 400 ms after the lid opens before connecting.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            guard let self else { return }
+            guard !self.pods.isConnected, !self.v2.anyPeerHoldsAirPods else {
+                self.takeoverInFlight = false
+                return
+            }
+            Log.write("LID: case opened and this Mac used the AirPods last: connecting them")
+            if Settings.autoRoute { self.router.setPersistent(true) }
+            self.pods.connect { success in
+                self.takeoverInFlight = false
+                if success {
+                    if self.setState(.thisMac) { self.sendState() }
+                    if Settings.autoRoute { self.router.routeToAirPods() }
+                    Log.write("LID: connected")
+                } else {
+                    self.router.setPersistent(self.ownership == .thisMac)
+                    Log.write("LID: lid-open connect failed")
+                }
+            }
+        }
     }
 
     // MARK: Media and call triggers
@@ -385,6 +432,7 @@ final class HandoverController {
     /// disconnect, lets the link close on its own and forces it only if it is still up after 4.5 s. The peers
     /// are told once it is down (the phone's acknowledgement timeout is 6 s).
     private func giveUp() {
+        updateLidLease(false, "released the AirPods")
         let pause = Settings.pauseOnHandover && media.snapshot.playing && !media.snapshot.inCall
             && since(lastCallEnded) > callTail
         if Settings.pauseOnHandover && media.snapshot.playing && !pause {
@@ -470,6 +518,7 @@ final class HandoverController {
                 return
             }
             Log.write("In: a phone now holds the AirPods")
+            updateLidLease(false, "a phone claimed the AirPods")
             lastLostOwnership = Date()
             setState(.otherDevice)
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <functional>
 #include <mutex>
 #include <cstdint>
 
@@ -61,6 +62,11 @@ public:
     // counts as not worn; only a watcher that could not start fails open.
     bool budLikelyWorn() const;
 
+    // Fired (on the BLE callback thread: return quickly) when a case lid is
+    // opened near this PC (lidOpeningStarts in ProximityRules.hpp). Set before
+    // start(). Drives lid-open connect when this PC used the AirPods last.
+    void setOnLidOpened(std::function<void()> cb) { m_onLidOpened = std::move(cb); }
+
 private:
     void onReceived(
         winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementWatcher const&,
@@ -70,7 +76,7 @@ private:
     // 0x07 0x19 0x01 (type, length, prefix); see ProximityRules.hpp. Returns true if parsed; sets inCase = lid closed
     // AND neither pod in an ear (i.e. both pods stowed in a closed case).
     // worn = at least one pod in an ear.
-    static bool parseProximity(const uint8_t* data, uint32_t len, bool& inCase, bool& worn);
+    static bool parseProximity(const uint8_t* data, uint32_t len, bool& inCase, bool& worn, bool& lidOpen);
 
     // Warm-up grace after start(): fail-open so a freshly-launched app doesn't
     // suppress a legitimate takeover before the first beacon arrives.
@@ -104,6 +110,9 @@ private:
     std::atomic<bool> m_startFailed{false};
     std::atomic<std::int64_t> m_startedAtMs{0};
     std::atomic<bool> m_loggedFirstBeacon{false};
+    std::atomic<std::int64_t> m_lastLidOpenMs{0};
+    std::atomic<std::int64_t> m_lastLidClosedMs{0};
+    std::function<void()> m_onLidOpened;
 };
 
 } // namespace Propods
