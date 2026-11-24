@@ -199,7 +199,7 @@ void HandoverController::checkHandsFree(bool allowWhilePlaying, const char* reas
             log::handover("MIC     the AirPods mic came up on its own");
         return;
     }
-    if (!allowWhilePlaying && m_media.anyPlaying()) {
+    if (!allowWhilePlaying && m_media.isPlaying()) {
         if (!m_handsFreePending.exchange(true))
             log::handover("MIC     AirPods mic not connected; connecting it when playback stops or a call starts");
         return;
