@@ -166,6 +166,7 @@ final class PeerV2Hub {
     /// was in progress may or may not have connected the AirPods: free the reservation, and report ownership
     /// unknown until it is heard from again.
     private func peerGone(_ peerId: String) {
+        setPeerInCall(peerId, false)
         if let r = coordinator.reservation, r.phase == .inProgress, r.requesterId == peerId {
             unknownAfterDrop = (peerId, measuredOwnership())
             coordinator.participantResolve(requestId: r.requestId, reason: "requester_link_dropped")
@@ -256,6 +257,7 @@ final class PeerV2Hub {
         setPeerHolding(peerId, snapshot["ownership"]?.stringValue == "held"
                        && (ours == nil || snapshot["headsetId"]?.stringValue == ours))
         if unknownAfterDrop?.requesterId == peerId { unknownAfterDrop = nil }
+        setPeerInCall(peerId, snapshot["audioUse"]?.stringValue == "call")
         if let r = coordinator.live, r.requesterId == peerId {
             let held = snapshot["ownership"]?.stringValue == "held" && snapshot["headsetId"]?.stringValue == r.headsetId
             let named = snapshot["acquisition"]?.objectValue?["requestId"]?.stringValue
@@ -312,6 +314,16 @@ final class PeerV2Hub {
 
     /// True while a grant is live (PREPARING, STARTING, IN_PROGRESS): no automatic takeover may start.
     var reservationLive: Bool { coordinator.live != nil }
+
+    /// Phones whose latest snapshot says they are in a call (or ringing) on their own audio.
+    private var peersInCall = Set<String>()
+    var anyPeerInCall: Bool { !peersInCall.isEmpty }
+
+    private func setPeerInCall(_ peerId: String, _ inCall: Bool) {
+        guard inCall != peersInCall.contains(peerId) else { return }
+        if inCall { peersInCall.insert(peerId) } else { peersInCall.remove(peerId) }
+        log("V2[\(peerName(peerId))]: \(inCall ? "in a call" : "no longer in a call")")
+    }
 
     /// The user explicitly asked to connect the AirPods here: the reservation yields.
     func cancelReservationForUserTakeover() {
