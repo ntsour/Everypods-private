@@ -69,6 +69,18 @@ enum Settings {
     }
 
     /// Set once the first-run discovery has run, so it is not repeated every launch.
+    /// "Connect AirPods when the case opens (if this Mac used them last)" (default on).
+    static var lidOpenConnect: Bool {
+        get { defaults.object(forKey: "lidOpenConnect") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "lidOpenConnect") }
+    }
+
+    /// The lid-open lease: this Mac was the last device to use the AirPods (default off).
+    static var lidLease: Bool {
+        get { defaults.bool(forKey: "lidLease") }
+        set { defaults.set(newValue, forKey: "lidLease") }
+    }
+
     static var didFirstRun: Bool {
         get { defaults.bool(forKey: "didFirstRun") }
         set { defaults.set(newValue, forKey: "didFirstRun") }
