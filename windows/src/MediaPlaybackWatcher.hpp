@@ -78,6 +78,9 @@ public:
     bool pauseSession(const std::wstring& appId);
     bool playSession(const std::wstring& appId);
 
+    // The aggregated playing state last reported to the playback callback.
+    bool isPlaying() const { return m_lastPlayingEmitted.load(); }
+
 private:
     winrt::Windows::Media::Control::GlobalSystemMediaTransportControlsSession
         findSession(const std::wstring& appId) const;

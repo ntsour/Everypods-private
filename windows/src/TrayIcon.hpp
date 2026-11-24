@@ -27,6 +27,9 @@ public:
     static constexpr int kCmdToggleTakeOnMedia = 1011;
     static constexpr int kCmdToggleTakeOnCall  = 1012;
     static constexpr int kCmdToggleHold        = 1013;
+    // Shortcuts for when the automatic routing fails (AirPods on this PC only).
+    static constexpr int kCmdConnectMic        = 1014;  // connect the hands-free (mic) link
+    static constexpr int kCmdUseAirPodsAudio   = 1015;  // default output + input (and Teams)
     // kCmdRemovePeer+i removes the peer at index i in the StatusInfo::peers list.
     static constexpr int kCmdRemovePeer      = 2000;
 

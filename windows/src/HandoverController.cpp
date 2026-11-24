@@ -157,6 +157,14 @@ bool HandoverController::setState(OwnershipState s) {
         // Claiming AirPods (by any means: BT rising edge, connect-thread success,
         // manual tray "Connect AirPods now") resets the voluntary-release gate so
         // future call/media triggers are not suppressed.
+        // A new connection (or none): any pending mic check belongs to the old one.
+        ++m_handsFreeGen;
+        m_handsFreePending.store(false);
+        if (s == OwnershipState::LocalPc) {
+            m_handsFreeAttempts.store(0);
+            scheduleHandsFreeCheck(std::chrono::seconds{8}, /*allowWhilePlaying=*/false, "connected");
+        }
+
         if (s == OwnershipState::LocalPc) {
             m_voluntarilyReleased.store(false);
             // Clear the W4 app-suppress window so the next voluntary release starts fresh.
@@ -167,6 +175,45 @@ bool HandoverController::setState(OwnershipState s) {
         return true;
     }
     return false;
+}
+
+void HandoverController::scheduleHandsFreeCheck(std::chrono::milliseconds delay, bool allowWhilePlaying,
+                                                const char* reason) {
+    const std::uint64_t gen = m_handsFreeGen.load();
+    std::thread([this, gen, delay, allowWhilePlaying, reason] {
+        const auto until = std::chrono::steady_clock::now() + delay;
+        while (std::chrono::steady_clock::now() < until) {
+            if (!m_watcherRunning.load() || m_handsFreeGen.load() != gen) return;
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        if (!m_watcherRunning.load() || m_handsFreeGen.load() != gen) return;
+        try { checkHandsFree(allowWhilePlaying, reason); } catch (...) {}
+    }).detach();
+}
+
+void HandoverController::checkHandsFree(bool allowWhilePlaying, const char* reason) {
+    if (m_state.load() != OwnershipState::LocalPc) return;
+    const auto state = m_airpods.handsFreeState();
+    if (state != AirPodsConnector::HandsFree::Missing) {
+        if (m_handsFreePending.exchange(false) && state == AirPodsConnector::HandsFree::Up)
+            log::handover("MIC     the AirPods mic came up on its own");
+        return;
+    }
+    if (!allowWhilePlaying && m_media.isPlaying()) {
+        if (!m_handsFreePending.exchange(true))
+            log::handover("MIC     AirPods mic not connected; connecting it when playback stops or a call starts");
+        return;
+    }
+    m_handsFreePending.store(false);
+    if (m_handsFreeAttempts.fetch_add(1) >= 2) {
+        log::handover("MIC     AirPods mic still not connected after 2 tries; giving up for this connection");
+        return;
+    }
+    log::handover("MIC     AirPods mic not connected ({}): asking the driver to connect it", reason);
+    if (!m_airpods.reconnectHandsFree())
+        log::handover("MIC     no Bluetooth audio driver accepted the mic connect");
+    // Check that it came up; a second try if not.
+    scheduleHandsFreeCheck(std::chrono::seconds{10}, allowWhilePlaying, "retry");
 }
 
 bool HandoverController::withinDebounceWindow() {
@@ -180,6 +227,8 @@ bool HandoverController::withinDebounceWindow() {
 void HandoverController::onMediaPlayingChanged(bool playing) {
     if (!playing) {
         log::debug("Media stopped — keeping current ownership");
+        if (m_handsFreePending.load())
+            scheduleHandsFreeCheck(std::chrono::milliseconds{1500}, /*allowWhilePlaying=*/false, "playback stopped");
         // W1 fix: only clear the voluntary-release gate if we are past the immediate
         // post-release window (5 s). Within that window the stop was caused by our own
         // pause sequence during handover, not by the user explicitly stopping — clearing
@@ -672,6 +721,9 @@ void HandoverController::onCallActive(bool isCall) {
     // path (Chrome auto-resume after device drop).
     if (m_voluntarilyReleased.exchange(false))
         log::handover("STATE   m_voluntarilyReleased cleared (call active)");
+    // A call needs the mic now, even if something is playing.
+    if (isCall && m_handsFreePending.load())
+        scheduleHandsFreeCheck(std::chrono::milliseconds{0}, /*allowWhilePlaying=*/true, "call");
     // Android suppresses its call takeover while a peer reports an active call
     // session, so two devices answering at once do not steal the AirPods back and forth.
     if (m_peerAudioActive.load()) {

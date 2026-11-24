@@ -154,6 +154,19 @@ private:
     // loop that floods peers with REQUEST_DISCONNECT at the connect-backoff cadence.
     std::atomic<bool> m_takeoverInFlight{false};
 
+    // The AirPods mic (hands-free link). Windows sometimes brings the AirPods up
+    // with stereo only, e.g. when they reconnect by themselves (2026-11-24: mic
+    // "Disconnected" for 33 min, Teams saw no AirPods mic). 8 s after they come
+    // up on this PC, check once; if the mic link is down, connect it. The
+    // driver briefly reopens stereo too, so while something plays this waits
+    // for playback to stop or a call to start. At most 2 tries per connection.
+    // One endpoint enumeration per check, never a poll.
+    void scheduleHandsFreeCheck(std::chrono::milliseconds delay, bool allowWhilePlaying, const char* reason);
+    void checkHandsFree(bool allowWhilePlaying, const char* reason);
+    std::atomic<std::uint64_t> m_handsFreeGen{0};  // bumped on every ownership change
+    std::atomic<bool> m_handsFreePending{false};    // mic down, waiting for a quiet moment
+    std::atomic<int> m_handsFreeAttempts{0};
+
     // W4 fix: after voluntarily releasing to a peer, suppress GSMTC re-triggers from
     // the same app for 30 s. Prevents YouTube ads and Chrome auto-resume from
     // stealing the AirPods back after the user explicitly moved them to a phone.
