@@ -49,9 +49,9 @@ inline bool parseProximityBeacon(const std::uint8_t* data, std::uint32_t len, bo
 
 // A lid-open beacon that starts a new opening: the first one ever, the first
 // after a lid-closed beacon, or the first after kLidOpenRearmMs without one
-// (an open case advertises every second or so). Buds worn with the case shut
-// in a pocket report the lid closed, so they never count. Steady-clock ms,
-// 0 = never seen.
+// (an open case advertises every second or so). The watcher feeds it only
+// beacons with no bud in an ear, since worn buds can report the lid as open.
+// Steady-clock ms, 0 = never seen.
 inline constexpr std::int64_t kLidOpenRearmMs = 60'000;
 inline bool lidOpeningStarts(std::int64_t now, std::int64_t lastLidOpenMs, std::int64_t lastLidClosedMs) {
     if (lastLidOpenMs == 0) return true;

@@ -131,7 +131,10 @@ void BleProximityWatcher::onReceived(
             bool inCase = false, worn = false, lidOpen = false;
             if (!parseProximity(bytes.data(), len, inCase, worn, lidOpen)) continue;
             if (worn) m_lastWornMs.store(nowMs());
-            {
+            // Lid state only counts from beacons with no bud in an ear: worn
+            // buds can report the lid byte as open (seen on a Mac capture), and
+            // a wearer must never look like a case being opened.
+            if (!worn) {
                 const std::int64_t now = nowMs();
                 if (lidOpen) {
                     const bool starts = lidOpeningStarts(now, m_lastLidOpenMs.load(), m_lastLidClosedMs.load());
