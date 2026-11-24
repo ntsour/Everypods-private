@@ -355,13 +355,23 @@ void BluetoothRfcommClient::runLoop(std::uint64_t peerAddress) {
             const auto lasted = [&] {
                 return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - linkUp);
             };
+            const auto settle = [&] {
+                if (peerLinkTooShort(lasted())) {
+                    ++misses;
+                    shortLink = true;
+                    if (m_onRejected) { try { m_onRejected(); } catch (...) {} }
+                } else {
+                    misses = 0;
+                    shortLink = false;
+                }
+            };
             try {
                 runConnection(peerAddress, socket, inbound);
             } catch (...) {
-                if (peerLinkTooShort(lasted())) { ++misses; shortLink = true; } else { misses = 0; shortLink = false; }
+                settle();
                 throw;
             }
-            if (peerLinkTooShort(lasted())) { ++misses; shortLink = true; } else { misses = 0; shortLink = false; }
+            settle();
         } catch (const PeerServiceMissing& e) {
             ++misses;
             shortLink = false;

@@ -370,6 +370,10 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
             SettingsStore::formatBluetoothAddress(peer));
     });
     handoverSetup.start();
+    // An Android peer accepts our links only after it has finished adding this
+    // PC; current versions wait for the PC to start that exchange. A peer that
+    // closes our link at once is asked to finish it (at most every 2 min).
+    peers.setOnPeerRejected([&handoverSetup](std::uint64_t address) { handoverSetup.authorize(address); });
 
     // Any paired peer may dial this PC. One that is not a peer yet becomes one
     // (Bluetooth pairing is the trust boundary): save it and add it to the v2 mesh.
@@ -639,6 +643,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     overlay.destroy();
 
     peers.setOnPeerLinkUp({});
+    peers.setOnPeerRejected({});  // handoverSetup is destroyed before peers
     peerV2.stop();
 
     teamsWatcher.stop();

@@ -54,6 +54,11 @@ public:
     void setOnPacket(PacketCallback cb) { m_onPacket = std::move(cb); }
     void setOnState(StateCallback  cb) { m_onState  = std::move(cb); }
     void setOnName (NameCallback   cb) { m_onName   = std::move(cb); }
+    // The peer closed a link right after it came up (peerLinkTooShort): an
+    // Android peer does that while this PC is not authorized there. Called on
+    // the worker thread; set before start().
+    using RejectedCallback = std::function<void()>;
+    void setOnRejected(RejectedCallback cb) { m_onRejected = std::move(cb); }
 
     // Evaluated on the worker thread before the first dial: how long to wait so
     // the peer with the smaller installationId usually dials first.
@@ -114,6 +119,7 @@ private:
     PacketCallback m_onPacket;
     StateCallback  m_onState;
     NameCallback   m_onName;
+    RejectedCallback m_onRejected;
 };
 
 }
