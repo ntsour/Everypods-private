@@ -13,13 +13,43 @@ final class AirPodsConnector: NSObject {
     private var pending: ((Bool) -> Void)?
 
     var isConfigured: Bool { device != nil }
-    var isConnected: Bool { device?.isConnected() ?? false }
+    /// IOBluetooth's reading can stick at "connected" after the AirPods have left: after a sleep on 2026-11-24 it
+    /// read connected for 30 minutes while System Settings showed them disconnected and no AirPods audio device
+    /// existed, so the Mac claimed AirPods that a phone held and ignored every play press. A link that has had no
+    /// AirPods audio device for `bareLinkLimit` is treated as gone (the device appears within ~0.2 s of a connect).
+    var isConnected: Bool {
+        guard let device, device.isConnected() else { bareLinkSince = nil; return false }
+        if let address = Settings.airPodsAddress, AudioRouter.hasOutputDevice(forAddress: address) {
+            if staleLogged { Log.write("AirPods: audio device is back; trusting the Bluetooth link again") }
+            bareLinkSince = nil
+            staleLogged = false
+            return true
+        }
+        let since = bareLinkSince ?? Date()
+        bareLinkSince = since
+        guard Date().timeIntervalSince(since) >= bareLinkLimit else { return true }
+        if !staleLogged {
+            staleLogged = true
+            Log.write("AirPods: Bluetooth reports a link but no AirPods audio device for \(Int(bareLinkLimit)) s; treating them as disconnected")
+        }
+        return false
+    }
+    private var bareLinkSince: Date?
+    private var staleLogged = false
+    private let bareLinkLimit: TimeInterval = 10
     var name: String { device?.name ?? "AirPods" }
 
     /// Connects; calls `completion(true)` on success. Times out after 20 seconds.
     func connect(completion: @escaping (Bool) -> Void) {
         guard let device else { return completion(false) }
-        if device.isConnected() { return completion(true) }
+        if isConnected { return completion(true) }
+        // A stale link (see isConnected) would make openConnection report success without connecting.
+        if device.isConnected() {
+            Log.write("AirPods: closing a stale Bluetooth link before connecting")
+            device.closeConnection()
+            bareLinkSince = nil
+            staleLogged = false
+        }
         pending = completion
         let status = device.openConnection(self)
         Log.write("AirPods: openConnection \(status == kIOReturnSuccess ? "started" : "error \(status)")")
