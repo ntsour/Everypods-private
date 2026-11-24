@@ -38,6 +38,20 @@ public:
     // no audio sessions are polled and no stream is opened.
     bool isDefaultRenderDevice();
 
+    // The hands-free link (the AirPods' microphone) next to a working stereo
+    // link. Windows sometimes brings the AirPods up with stereo only, e.g. when
+    // they reconnect by themselves: the mic endpoint stays "Disconnected" and
+    // Teams sees no AirPods mic. One enumeration, no audio sessions opened.
+    enum class HandsFree { Unknown, Up, Missing };
+    HandsFree handsFreeState();
+
+    // Ask the Bluetooth audio driver to connect the hands-free link only
+    // (KSPROPERTY_ONESHOT_RECONNECT on the mic endpoint's filter), the same as
+    // Sound settings -> Recording -> right-click -> Connect. Windows briefly
+    // reopens the stereo link too (~3 s gap on 2026-11-24). Returns false when
+    // no filter accepted it.
+    bool reconnectHandsFree();
+
     // True when at least one non-system audio session is in the Active state on
     // the AirPods render endpoint (i.e. a call, meeting, or other app is actively
     // using the AirPods for audio output right now).
