@@ -3,6 +3,7 @@
 // PeerIdentityStore.headsetIdFromAddress and membership digest in Python.
 
 #include "PeerDialPolicy.hpp"
+#include "ProximityRules.hpp"
 #include "v2/PeerV2Arbitration.hpp"
 #include "v2/PeerV2Frame.hpp"
 #include "v2/PeerV2Identity.hpp"
@@ -208,6 +209,42 @@ static void dialPolicyTests() {
     CHECK(std::string(PeerServiceMissing("x").what()) == "x");
 }
 
+// Beacon bytes as captured on 2026-11-23 (after the company id).
+static void proximityTests() {
+    using namespace Propods;
+    bool inCase = true;
+    const std::uint8_t inEars[] = {0x07, 0x19, 0x01, 0x27, 0x20, 0x0b, 0x99, 0x8f, 0x11, 0x00};
+    CHECK(parseProximityBeacon(inEars, sizeof inEars, inCase) && !inCase);
+
+    std::uint8_t stowed[] = {0x07, 0x19, 0x01, 0x27, 0x20, 0x51, 0x99, 0x8f, 0x08, 0x00};
+    inCase = false;
+    CHECK(parseProximityBeacon(stowed, sizeof stowed, inCase) && inCase);
+    stowed[8] = 0x00;  // lid open
+    CHECK(parseProximityBeacon(stowed, sizeof stowed, inCase) && !inCase);
+
+    // Worn = a pod in an ear (gates the playback hold).
+    bool worn = false;
+    CHECK(parseProximityBeacon(inEars, sizeof inEars, inCase, worn) && worn);
+    CHECK(parseProximityBeacon(stowed, sizeof stowed, inCase, worn) && !worn);
+
+    // Shorter type-0x07 message from a nearby Apple device: byte 8 is 0xff.
+    const std::uint8_t shortMsg[] = {0x07, 0x11, 0x06, 0x29, 0x20, 0x0a, 0x51, 0xff, 0xff, 0x5a};
+    CHECK(!parseProximityBeacon(shortMsg, sizeof shortMsg, inCase));
+    const std::uint8_t other[] = {0x10, 0x05, 0x01};
+    CHECK(!parseProximityBeacon(other, sizeof other, inCase));
+    CHECK(!parseProximityBeacon(inEars, 8, inCase));  // truncated
+
+    // Availability: in case never expires; a recent out-of-case beacon wins.
+    constexpr std::int64_t t = 1'000'000;
+    CHECK(airpodsAvailableFor(t, 0, 0));                                  // nothing seen
+    CHECK(!airpodsAvailableFor(t, t - 1000, 0));                          // in case
+    CHECK(!airpodsAvailableFor(t + 600'000, t - 1000, 0));                // still in case 10 min later
+    CHECK(!airpodsAvailableFor(t, t - 5000, t - 25'000));                 // in case now, last out beacon 25 s ago
+    CHECK(airpodsAvailableFor(t, t - 1000, t - 10'000));                  // other AirPods in case, ours out 10 s ago
+    CHECK(airpodsAvailableFor(t, t - 30'000, t - 1000));                  // latest says out
+    CHECK(!airpodsAvailableFor(t, t - 1000, t - kOutOfCaseWindowMs));     // out beacon just expired
+}
+
 int main() {
     identityTests();
     jsonTests();
@@ -215,6 +252,7 @@ int main() {
     messageTests();
     arbitrationTests();
     dialPolicyTests();
+    proximityTests();
     std::printf("%d passed, %d failed\n", g_passed, g_failed);
     return g_failed == 0 ? 0 : 1;
 }
