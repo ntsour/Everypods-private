@@ -39,6 +39,8 @@ void BleProximityWatcher::start() {
         // payload (the proximity message) rather than just the scan-response header.
         m_watcher.ScanningMode(BluetoothLEScanningMode::Active);
         m_receivedToken = m_watcher.Received({this, &BleProximityWatcher::onReceived});
+        m_lastLidOpenMs.store(0);   // lid state from before the pause is stale
+        m_lastLidClosedMs.store(0);
         m_startedAtMs.store(nowMs());
         m_watcher.Start();
         log::info("BleProximityWatcher: started (Apple 0x004C proximity scan, {}s out-of-case window)",
@@ -137,7 +139,8 @@ void BleProximityWatcher::onReceived(
             if (!worn) {
                 const std::int64_t now = nowMs();
                 if (lidOpen) {
-                    const bool starts = lidOpeningStarts(now, m_lastLidOpenMs.load(), m_lastLidClosedMs.load());
+                    const bool starts = lidOpeningStarts(now, m_startedAtMs.load(), m_lastLidOpenMs.load(),
+                                                         m_lastLidClosedMs.load());
                     m_lastLidOpenMs.store(now);
                     if (starts) {
                         log::info("BleProximityWatcher: case lid opened (RSSI {} dBm)", rssi);

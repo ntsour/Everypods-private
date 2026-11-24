@@ -47,15 +47,23 @@ inline bool parseProximityBeacon(const std::uint8_t* data, std::uint32_t len, bo
     return parseProximityBeacon(data, len, inCase, worn, lidOpen);
 }
 
-// A lid-open beacon that starts a new opening: the first one ever, the first
-// after a lid-closed beacon, or the first after kLidOpenRearmMs without one
-// (an open case advertises every second or so). The watcher feeds it only
-// beacons with no bud in an ear, since worn buds can report the lid as open.
-// Steady-clock ms, 0 = never seen.
+// A lid-open beacon that starts a new opening. We need evidence the lid was
+// shut first, because an open case advertises every second or so and the scan
+// is paused while this PC holds the AirPods (so a lid left open, a manual
+// disconnect or a drop must not look like an opening):
+//  - a lid-closed beacon since the last lid-open one (or since the scan started);
+//  - the first lid-open beacon only after kLidQuietMs of scanning with no lid
+//    beacons at all (a shut case goes quiet);
+//  - or kLidOpenRearmMs without a lid-open beacon.
+// The watcher feeds it only beacons with no bud in an ear (worn buds can report
+// the lid as open) and resets the lid times when the scan starts. Steady-clock
+// ms, 0 = never seen.
+inline constexpr std::int64_t kLidQuietMs = 10'000;
 inline constexpr std::int64_t kLidOpenRearmMs = 60'000;
-inline bool lidOpeningStarts(std::int64_t now, std::int64_t lastLidOpenMs, std::int64_t lastLidClosedMs) {
-    if (lastLidOpenMs == 0) return true;
-    if (lastLidClosedMs > lastLidOpenMs) return true;
+constexpr bool lidOpeningStarts(std::int64_t now, std::int64_t scanStartMs, std::int64_t lastLidOpenMs,
+                             std::int64_t lastLidClosedMs) {
+    if (lastLidClosedMs != 0 && lastLidClosedMs > lastLidOpenMs) return true;
+    if (lastLidOpenMs == 0) return now - scanStartMs >= kLidQuietMs;
     return now - lastLidOpenMs >= kLidOpenRearmMs;
 }
 

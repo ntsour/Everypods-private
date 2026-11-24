@@ -245,12 +245,14 @@ static void proximityTests() {
     stowed[8] = 0x00;
     CHECK(parseProximityBeacon(stowed, sizeof stowed, inCase, worn2, lidOpen) && lidOpen);
 
-    // A lid opening starts once, again after a close or after a minute without one.
-    CHECK(lidOpeningStarts(5000, 0, 0));                 // first lid-open beacon
-    CHECK(!lidOpeningStarts(6000, 5000, 0));             // same opening, 1 s later
-    CHECK(lidOpeningStarts(9000, 6000, 8000));           // closed in between
-    CHECK(!lidOpeningStarts(60000, 6000, 1000));         // still open, 54 s later
-    CHECK(lidOpeningStarts(66000, 6000, 1000));          // a minute without lid-open beacons
+    // A lid opening needs evidence the lid was shut first. Scan started at 1000.
+    CHECK(!lidOpeningStarts(1600, 1000, 0, 0));          // open right after the scan starts (lid left open)
+    CHECK(lidOpeningStarts(1600, 1000, 0, 1200));        // closed beacon seen first
+    CHECK(lidOpeningStarts(12000, 1000, 0, 0));          // 11 s of silence (shut case), then open
+    CHECK(!lidOpeningStarts(13000, 1000, 12000, 0));     // same opening, 1 s later
+    CHECK(lidOpeningStarts(16000, 1000, 13000, 15000));  // closed in between
+    CHECK(!lidOpeningStarts(70000, 1000, 16000, 15000)); // still open, 54 s later
+    CHECK(lidOpeningStarts(77000, 1000, 16000, 15000));  // a minute without lid-open beacons
 
     // Availability: in case never expires; a recent out-of-case beacon wins.
     constexpr std::int64_t t = 1'000'000;
