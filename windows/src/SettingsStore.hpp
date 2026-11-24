@@ -17,6 +17,7 @@ struct Settings {
     bool                         pauseOnRelease{true};  // pause/mute PC audio when the AirPods leave
     bool                         takeOnMediaStart{true};  // take the AirPods when this PC starts playing media
     bool                         takeOnCall{true};        // take the AirPods when a call starts on this PC
+    bool                         holdPlayback{false};     // hold PC audio while the AirPods connect (PlaybackHold)
 };
 
 class SettingsStore {

@@ -76,6 +76,10 @@ public:
     // that peer is mid-connect, so we must not start a takeover ourselves.
     bool reservationActive();
 
+    // True while a linked peer's latest snapshot says it holds our AirPods.
+    // False when they are in the case (no peer holds them) or unknown.
+    bool anyPeerHoldsAirPods();
+
     // Re-measure local state now and broadcast a SNAPSHOT if it changed
     // (also done every 2 s by the monitor thread).
     void refreshLocalState();
