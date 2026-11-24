@@ -165,6 +165,8 @@ bool HandoverController::setState(OwnershipState s) {
             scheduleHandsFreeCheck(std::chrono::seconds{8}, /*allowWhilePlaying=*/false, "connected");
         }
 
+        if (s == OwnershipState::LocalPc) updateLidLease(true, "the AirPods are on this PC");
+
         if (s == OwnershipState::LocalPc) {
             m_voluntarilyReleased.store(false);
             // Clear the W4 app-suppress window so the next voluntary release starts fresh.
@@ -214,6 +216,41 @@ void HandoverController::checkHandsFree(bool allowWhilePlaying, const char* reas
         log::handover("MIC     no Bluetooth audio driver accepted the mic connect");
     // Check that it came up; a second try if not.
     scheduleHandsFreeCheck(std::chrono::seconds{10}, allowWhilePlaying, "retry");
+}
+
+void HandoverController::updateLidLease(bool held, const char* why) {
+    if (m_lidLease.exchange(held) == held) return;
+    log::handover("LID     {} the last device to use the AirPods ({})", held ? "this PC is" : "this PC is no longer", why);
+    if (m_onLidLeaseChanged) { try { m_onLidLeaseChanged(held); } catch (...) {} }
+}
+
+void HandoverController::onLidOpened() {
+    if (!m_lidOpenConnect.load()) return;
+    if (!m_lidLease.load()) {
+        log::handover("LID     case opened; another device used the AirPods last, leaving it to that one");
+        return;
+    }
+    if (m_state.load() == OwnershipState::LocalPc) return;
+    if (m_peerHoldsProbe && m_peerHoldsProbe()) {
+        updateLidLease(false, "a peer holds the AirPods");
+        return;
+    }
+    if (m_takeoverInFlight.load() || m_lidConnectInFlight.exchange(true)) return;
+    std::thread([this] {
+        winrt::init_apartment(winrt::apartment_type::multi_threaded);
+        // Android waits 400 ms after the lid opens before connecting.
+        std::this_thread::sleep_for(std::chrono::milliseconds(400));
+        if (m_state.load() != OwnershipState::LocalPc && !m_airpods.isClassicallyConnectedWinRT()) {
+            log::handover("LID     case opened and this PC used the AirPods last: connecting them");
+            if (m_airpods.connect()) {
+                // The BT rising-edge watcher claims ownership and tells the peers.
+                if (m_autoRoute.load()) m_airpods.setAsDefaultAudioDevice();
+            } else {
+                log::handover("LID     lid-open connect failed");
+            }
+        }
+        m_lidConnectInFlight.store(false);
+    }).detach();
 }
 
 bool HandoverController::withinDebounceWindow() {
@@ -528,6 +565,7 @@ void HandoverController::onIncomingPacket(std::span<const std::uint8_t> data) {
             // Do NOT pause the user's media. Propods never touches playback — we just release
             // ownership and let the peer take the AirPods; Windows audio keeps playing on the
             // PC speakers (acceptable) rather than freezing the user's video.
+            updateLidLease(false, "released the AirPods to a peer");
             m_airpods.disconnect();
             setState(OwnershipState::RemoteAndroid);
             if (m_hold) m_hold->onLost("released the AirPods to a peer");
@@ -571,6 +609,7 @@ void HandoverController::onIncomingPacket(std::span<const std::uint8_t> data) {
             // Set the anti-pingpong timestamp first (see comment in ACCEPTED above).
             m_lastLostOwnership.store(tpToNs(std::chrono::steady_clock::now()));
             // Do NOT pause the user's media — Propods never touches playback.
+            updateLidLease(false, "released the AirPods to a peer");
             m_airpods.disconnect();
             setState(OwnershipState::RemoteAndroid);
             if (m_hold) m_hold->onLost("released the AirPods to a peer");
@@ -605,6 +644,7 @@ void HandoverController::onIncomingPacket(std::span<const std::uint8_t> data) {
             // now holds the AirPods; Windows audio (if any) keeps playing on the PC
             // speakers rather than freezing.
             (void)wasLocalPc;
+            updateLidLease(false, "a peer claimed the AirPods");
             setState(OwnershipState::RemoteAndroid);
             // While our connect attempts run, a peer's claim is not final (the AirPods
             // decide; the attempt timeout ends the hold if we lose). Otherwise the
