@@ -45,7 +45,12 @@ final class AudioRouter {
 
     // MARK: CoreAudio
 
-    private func outputDevice(forAddress address: String) -> AudioDeviceID? {
+    /// True when the AirPods exist as an audio output device (default or not).
+    static func hasOutputDevice(forAddress address: String) -> Bool { outputDeviceID(forAddress: address) != nil }
+
+    private func outputDevice(forAddress address: String) -> AudioDeviceID? { Self.outputDeviceID(forAddress: address) }
+
+    private static func outputDeviceID(forAddress address: String) -> AudioDeviceID? {
         // Bluetooth devices have the UID "AA-BB-CC-DD-EE-FF:output".
         var uid = (normalizedAddress(address).uppercased() + ":output") as CFString
         var device = AudioDeviceID(0)

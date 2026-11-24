@@ -47,6 +47,11 @@ final class HandoverController {
     private var lastBluetoothConnected = false
     private var ackWaiters: [() -> Void] = []
     private var announcedCall: Bool?
+    private var lastCallEnded = Date.distantPast
+    private var recheck: DispatchWorkItem?
+    /// After a call the browser or meeting app keeps its output stream open for a while, so "playing" right after
+    /// a call is the call's leftover stream, not media: a play/pause key then would start some other player.
+    private let callTail: TimeInterval = 15
     private var callDebounce: DispatchWorkItem?
     private var pollTimer: Timer?
     /// An automatic takeover trigger held back by a live acquisition reservation; replayed when it ends.
@@ -327,7 +332,12 @@ final class HandoverController {
         if !proximity.airPodsAvailable {
             return Log.write("Skip: AirPods appear to be in the case; not initiating a takeover")
         }
+        // A phone in a call keeps its AirPods; "Connect AirPods now" still takes them.
+        if v2.anyPeerInCall {
+            return Log.write("Skip: a phone is in a call on the AirPods")
+        }
         if since(lastLostOwnership) < antiPingPong {
+            recheckWhenQuiet(after: antiPingPong - since(lastLostOwnership))
             return Log.write("Skip: anti-ping-pong (lost the AirPods \(Int(since(lastLostOwnership) * 1000)) ms ago)")
         }
         if !voluntaryReleaseApp.isEmpty, since(lastVoluntaryRelease) < voluntarySuppress,
@@ -337,6 +347,21 @@ final class HandoverController {
         guard !takeoverInFlight else { return Log.write("Skip: a takeover is already in flight") }
         Log.write("Trigger: \(intent == .call ? "call" : "audio") active (\(media.currentAppID.isEmpty ? "unknown app" : media.currentAppID)); taking the AirPods")
         startTakeover(intent)
+    }
+
+    /// The playback-started trigger fires once per stream, so a start skipped inside the anti-ping-pong window
+    /// would never come back while the stream keeps running (browsers keep it open long after a pause). Look again
+    /// when the window ends, if audio is still playing.
+    private func recheckWhenQuiet(after delay: TimeInterval) {
+        recheck?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.media.snapshot.playing, self.ownership != .thisMac else { return }
+            Log.write("Recheck: audio still playing after the anti-ping-pong window")
+            self.lastAction = Date.distantPast
+            self.onMediaPlayingChanged(true)
+        }
+        recheck = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(delay, 0) + 0.1, execute: work)
     }
 
     /// A call (or meeting) started on this Mac: an explicit user action, so the gate is cleared first.
@@ -350,6 +375,7 @@ final class HandoverController {
 
     private func onCallEnded() {
         hold.callEnded()
+        lastCallEnded = Date()
         if voluntarilyReleased {
             voluntarilyReleased = false
             Log.write("Gate: voluntary release cleared (call ended)")
@@ -447,7 +473,11 @@ final class HandoverController {
     private func giveUp() {
         hold.onLost("giving the AirPods up")
         updateLidLease(false, "released the AirPods")
-        let pause = Settings.pauseOnHandover && media.snapshot.playing
+        let pause = Settings.pauseOnHandover && media.snapshot.playing && !media.snapshot.inCall
+            && since(lastCallEnded) > callTail
+        if Settings.pauseOnHandover && media.snapshot.playing && !pause {
+            Log.write("Release: not pausing (the audio is a call's, so the key would start another player)")
+        }
         // Set before the pause wait too: a status ping answered "connected" in that window reads as a refusal.
         releasing = true
         if pause { MediaControl.togglePlayPause() }
