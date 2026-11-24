@@ -68,6 +68,13 @@ enum Settings {
         set { defaults.set(newValue, forKey: "pauseOnHandover") }
     }
 
+    /// "Hold audio until AirPods connect" (default off): mute the speakers and pause when a media takeover starts,
+    /// resume once the AirPods are the output, and show the progress panel. Mirrors the Android setting.
+    static var holdPlayback: Bool {
+        get { defaults.bool(forKey: "holdPlayback") }
+        set { defaults.set(newValue, forKey: "holdPlayback") }
+    }
+
     /// Set once the first-run discovery has run, so it is not repeated every launch.
     /// "Connect AirPods when the case opens (if this Mac used them last)" (default on).
     static var lidOpenConnect: Bool {

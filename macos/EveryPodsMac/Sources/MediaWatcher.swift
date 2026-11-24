@@ -25,9 +25,16 @@ final class MediaWatcher {
     /// Fires when audio stops (late: browsers keep the stream open for 10-15 s after a pause).
     var onPlaybackStopped: (() -> Void)?
     var onChange: (() -> Void)?
+    /// Fires the moment audio output is first seen (before `sustain`), so a playback hold can mute at once.
+    var onPlaybackSeen: (() -> Void)?
+    /// With a playback hold on, the takeover fires after a short sustain: the speakers are already muted, and a
+    /// longer wait would only delay the AirPods (short sounds still end well before this).
+    var fastStart: () -> Bool = { false }
     private(set) var snapshot = Snapshot()
 
-    private let sustain: TimeInterval = 2
+    private var sustain: TimeInterval { fastStart() ? 0.6 : 2 }
+    /// Processes with a running-output listener installed (Core Audio events make detection near-instant).
+    private var watchedProcesses = Set<AudioObjectID>()
     private var timer: Timer?
     private var playingSince: Date?
     private var startFired = false
@@ -64,7 +71,34 @@ final class MediaWatcher {
 
     func start() {
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.poll() }
+        watchProcessList()
         poll()
+    }
+
+    /// Re-polls whenever a process starts or stops output (or the process list changes), instead of waiting
+    /// for the next 1 s tick. The tick stays as a safety net.
+    private func watchProcessList() {
+        var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyProcessObjectList,
+                                                 mScope: kAudioObjectPropertyScopeGlobal,
+                                                 mElement: kAudioObjectPropertyElementMain)
+        AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, DispatchQueue.main) { [weak self] _, _ in
+            self?.watchProcesses()
+            self?.poll()
+        }
+        watchProcesses()
+    }
+
+    private func watchProcesses() {
+        for process in Self.objects(AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyProcessObjectList)
+        where !watchedProcesses.contains(process) {
+            var address = AudioObjectPropertyAddress(mSelector: kAudioProcessPropertyIsRunningOutput,
+                                                     mScope: kAudioObjectPropertyScopeGlobal,
+                                                     mElement: kAudioObjectPropertyElementMain)
+            let status = AudioObjectAddPropertyListenerBlock(process, &address, DispatchQueue.main) { [weak self] _, _ in
+                self?.poll()
+            }
+            if status == noErr { watchedProcesses.insert(process) }
+        }
     }
 
     /// The app currently producing audio ("" if none); used to recognise the same app re-triggering.
@@ -73,7 +107,12 @@ final class MediaWatcher {
     private func poll() {
         let next = readSnapshot()
         if next.playing {
-            if playingSince == nil { playingSince = Date() }
+            if playingSince == nil {
+                playingSince = Date()
+                if !startFired { onPlaybackSeen?() }
+                // Check again right when the sustain elapses rather than on the next 1 s tick.
+                DispatchQueue.main.asyncAfter(deadline: .now() + sustain + 0.05) { [weak self] in self?.poll() }
+            }
             if !startFired, let since = playingSince, Date().timeIntervalSince(since) >= sustain {
                 startFired = true
                 Log.write("Media: playback started (\(next.playingApps.joined(separator: ", ")))")
