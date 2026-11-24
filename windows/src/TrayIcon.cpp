@@ -226,6 +226,11 @@ void TrayIcon::showContextMenu(HWND hwnd) {
         static_cast<UINT_PTR>(kCmdPairAirPods), L"Select AirPods...");
     InsertMenuW(menu, static_cast<UINT>(-1), MF_BYPOSITION | MF_STRING,
         static_cast<UINT_PTR>(kCmdConnectAirPods), L"Connect AirPods now");
+    const UINT onPcFlags = MF_BYPOSITION | MF_STRING | (status.airpodsConnected ? 0u : MF_GRAYED);
+    InsertMenuW(menu, static_cast<UINT>(-1), onPcFlags,
+        static_cast<UINT_PTR>(kCmdConnectMic), L"Connect AirPods microphone");
+    InsertMenuW(menu, static_cast<UINT>(-1), onPcFlags,
+        static_cast<UINT_PTR>(kCmdUseAirPodsAudio), L"Use AirPods for sound and mic");
     InsertMenuW(menu, static_cast<UINT>(-1), MF_BYPOSITION | MF_SEPARATOR, 0u, nullptr);
 
     UINT autoRouteFlags = MF_BYPOSITION | MF_STRING;

@@ -548,6 +548,24 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
                     }
                 }).detach();
                 break;
+            case TrayIcon::kCmdConnectMic:
+                // Same as Sound settings -> Recording -> right-click -> Connect.
+                std::thread([&airpods]() {
+                    winrt::init_apartment(winrt::apartment_type::multi_threaded);
+                    log::handover("MIC     tray: connecting the AirPods mic");
+                    if (!airpods.reconnectHandsFree())
+                        log::handover("MIC     tray: no Bluetooth audio driver accepted the mic connect");
+                }).detach();
+                break;
+            case TrayIcon::kCmdUseAirPodsAudio:
+                // The routing pass Propods runs on connect: default output and
+                // input for every role, and Teams' devices.
+                std::thread([&airpods]() {
+                    winrt::init_apartment(winrt::apartment_type::multi_threaded);
+                    log::handover("ROUTE   tray: use AirPods for sound and mic");
+                    airpods.setAsDefaultAudioDevice();
+                }).detach();
+                break;
             case TrayIcon::kCmdTogglePause: {
                 const bool nowEnabled = !silencer.enabled();
                 silencer.setEnabled(nowEnabled);
