@@ -87,6 +87,15 @@ public:
     // Called when the Teams audio session expires (call truly ended).
     // Clears the voluntary-release gate so the next new call can trigger a claim.
     void onTeamsCallEnded();
+
+    // Teams opened or closed its mic (TeamsCallWatcher). While it is open and
+    // the AirPods are on this PC, peers get kPeerAudioActive, so a phone call
+    // ringing on a phone does not take the AirPods mid-call (Android
+    // CrossDevice.peerAudioActive). A close is debounced 3 s.
+    void onCallMicChanged(bool open);
+    bool callMicOpen() const { return m_callMicOpen.load(); }
+    // Called after callMicOpen() changes (set before the watcher starts).
+    void setOnCallMicSettled(std::function<void()> cb) { m_onCallMicSettled = std::move(cb); }
     void onIncomingPacket(std::span<const std::uint8_t> data);
     void onPeerConnectionChanged(bool connected);
 
@@ -203,6 +212,14 @@ private:
     // A peer reported an active call/meeting (kPeerAudioActive); cleared by
     // kPeerAudioIdle or when the last peer link drops. Suppresses our call takeover.
     std::atomic<bool> m_peerAudioActive{false};
+
+    // Our own call, told to peers (onCallMicChanged / publishCallAudio).
+    void publishCallAudio(const char* why, bool resend = false);
+    std::atomic<bool> m_callMicOpen{false};
+    std::function<void()> m_onCallMicSettled;
+    std::atomic<std::uint64_t> m_callMicGen{0};
+    std::mutex m_callAudioMutex;
+    bool m_callAudioActiveSent{false};  // guarded by m_callAudioMutex
 
     // Set by cancelTakeover(): the connect thread stops before its next attempt.
     std::atomic<bool> m_cancelTakeover{false};
