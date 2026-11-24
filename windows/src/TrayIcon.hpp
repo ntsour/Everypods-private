@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include <functional>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -25,6 +26,11 @@ public:
     static constexpr int kCmdUnmuteApps      = 1010;
     static constexpr int kCmdToggleTakeOnMedia = 1011;
     static constexpr int kCmdToggleTakeOnCall  = 1012;
+    static constexpr int kCmdToggleHold        = 1013;
+    static constexpr int kCmdToggleLidOpen     = 1016;
+    // Shortcuts for when the automatic routing fails (AirPods on this PC only).
+    static constexpr int kCmdConnectMic        = 1014;  // connect the hands-free (mic) link
+    static constexpr int kCmdUseAirPodsAudio   = 1015;  // default output + input (and Teams)
     // kCmdRemovePeer+i removes the peer at index i in the StatusInfo::peers list.
     static constexpr int kCmdRemovePeer      = 2000;
 
@@ -42,11 +48,20 @@ public:
         bool                    pauseOnRelease{true};
         bool                    takeOnMediaStart{true};
         bool                    takeOnCall{true};
+        bool                    holdPlayback{false};
+        bool                    lidOpenConnect{true};
         bool                    hasMutedApps{false};
         std::vector<PeerStatus> peers;
     };
 
     using StatusProvider  = std::function<StatusInfo()>;
+
+    // What the tray icon's colour shows (the icon is an AirPods glyph).
+    enum class IconState {
+        Here,        // AirPods on this PC: green
+        Away,        // on another device / unknown: grey (dimmed, like the Mac menu bar)
+        Connecting,  // a handover to this PC is in progress: blue
+    };
 
     TrayIcon();
     ~TrayIcon();
@@ -56,6 +71,9 @@ public:
 
     bool create(HINSTANCE hInstance);
     void setStatus(const std::wstring& text);
+    // Safe from any thread. Redraws the icon in the state's colour for the
+    // current taskbar theme; keeps the old icon if drawing fails.
+    void setIconState(IconState state);
     // Windows notification from the tray icon (safe to call from any thread).
     void notify(const std::wstring& title, const std::wstring& text);
     void setMenuHandler(MenuHandler h)       { m_menuHandler    = std::move(h); }
@@ -75,6 +93,10 @@ private:
     std::wstring m_statusText{L"Propods"};
     MenuHandler     m_menuHandler;
     StatusProvider  m_statusProvider;
+    std::mutex      m_iconMutex;      // guards m_ownIcon / m_iconState
+    HICON           m_ownIcon{};      // icon we drew (destroyed when replaced)
+    IconState       m_iconState{IconState::Away};
+    bool            m_iconSet{false};
     static constexpr UINT WM_TRAY = WM_APP + 1;
 };
 

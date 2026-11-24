@@ -64,6 +64,12 @@ public:
     using PeerLinkUpCallback = std::function<void(std::uint64_t address)>;
     void setOnPeerLinkUp(PeerLinkUpCallback cb);
 
+    // A peer closed our legacy link right after it came up (see
+    // BluetoothRfcommClient::setOnRejected). Called on that peer's worker
+    // thread, with no registry lock held.
+    using PeerRejectedCallback = std::function<void(std::uint64_t address)>;
+    void setOnPeerRejected(PeerRejectedCallback cb);
+
     // Stop and remove a peer by address. No-op if the address is not registered.
     void removePeer(std::uint64_t address);
 
@@ -113,6 +119,11 @@ private:
     StateCallback  m_onState;
     PeerAddedCallback m_onPeerAdded;
     std::shared_ptr<LinkUpSlot> m_linkUp = std::make_shared<LinkUpSlot>();
+    struct RejectedSlot {
+        std::mutex mutex;
+        PeerRejectedCallback callback;
+    };
+    std::shared_ptr<RejectedSlot> m_rejected = std::make_shared<RejectedSlot>();
     bool m_started{false};
 };
 

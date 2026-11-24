@@ -306,7 +306,9 @@ void BluetoothRfcommClient::runConnection(std::uint64_t peerAddress, StreamSocke
 
 void BluetoothRfcommClient::runLoop(std::uint64_t peerAddress) {
     int attempt = 0;  // failed dials since the last link (Android retryAttempt)
-    int misses = 0;   // dials in a row that found no EveryPods service
+    int misses = 0;   // dials in a row that found no EveryPods service, or links
+                      // the peer closed at once (peerLinkTooShort)
+    bool shortLink = false;  // the last miss was a link closed at once
     if (m_firstDialDelay) {
         std::chrono::milliseconds delay{0};
         try { delay = m_firstDialDelay(); } catch (...) {}
@@ -345,21 +347,41 @@ void BluetoothRfcommClient::runLoop(std::uint64_t peerAddress) {
                 }
             }
             attempt = 0;
-            misses = 0;
             {   // A wake-up that arrived while dialling is spent now that a link is up.
                 std::scoped_lock lk{m_pendingMutex};
                 m_retryRequested = false;
             }
-            runConnection(peerAddress, socket, inbound);
+            const auto linkUp = std::chrono::steady_clock::now();
+            const auto lasted = [&] {
+                return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - linkUp);
+            };
+            const auto settle = [&] {
+                if (peerLinkTooShort(lasted())) {
+                    ++misses;
+                    shortLink = true;
+                    if (m_onRejected) { try { m_onRejected(); } catch (...) {} }
+                } else {
+                    misses = 0;
+                    shortLink = false;
+                }
+            };
+            try {
+                runConnection(peerAddress, socket, inbound);
+            } catch (...) {
+                settle();
+                throw;
+            }
+            settle();
         } catch (const PeerServiceMissing& e) {
             ++misses;
+            shortLink = false;
             log::warn("RFCOMM {:012X} connection error: {}", peerAddress, e.what());
         } catch (const winrt::hresult_error& e) {
-            misses = 0;
+            if (!shortLink) misses = 0;
             log::warn("RFCOMM {:012X} connection error: 0x{:08X} {}", peerAddress,
                 (std::uint32_t)e.code().value, winrt::to_string(e.message()));
         } catch (const std::exception& e) {
-            misses = 0;
+            if (!shortLink) misses = 0;
             log::warn("RFCOMM {:012X} connection error: {}", peerAddress, e.what());
         }
 
@@ -385,10 +407,11 @@ void BluetoothRfcommClient::runLoop(std::uint64_t peerAddress) {
                                         : peerRetryDelay(attempt, peerRetryJitter());
         ++attempt;
         log::info("RFCOMM {:012X}: reconnecting in {} ms (attempt {}{})...", peerAddress, backoff.count(), attempt,
-            misses > 0 ? ", no EveryPods service there" : "");
-        // The link-up wake does not end a wait for a missing service: our own
-        // dials bring that link up.
+            misses == 0 ? "" : shortLink ? ", the peer closed the link at once" : ", no EveryPods service there");
+        // The link-up wake does not end a wait for a missing service or a peer
+        // that closes at once: our own dials bring that link up.
         waitFor(backoff, /*interruptibleByRetry=*/misses == 0);
+        if (misses == 0) shortLink = false;
     }
 }
 

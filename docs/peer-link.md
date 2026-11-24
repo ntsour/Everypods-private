@@ -113,6 +113,12 @@ flag is set (Android `CrossDevice.peerAudioActive`; Windows
 `HandoverController`). The flag is cleared by the idle packet or when the last
 link drops.
 
+Windows sends `kPeerAudioActive` while Teams has its mic open (any Teams capture
+session Active, reported by `TeamsCallWatcher`) and the AirPods are on the PC,
+and `kPeerAudioIdle` when the mic stays closed for 3 s or the AirPods leave. A
+peer that connects mid-call gets `kPeerAudioActive` again. This stops a phone
+call ringing on a phone from taking the AirPods out of a Teams call.
+
 ## Windows
 
 - `PeerServer` advertises the legacy service and hands links to

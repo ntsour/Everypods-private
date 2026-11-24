@@ -3,6 +3,8 @@
 
 #include "Logger.hpp"
 
+#include <chrono>
+
 using namespace winrt;
 using namespace winrt::Windows::Foundation;
 using namespace winrt::Windows::Media::Control;
@@ -86,10 +88,19 @@ void MediaPlaybackWatcher::rebuildSubscriptions() {
                 } catch (...) {}
                 log::debug("Session '{}' playback status -> {} (playing={})",
                     to_string(id), (int)status, playing);
+                bool flipped = false;
                 {
                     std::scoped_lock g{m_mutex};
                     auto it2 = m_sessions.find(id);
-                    if (it2 != m_sessions.end()) it2->second.playing = playing;
+                    if (it2 != m_sessions.end()) {
+                        flipped = it2->second.playing != playing;
+                        it2->second.playing = playing;
+                    }
+                    if (flipped && playing) m_lastStartedAppId = std::wstring(id);
+                }
+                if (flipped) {
+                    auto cb = m_onSessionPlayback;
+                    if (cb) cb(std::wstring(id), playing);
                 }
                 emitIfChanged();
             });
@@ -256,6 +267,73 @@ bool MediaPlaybackWatcher::tryPauseViaMediaKey() {
         return false;
     }
     return true;
+}
+
+std::wstring MediaPlaybackWatcher::lastStartedAppId() const {
+    std::scoped_lock lk{const_cast<std::mutex&>(m_mutex)};
+    return m_lastStartedAppId;
+}
+
+std::vector<std::wstring> MediaPlaybackWatcher::sessionAppIds() const {
+    std::scoped_lock lk{const_cast<std::mutex&>(m_mutex)};
+    std::vector<std::wstring> ids;
+    ids.reserve(m_sessions.size());
+    for (const auto& [id, _] : m_sessions) ids.emplace_back(id);
+    return ids;
+}
+
+GlobalSystemMediaTransportControlsSession MediaPlaybackWatcher::findSession(const std::wstring& appId) const {
+    std::scoped_lock lk{const_cast<std::mutex&>(m_mutex)};
+    auto it = m_sessions.find(hstring{appId});
+    return it != m_sessions.end() ? it->second.session : nullptr;
+}
+
+std::optional<bool> MediaPlaybackWatcher::isSessionPlaying(const std::wstring& appId) const {
+    auto session = findSession(appId);
+    if (!session) return std::nullopt;
+    try {
+        return session.GetPlaybackInfo().PlaybackStatus() == Playing;
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
+namespace {
+// Wait for a Try*Async with a cap, so a hung app never blocks the caller.
+bool awaitAccepted(IAsyncOperation<bool> op, const char* what, const std::wstring& appId) {
+    if (op.wait_for(std::chrono::seconds{1}) != AsyncStatus::Completed) {
+        log::warn("{} '{}' did not complete within 1 s", what, log::toUtf8(appId));
+        try { op.Cancel(); } catch (...) {}
+        return false;
+    }
+    return op.GetResults();
+}
+}
+
+bool MediaPlaybackWatcher::pauseSession(const std::wstring& appId) {
+    auto session = findSession(appId);
+    if (!session) return false;
+    try {
+        const bool ok = awaitAccepted(session.TryPauseAsync(), "TryPauseAsync", appId);
+        log::info("Pause session '{}': {}", log::toUtf8(appId), ok ? "accepted" : "refused");
+        return ok;
+    } catch (const hresult_error& e) {
+        log::warn("pauseSession '{}' failed: 0x{:08X}", log::toUtf8(appId), (std::uint32_t)e.code().value);
+        return false;
+    }
+}
+
+bool MediaPlaybackWatcher::playSession(const std::wstring& appId) {
+    auto session = findSession(appId);
+    if (!session) return false;
+    try {
+        const bool ok = awaitAccepted(session.TryPlayAsync(), "TryPlayAsync", appId);
+        log::info("Play session '{}': {}", log::toUtf8(appId), ok ? "accepted" : "refused");
+        return ok;
+    } catch (const hresult_error& e) {
+        log::warn("playSession '{}' failed: 0x{:08X}", log::toUtf8(appId), (std::uint32_t)e.code().value);
+        return false;
+    }
 }
 
 void MediaPlaybackWatcher::emitIfChanged() {

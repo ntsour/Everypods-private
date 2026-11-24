@@ -143,6 +143,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(toggle("Auto-set AirPods as audio device", #selector(toggleAutoRoute), Settings.autoRoute))
         menu.addItem(toggle("Pause playback when handing over", #selector(togglePause), Settings.pauseOnHandover))
         menu.addItem(toggle("Hold audio until AirPods connect", #selector(toggleHold), Settings.holdPlayback))
+        menu.addItem(toggle("Connect AirPods when the case opens (if this Mac used them last)", #selector(toggleLidOpen),
+                            Settings.lidOpenConnect))
         if !MediaControl.hasPermission {
             menu.addItem(action("Allow Pausing Playback (Accessibility)…", #selector(grantAccessibility)))
         }
@@ -199,6 +201,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Settings.holdPlayback.toggle()
         // Pausing needs the Accessibility permission (the speakers are muted either way).
         if Settings.holdPlayback, !MediaControl.hasPermission { MediaControl.requestPermission() }
+    }
+    @objc private func toggleLidOpen() {
+        Settings.lidOpenConnect.toggle()
+        Log.write("Connect AirPods when the case opens (last device): \(Settings.lidOpenConnect ? "on" : "off")")
     }
     @objc private func grantAccessibility() { MediaControl.requestPermission() }
 

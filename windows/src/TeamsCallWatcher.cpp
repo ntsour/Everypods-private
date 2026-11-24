@@ -4,6 +4,7 @@
 
 #include <shlwapi.h>
 
+#include <algorithm>
 #include <future>
 #include <set>
 #include <string>
@@ -17,6 +18,16 @@ namespace {
 // Thread message posted by IMMNotificationClient callbacks to ask the STA
 // thread to rebuild endpoint subscriptions. Handled in the message loop.
 constexpr UINT WM_PROPODS_REBUILD = WM_APP + 1;
+// Thread message carrying a session created on a WASAPI callback thread; the
+// STA thread registers it (m_endpointSubs is only touched there, and
+// registering inside OnSessionCreated itself is not allowed).
+constexpr UINT WM_PROPODS_NEW_SESSION = WM_APP + 2;
+struct NewSessionMsg {
+    IAudioSessionControl* ctrl;  // AddRef'd by the poster, Released by the STA thread
+    EDataFlow flow;
+    ERole role;
+    std::wstring deviceId;
+};
 
 // Roles we keep subscriptions for. eRender so we hear meeting/call audio
 // starting, eCapture so we hear ringtones flowing into the mic side.
@@ -85,17 +96,26 @@ std::string narrow(const std::wstring& w) {
 
 // ---------------------------------------------------------------------------
 // SessionEvents — IAudioSessionEvents for one audio session
-// Fires onTeamsSessionActive when the session transitions to Active state.
+// Watched apps (Teams, VLC): fires onTeamsSessionActive / onTeamsSessionEnded.
+// Any app on a render endpoint: fires onRenderSessionActive on an Active transition.
 // ---------------------------------------------------------------------------
 
 class TeamsCallWatcher::SessionEvents : public IAudioSessionEvents {
 public:
     SessionEvents(TeamsCallWatcher* owner, std::wstring exe, DWORD pid,
-                  EDataFlow flow, ERole role)
+                  EDataFlow flow, ERole role, bool watched,
+                  std::wstring endpointId, std::wstring instanceId)
         : m_owner(owner), m_exe(std::move(exe)), m_pid(pid),
-          m_flow(flow), m_role(role) {}
+          m_flow(flow), m_role(role), m_watched(watched),
+          m_endpointId(std::move(endpointId)), m_instanceId(std::move(instanceId)) {}
 
-    void clearOwner() { m_owner = nullptr; }
+    void clearOwner() {
+        if (TeamsCallWatcher* owner = m_owner) owner->setCallMicActive(this, false);
+        m_owner = nullptr;
+    }
+    const std::wstring& instanceId() const { return m_instanceId; }
+    // A Teams capture session: Active means its mic is open (a call or meeting).
+    bool isCallMic() const { return m_watched && m_flow == eCapture && isCommsApp(m_exe); }
 
     ULONG STDMETHODCALLTYPE AddRef() override { return ++m_refs; }
     ULONG STDMETHODCALLTYPE Release() override {
@@ -110,10 +130,23 @@ public:
     }
 
     HRESULT STDMETHODCALLTYPE OnStateChanged(AudioSessionState state) override {
-        if (state == AudioSessionStateActive && m_owner)
-            m_owner->onTeamsSessionActive(m_pid, m_exe, m_flow, m_role);
-        else if (state == AudioSessionStateExpired && m_owner)
-            m_owner->onTeamsSessionEnded(m_pid, m_exe);
+        TeamsCallWatcher* owner = m_owner;
+        if (!owner) return S_OK;
+        if (isCallMic()) owner->setCallMicActive(this, state == AudioSessionStateActive);
+        if (state == AudioSessionStateActive) {
+            if (m_watched)
+                owner->onTeamsSessionActive(m_pid, m_exe, m_flow, m_role);
+            if (m_flow == eRender && m_pid != GetCurrentProcessId()) {
+                AudioSessionRef ref;
+                ref.endpointId = m_endpointId;
+                ref.instanceId = m_instanceId;
+                ref.pid = m_pid;
+                ref.exe = m_exe;
+                owner->onRenderSessionActive(ref);
+            }
+        } else if (state == AudioSessionStateExpired && m_watched) {
+            owner->onTeamsSessionEnded(m_pid, m_exe);
+        }
         return S_OK;
     }
 
@@ -132,6 +165,9 @@ private:
     DWORD m_pid;
     EDataFlow m_flow;
     ERole m_role;
+    bool m_watched;
+    std::wstring m_endpointId;
+    std::wstring m_instanceId;
 };
 
 // ---------------------------------------------------------------------------
@@ -141,8 +177,8 @@ private:
 
 class TeamsCallWatcher::Notification : public IAudioSessionNotification {
 public:
-    Notification(TeamsCallWatcher* owner, EDataFlow flow, ERole role)
-        : m_owner(owner), m_flow(flow), m_role(role) {}
+    Notification(TeamsCallWatcher* owner, EDataFlow flow, ERole role, std::wstring deviceId)
+        : m_owner(owner), m_flow(flow), m_role(role), m_deviceId(std::move(deviceId)) {}
 
     void clearOwner() { m_owner = nullptr; }
 
@@ -160,7 +196,7 @@ public:
 
     HRESULT STDMETHODCALLTYPE OnSessionCreated(IAudioSessionControl* ctrl) override {
         if (ctrl && m_owner)
-            m_owner->onNewSession(ctrl, m_flow, m_role);
+            m_owner->onNewSession(ctrl, m_flow, m_role, m_deviceId);
         return S_OK;
     }
 
@@ -169,6 +205,7 @@ private:
     TeamsCallWatcher* m_owner;
     EDataFlow m_flow;
     ERole m_role;
+    std::wstring m_deviceId;
 };
 
 // ---------------------------------------------------------------------------
@@ -248,7 +285,31 @@ void TeamsCallWatcher::onTeamsSessionActive(DWORD pid, const std::wstring& exe,
                   comms ? "call/meeting" : "media",
                   narrow(exe), (unsigned)pid, flowLabel(flow), roleLabel(role));
     // Feed into the handover state machine — same effect as GSMTC media-start.
-    if (m_onTriggered) m_onTriggered();
+    if (m_onTriggered) m_onTriggered(comms);
+}
+
+void TeamsCallWatcher::onRenderSessionActive(const AudioSessionRef& session) {
+    // Copy first: the callback is set once before start(), but never call a
+    // member std::function in place from a WASAPI callback thread.
+    RenderSessionActiveCallback cb = m_onRenderSessionActive;
+    if (cb) cb(session);
+}
+
+void TeamsCallWatcher::setCallMicActive(const void* session, bool active) {
+    bool edge = false, open = false;
+    {
+        std::scoped_lock lk{m_callMicMutex};
+        auto it = std::find(m_callMicSessions.begin(), m_callMicSessions.end(), session);
+        const bool wasOpen = !m_callMicSessions.empty();
+        if (active && it == m_callMicSessions.end()) m_callMicSessions.push_back(session);
+        if (!active && it != m_callMicSessions.end()) m_callMicSessions.erase(it);
+        open = !m_callMicSessions.empty();
+        edge = open != wasOpen;
+    }
+    if (!edge) return;
+    log::info("TeamsCallWatcher: Teams mic {}", open ? "open (call or meeting)" : "closed");
+    CallMicCallback cb = m_onCallMicChanged;
+    if (cb) cb(open);
 }
 
 void TeamsCallWatcher::onTeamsSessionEnded(DWORD pid, const std::wstring& exe) {
@@ -269,20 +330,22 @@ void TeamsCallWatcher::onTeamsSessionEnded(DWORD pid, const std::wstring& exe) {
 }
 
 void TeamsCallWatcher::onNewSession(IAudioSessionControl* ctrl,
-                                    EDataFlow flow, ERole role) {
-    // Find the right EndpointSub and register events on this new session.
-    for (auto& ep : m_endpointSubs) {
-        if (ep.flow == flow && ep.role == role) {
-            watchSession(ctrl, flow, role);
-            // Also store in ep.sessions for cleanup — find by flow/role match.
-            // (watchSession stores into the first matching ep for cleanup.)
-            break;
-        }
+                                    EDataFlow flow, ERole role,
+                                    const std::wstring& deviceId) {
+    // WASAPI callback thread: hand the session to the STA thread.
+    const DWORD tid = m_staThreadId;
+    if (!ctrl || !tid) return;
+    ctrl->AddRef();
+    auto* msg = new NewSessionMsg{ctrl, flow, role, deviceId};
+    if (!PostThreadMessageW(tid, WM_PROPODS_NEW_SESSION, 0, reinterpret_cast<LPARAM>(msg))) {
+        ctrl->Release();
+        delete msg;
     }
 }
 
 void TeamsCallWatcher::watchSession(IAudioSessionControl* ctrl,
-                                    EDataFlow flow, ERole role) {
+                                    EDataFlow flow, ERole role,
+                                    const std::wstring& deviceId, bool isNew) {
     ComPtr<IAudioSessionControl2> ctrl2;
     if (FAILED(ctrl->QueryInterface(IID_PPV_ARGS(&ctrl2)))) return;
 
@@ -301,23 +364,50 @@ void TeamsCallWatcher::watchSession(IAudioSessionControl* ctrl,
     log::debug("TeamsCallWatcher: existing session {} (pid {}) on {}/{} state={}",
                narrow(exe), (unsigned)pid, flowLabel(flow), roleLabel(role), (int)state);
 
-    if (!isWatchedApp(exe)) return;
+    // Watched apps are tracked on every endpoint; any other app only on render
+    // endpoints (for the "something started playing" callback).
+    const bool watched = isWatchedApp(exe);
+    if (!watched && flow != eRender) return;
 
-    // If already active right now (Teams was in a call before we started), report.
-    if (state == AudioSessionStateActive)
+    // The EndpointSub this session belongs to: match by device id, not just
+    // flow/role, so cleanup always unregisters what we registered.
+    EndpointSub* sub = nullptr;
+    for (auto& ep : m_endpointSubs) {
+        if (ep.flow == flow && ep.deviceId == deviceId) { sub = &ep; break; }
+    }
+    if (!sub) return;
+
+    // If a watched app is already active right now (Teams was in a call before
+    // we started), report. Other apps already playing at registration time are
+    // deliberately not reported: only real transitions are.
+    if (watched && state == AudioSessionStateActive)
         onTeamsSessionActive(pid, exe, flow, role);
+
+    std::wstring instanceId;
+    LPWSTR rawInstance = nullptr;
+    if (SUCCEEDED(ctrl2->GetSessionInstanceIdentifier(&rawInstance)) && rawInstance) {
+        instanceId = rawInstance;
+        CoTaskMemFree(rawInstance);
+    }
 
     // Register for future state changes.
     ComPtr<SessionEvents> ev;
-    ev.Attach(new SessionEvents(this, exe, pid, flow, role));
-    if (SUCCEEDED(ctrl->RegisterAudioSessionNotification(ev.Get()))) {
-        for (auto& ep : m_endpointSubs) {
-            if (ep.flow == flow && ep.role == role) {
-                ep.sessions.push_back({ctrl, std::move(ev)});
-                break;
-            }
-        }
+    ev.Attach(new SessionEvents(this, exe, pid, flow, role, watched, deviceId, std::move(instanceId)));
+    const bool registered = SUCCEEDED(ctrl->RegisterAudioSessionNotification(ev.Get()));
+    // A call already in progress when we (re)subscribed.
+    if (registered && ev->isCallMic() && state == AudioSessionStateActive) setCallMicActive(ev.Get(), true);
+    // A brand-new session can be Active before we got to register for its
+    // events (it reached us via the STA queue): report that start now.
+    if (isNew && state == AudioSessionStateActive && flow == eRender && pid != GetCurrentProcessId()) {
+        AudioSessionRef ref;
+        ref.endpointId = deviceId;
+        ref.instanceId = ev->instanceId();
+        ref.pid = pid;
+        ref.exe = exe;
+        onRenderSessionActive(ref);
     }
+    if (registered)
+        sub->sessions.push_back({ctrl, std::move(ev)});
 }
 
 bool TeamsCallWatcher::shouldReport(DWORD pid) {
@@ -364,7 +454,7 @@ bool TeamsCallWatcher::subscribeToEndpoint(EDataFlow flow, ERole role) {
 
     // Register for new sessions.
     ComPtr<Notification> notif;
-    notif.Attach(new Notification(this, flow, role));
+    notif.Attach(new Notification(this, flow, role, deviceId));
     hr = mgr->RegisterSessionNotification(notif.Get());
     if (FAILED(hr)) {
         log::warn("TeamsCallWatcher: RegisterSessionNotification on {}/{} failed: 0x{:08X}",
@@ -388,7 +478,7 @@ bool TeamsCallWatcher::subscribeToEndpoint(EDataFlow flow, ERole role) {
         for (int i = 0; i < count; ++i) {
             ComPtr<IAudioSessionControl> ctrl;
             if (SUCCEEDED(sessEnum->GetSession(i, &ctrl)))
-                watchSession(ctrl.Get(), flow, role);
+                watchSession(ctrl.Get(), flow, role, m_endpointSubs.back().deviceId, /*isNew=*/false);
         }
     }
 
@@ -507,10 +597,23 @@ void TeamsCallWatcher::staThreadProc(std::promise<bool>& readySignal) {
             rebuildSubscriptions();
             continue;
         }
+        if (msg.hwnd == nullptr && msg.message == WM_PROPODS_NEW_SESSION) {
+            auto* m = reinterpret_cast<NewSessionMsg*>(msg.lParam);
+            watchSession(m->ctrl, m->flow, m->role, m->deviceId, /*isNew=*/true);
+            m->ctrl->Release();
+            delete m;
+            continue;
+        }
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
 
+    // Drop sessions still queued for registration (release their refs).
+    MSG pending;
+    while (PeekMessageW(&pending, nullptr, WM_PROPODS_NEW_SESSION, WM_PROPODS_NEW_SESSION, PM_REMOVE)) {
+        auto* m = reinterpret_cast<NewSessionMsg*>(pending.lParam);
+        if (m) { m->ctrl->Release(); delete m; }
+    }
     unsubscribeAll();
     CoUninitialize();
 }
