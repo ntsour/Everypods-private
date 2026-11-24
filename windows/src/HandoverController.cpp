@@ -309,13 +309,13 @@ void HandoverController::requestTakeover(HoldKind kind, bool userRetry, const st
     // Start the hold before anything is sent, so the speakers stay quiet for the
     // whole handover. Media holds need Auto-route: without it the AirPods may
     // never become the default output and the hold could not end on its own.
-    // Hold and show progress only when a peer says it holds the AirPods; otherwise
-    // they may be in their case and the panel would only report a failure.
+    // Hold and show progress only when a peer holds the AirPods and a bud is worn;
+    // otherwise they may be in their case and the panel would only report a failure.
     if (m_hold && !userRetry && (kind == HoldKind::Call || m_autoRoute.load())) {
-        if (!m_peerHoldsProbe || m_peerHoldsProbe())
+        if (!m_holdProbe || m_holdProbe())
             m_hold->start(kind, peerConnected, kind == HoldKind::Media ? holdAppId : std::wstring{});
         else if (!m_hold->isActive())
-            log::handover("HOLD    skipped: no peer holds the AirPods");
+            log::handover("HOLD    skipped: AirPods not in use on a peer (none holds them, or no bud worn)");
     }
     if (peerConnected) {
         log::handover("OUT     kRequestDisconnect -> all peers");
@@ -404,7 +404,7 @@ bool HandoverController::mediaTakeoverLikely() {
     if (sinceLost < std::chrono::milliseconds(3000)) return false;
     if (m_hold && m_hold->suppressesMediaTrigger()) return false;
     if (m_availabilityProbe && !m_availabilityProbe()) return false;
-    if (m_peerHoldsProbe && !m_peerHoldsProbe()) return false;
+    if (m_holdProbe && !m_holdProbe()) return false;
     return !m_airpods.isClassicallyConnectedWinRT();
 }
 

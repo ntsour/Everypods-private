@@ -54,6 +54,13 @@ public:
     // we DO want the handover.)
     bool airpodsAvailable() const;
 
+    // Fresh evidence a bud is in an ear: a beacon saying so within kWornWindowMs.
+    // Gates the playback hold and its panel (Android's airPodsLikelyWorn rule):
+    // a phone reports "held" while its Bluetooth profile is up, which stays true
+    // with the AirPods in their case. Unknown (no beacon, warm-up, scan paused)
+    // counts as not worn; only a watcher that could not start fails open.
+    bool budLikelyWorn() const;
+
 private:
     void onReceived(
         winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementWatcher const&,
@@ -62,7 +69,8 @@ private:
     // Apple proximity-pairing advertisement: company id 0x004C, payload begins
     // 0x07 0x19 (type, length). Returns true if parsed; sets inCase = lid closed
     // AND neither pod in an ear (i.e. both pods stowed in a closed case).
-    static bool parseProximity(const uint8_t* data, uint32_t len, bool& inCase);
+    // worn = at least one pod in an ear.
+    static bool parseProximity(const uint8_t* data, uint32_t len, bool& inCase, bool& worn);
 
     // 15 s mirrors Android's STALE_DEVICE_TIMEOUT_MS. AirPods advertise roughly
     // every 1-2 s while a lid is open / pods are in use, so 15 s comfortably
@@ -71,6 +79,9 @@ private:
     // Warm-up grace after start(): fail-open so a freshly-launched app doesn't
     // suppress a legitimate takeover before the first beacon arrives.
     static constexpr std::int64_t kWarmupMs = 20'000;
+    // Out of their case AirPods advertise every 3-9 s (measured on the Mac
+    // 2026-11-23), so 20 s rides out gaps.
+    static constexpr std::int64_t kWornWindowMs = 20'000;
 
     // RSSI proximity guard. AirPods broadcast BLE proximity adverts under a
     // rotating Resolvable Private Address (RPA), not their classic A2DP MAC, so
@@ -93,6 +104,8 @@ private:
     // recent fresh reading is in-case.
     std::atomic<std::int64_t> m_lastInCaseMs{0};
     std::atomic<std::int64_t> m_lastOutOfCaseMs{0};
+    std::atomic<std::int64_t> m_lastWornMs{0};
+    std::atomic<bool> m_startFailed{false};
     std::atomic<std::int64_t> m_startedAtMs{0};
 };
 

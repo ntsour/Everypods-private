@@ -46,6 +46,7 @@ void BleProximityWatcher::start() {
         // Fail-open: leave m_running false so airpodsAvailable() returns true and
         // handover behaves exactly as before this feature existed.
         m_running.store(false);
+        m_startFailed.store(true);
         log::warn("BleProximityWatcher: failed to start BLE scan: 0x{:08X} {} — "
                   "in-case detection disabled (handover proceeds as before)",
                   (std::uint32_t)e.code().value, winrt::to_string(e.message()));
@@ -99,14 +100,23 @@ bool BleProximityWatcher::airpodsAvailable() const {
     return true;
 }
 
-bool BleProximityWatcher::parseProximity(const uint8_t* data, uint32_t len, bool& inCase) {
+bool BleProximityWatcher::budLikelyWorn() const {
+    if (m_startFailed.load()) return true;  // no BLE at all: don't disable the hold
+    const std::int64_t worn = m_lastWornMs.load();
+    return worn != 0 && nowMs() - worn < kWornWindowMs;
+}
+
+bool BleProximityWatcher::parseProximity(const uint8_t* data, uint32_t len, bool& inCase, bool& worn) {
     // Apple proximity-pairing message layout (manufacturer data after company id):
     //   data[0]   = 0x07 (type: proximity pairing / "nearby")
     //   data[1]   = 0x19 (length, 25)
     //   data[5]   = status byte (primary-pod + in-case + in-ear bits)
     //   data[8]   = lid state (bit 3: 0 = open, 1 = closed)
     // We only need indices up to 8.
-    if (len < 9 || data[0] != 0x07) return false;
+    // Only the full AirPods beacon ([1]=0x19 length, [2]=0x01). A shorter type-0x07
+    // message from other Apple devices (length 0x11, [2]=0x06) has junk in these
+    // bytes and must not count as AirPods evidence.
+    if (len < 9 || data[0] != 0x07 || data[1] != 0x19 || data[2] != 0x01) return false;
 
     const int status = data[5];
     const int lid     = data[8];
@@ -125,6 +135,7 @@ bool BleProximityWatcher::parseProximity(const uint8_t* data, uint32_t len, bool
     // Pods in ears (case closed in a pocket) report in-ear → NOT in-case → we
     // still allow the handover. Anything ambiguous defaults to NOT in-case.
     inCase = !lidOpen && !leftInEar && !rightInEar;
+    worn = leftInEar || rightInEar;
     return true;
 }
 
@@ -149,8 +160,9 @@ void BleProximityWatcher::onReceived(
             auto reader = DataReader::FromBuffer(buffer);
             reader.ReadBytes(bytes);
 
-            bool inCase = false;
-            if (!parseProximity(bytes.data(), len, inCase)) continue;
+            bool inCase = false, worn = false;
+            if (!parseProximity(bytes.data(), len, inCase, worn)) continue;
+            if (worn) m_lastWornMs.store(nowMs());
 
             // Logged at debug to avoid flooding (beacons arrive ~1/s).
             if (inCase) {

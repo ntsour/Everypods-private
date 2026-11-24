@@ -238,8 +238,16 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
         }
         return bleWatcher.airpodsAvailable();
     });
-    // The hold, pre-mute and panel need a peer that holds the AirPods (not in the case).
-    controller.setPeerHoldsProbe([&peerV2]() { return peerV2.anyPeerHoldsAirPods(); });
+    // The hold, pre-mute and panel need a peer that holds the AirPods AND fresh
+    // BLE evidence a bud is worn: a phone still reports "held" with the AirPods
+    // in their case while its Bluetooth profile stays up.
+    controller.setHoldProbe([&peerV2, &bleWatcher]() {
+        const bool held = peerV2.anyPeerHoldsAirPods();
+        const bool worn = bleWatcher.budLikelyWorn();
+        if (!held || !worn)
+            log::debug("Hold gate: peer holds AirPods={} bud worn={}", held, worn);
+        return held && worn;
+    });
 
     if (!tray.create(hInstance)) return 1;
     tray.setStatus(stateLabel(controller.state()));
