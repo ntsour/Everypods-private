@@ -244,7 +244,8 @@ namespace {
 // Defined further down, next to the endpoint enumeration it uses.
 constexpr ULONG kKsOneshotReconnect = 0;  // KSPROPERTY_ONESHOT_RECONNECT
 constexpr ULONG kKsOneshotDisconnect = 1; // KSPROPERTY_ONESHOT_DISCONNECT
-int sendBtAudioOneshot(ULONG propertyId, const char* label);
+// captureOnly: only the hands-free (mic) endpoint's filter.
+int sendBtAudioOneshot(ULONG propertyId, const char* label, bool captureOnly = false);
 }
 
 bool AirPodsConnector::connect() {
@@ -504,21 +505,26 @@ void updateTeamsDeviceConfig(const std::wstring& renderEpId, const std::wstring&
     const std::string capture = winrt::to_string(captureEpId);
 
     try {
-        // Replace calling_selected_speaker_device value
-        content = std::regex_replace(content,
-            std::regex(R"("calling_selected_speaker_device":\{"Speaker":"[^"]*"\})"),
-            "\"calling_selected_speaker_device\":{\"Speaker\":\"" + render + "\"}");
-
-        // Replace calling_selected_microphone_device value
-        content = std::regex_replace(content,
-            std::regex(R"("calling_selected_microphone_device":\{"Microphone":"[^"]*"\})"),
-            "\"calling_selected_microphone_device\":{\"Microphone\":\"" + capture + "\"}");
-
-        // Replace Microphone+Speaker within calling_user_selected_devices, preserving Camera etc.
-        content = std::regex_replace(content,
-            std::regex(R"("calling_user_selected_devices":\{"Microphone":"[^"]*","Speaker":"[^"]*")"),
-            "\"calling_user_selected_devices\":{\"Microphone\":\"" + capture
-            + "\",\"Speaker\":\"" + render + "\"");
+        // An empty id keeps Teams' current choice for that device. Without an
+        // AirPods mic (hands-free link down), writing an empty id left Teams
+        // with no microphone selected (2026-11-24).
+        if (!render.empty()) {
+            content = std::regex_replace(content,
+                std::regex(R"("calling_selected_speaker_device":\{"Speaker":"[^"]*"\})"),
+                "\"calling_selected_speaker_device\":{\"Speaker\":\"" + render + "\"}");
+            // Speaker within calling_user_selected_devices, preserving Microphone, Camera etc.
+            content = std::regex_replace(content,
+                std::regex(R"(("calling_user_selected_devices":\{"Microphone":"[^"]*","Speaker":")[^"]*")"),
+                "$1" + render + "\"");
+        }
+        if (!capture.empty()) {
+            content = std::regex_replace(content,
+                std::regex(R"("calling_selected_microphone_device":\{"Microphone":"[^"]*"\})"),
+                "\"calling_selected_microphone_device\":{\"Microphone\":\"" + capture + "\"}");
+            content = std::regex_replace(content,
+                std::regex(R"(("calling_user_selected_devices":\{"Microphone":")[^"]*")"),
+                "$1" + capture + "\"");
+        }
     } catch (const std::regex_error& e) {
         log::warn("Teams config regex error: {}", e.what());
         return;
@@ -676,7 +682,7 @@ bool tryApplyAirPodsRouting(IMMDeviceEnumerator* enumerator,
         log::handover("ROUTE   routing applied — broadcasting device change");
         broadcastDefaultDeviceChange();
         if (!activeRenderId.empty() || !activeCaptureId.empty()) {
-            updateTeamsDeviceConfig(activeRenderId, activeCaptureId);
+            updateTeamsDeviceConfig(activeRenderId, activeCaptureId);  // an empty id keeps Teams' choice
         }
     }
     return anyApplied;
@@ -1180,6 +1186,86 @@ bool AirPodsConnector::isClassicallyConnectedWinRT() {
     }
 }
 
+std::wstring AirPodsConnector::displayName() {
+    const std::uint64_t addr = m_address;
+    {
+        std::scoped_lock lk{m_nameMutex};
+        if (addr != 0 && addr == m_nameForAddress && !m_name.empty()) return m_name;
+    }
+    std::wstring name;
+    if (addr != 0) {
+        try {
+            using namespace winrt::Windows::Devices::Bluetooth;
+            auto device = BluetoothDevice::FromBluetoothAddressAsync(addr).get();
+            if (device) name = std::wstring(device.Name());
+        } catch (const winrt::hresult_error&) {}
+    }
+    if (name.empty()) return L"AirPods";
+    std::scoped_lock lk{m_nameMutex};
+    m_name = name;
+    m_nameForAddress = addr;
+    return name;
+}
+
+AirPodsConnector::HandsFree AirPodsConnector::handsFreeState() {
+    HRESULT coInitHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    const bool weInited = (coInitHr == S_OK);
+    HandsFree result = HandsFree::Unknown;
+    ComPtr<IMMDeviceEnumerator> enumerator;
+    if (SUCCEEDED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
+            __uuidof(IMMDeviceEnumerator), (void**)enumerator.GetAddressOf()))) {
+        bool stereoUp = false, micUp = false, micKnown = false;
+        for (const auto& ep : findAirPodsEndpoints(enumerator.Get(), eRender))
+            if (ep.state == DEVICE_STATE_ACTIVE) stereoUp = true;
+        for (const auto& ep : findAirPodsEndpoints(enumerator.Get(), eCapture)) {
+            micKnown = true;
+            if (ep.state == DEVICE_STATE_ACTIVE) micUp = true;
+        }
+        if (micUp) result = HandsFree::Up;
+        else if (stereoUp && micKnown) result = HandsFree::Missing;
+        log::debug("Hands-free check: stereo {}, mic {}", stereoUp ? "up" : "down",
+            !micKnown ? "no endpoint" : micUp ? "up" : "down");
+    }
+    if (weInited) CoUninitialize();
+    return result;
+}
+
+bool AirPodsConnector::reconnectHandsFree() {
+    HRESULT coInitHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    const bool weInited = (coInitHr == S_OK);
+    const int sent = sendBtAudioOneshot(kKsOneshotReconnect, "RECONNECT", /*captureOnly=*/true);
+    if (weInited) CoUninitialize();
+    return sent > 0;
+}
+
+bool AirPodsConnector::isDefaultRenderDevice() {
+    HRESULT coInitHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    const bool balance = (coInitHr == S_OK || coInitHr == S_FALSE);
+    bool result = false;
+    {
+        ComPtr<IMMDeviceEnumerator> enumerator;
+        ComPtr<IMMDevice> current;
+        LPWSTR rawId = nullptr;
+        if (SUCCEEDED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
+                __uuidof(IMMDeviceEnumerator), (void**)enumerator.GetAddressOf())) &&
+            SUCCEEDED(enumerator->GetDefaultAudioEndpoint(eRender, eMultimedia, &current)) && current &&
+            SUCCEEDED(current->GetId(&rawId)) && rawId) {
+            const std::wstring defaultId = rawId;
+            CoTaskMemFree(rawId);
+            for (const auto& ep : findAirPodsEndpoints(enumerator.Get(), eRender)) {
+                if (ep.id != defaultId) continue;
+                const std::wstring n = foldLower(ep.name);
+                const bool handsFree = n.find(L"hands-free") != std::wstring::npos ||
+                                       n.find(L"hands free") != std::wstring::npos;
+                result = ep.state == DEVICE_STATE_ACTIVE && !handsFree;
+                break;
+            }
+        }
+    }
+    if (balance) CoUninitialize();
+    return result;
+}
+
 bool AirPodsConnector::disconnect() {
     if (m_address == 0) return false;
     std::lock_guard<std::mutex> lk(m_mutex);
@@ -1369,13 +1455,14 @@ HRESULT acquireBtAudioKs(IMMDeviceEnumerator* en, IMMDevice* dev, ComPtr<IKsCont
 // endpoints (A2DP and hands-free). Returns how many filters accepted it.
 // Success only means the driver started the operation; the link and endpoint
 // state confirm the result.
-int sendBtAudioOneshot(ULONG propertyId, const char* label) {
+int sendBtAudioOneshot(ULONG propertyId, const char* label, bool captureOnly) {
     ComPtr<IMMDeviceEnumerator> en;
     if (FAILED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, IID_PPV_ARGS(&en)))) {
         log::warn("KS {}: cannot create the audio device enumerator", label);
         return 0;
     }
-    std::vector<Endpoint> endpoints = findAirPodsEndpoints(en.Get(), eRender);
+    std::vector<Endpoint> endpoints;
+    if (!captureOnly) endpoints = findAirPodsEndpoints(en.Get(), eRender);
     for (auto& e : findAirPodsEndpoints(en.Get(), eCapture)) endpoints.push_back(e);
 
     std::vector<std::wstring> done;

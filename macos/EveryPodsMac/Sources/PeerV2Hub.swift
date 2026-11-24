@@ -42,6 +42,11 @@ final class PeerV2Hub {
     private let revisions = PeerSnapshotRevision()
     private var protocolHandler: PeerAcquisitionProtocol!
     private var links: [String: Link] = [:]
+    /// Peers whose latest snapshot says they hold our AirPods. A phone measures this from its own Bluetooth
+    /// profile, so it drops when the AirPods leave it (e.g. into the case), unlike the legacy AIRPODS_* packets,
+    /// which a phone only sends around a handover.
+    private var peersHolding = Set<String>()
+    var anyPeerHoldsAirPods: Bool { !peersHolding.isEmpty }
     private var timer: Timer?
     private var lastBroadcast: [String: JSONValue]?
     /// After the requester's link dropped mid-acquisition the outcome is unknown: report ownership "unknown" until a
@@ -128,6 +133,7 @@ final class PeerV2Hub {
     /// The LE link ended: its v2 state is gone with it.
     func linkDown(_ peerId: String) {
         guard let link = links.removeValue(forKey: peerId) else { return }
+        setPeerHolding(peerId, false)
         link.session?.end()
         link.session = nil
         peerGone(peerId)
@@ -240,7 +246,15 @@ final class PeerV2Hub {
 
     // MARK: Peer snapshots
 
+    private func setPeerHolding(_ peerId: String, _ held: Bool) {
+        let changed = held ? peersHolding.insert(peerId).inserted : peersHolding.remove(peerId) != nil
+        if changed { log("V2[\(peerName(peerId))]: \(held ? "holds" : "no longer holds") the AirPods") }
+    }
+
     private func observe(_ peerId: String, _ snapshot: [String: JSONValue]) -> Bool {
+        let ours = localState().headsetId
+        setPeerHolding(peerId, snapshot["ownership"]?.stringValue == "held"
+                       && (ours == nil || snapshot["headsetId"]?.stringValue == ours))
         if unknownAfterDrop?.requesterId == peerId { unknownAfterDrop = nil }
         if let r = coordinator.live, r.requesterId == peerId {
             let held = snapshot["ownership"]?.stringValue == "held" && snapshot["headsetId"]?.stringValue == r.headsetId

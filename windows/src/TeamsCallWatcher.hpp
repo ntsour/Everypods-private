@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <functional>
 #include <future>
 #include <mutex>
 #include <string>
@@ -13,11 +14,16 @@
 #include <audiopolicy.h>
 #include <wrl/client.h>
 
+#include "SessionMute.hpp"
+
 namespace Propods {
 
 // Viability spike: detect Teams calls/meetings via WASAPI session state changes.
 //
 // Strategy: watch for AudioSessionStateActive on any Teams audio session.
+// Additionally, every non-system session on a render endpoint (any app) is
+// watched so that setOnRenderSessionActive() can report "this app just started
+// playing" -- purely event driven, no polling and no audio streams opened.
 // OnSessionCreated catches new sessions; existing sessions (created before we
 // started) are enumerated at registration time and also watched for state changes.
 // This covers both incoming calls (ringtone makes session Active immediately)
@@ -33,10 +39,19 @@ public:
     TeamsCallWatcher& operator=(const TeamsCallWatcher&) = delete;
 
     // Called when a watched app (Teams, VLC, …) audio session becomes active.
+    // `comms` is true for a call/meeting app (Teams), false for media (VLC).
     // Wire this to HandoverController::onCallActive() so the WASAPI-based
     // trigger feeds into the handover state machine with voluntary-release gating.
-    using TriggerCallback = std::function<void()>;
+    using TriggerCallback = std::function<void(bool comms)>;
     void setOnTriggered(TriggerCallback cb) { m_onTriggered = std::move(cb); }
+
+    // Called when any non-system audio session (any app, not just watched ones)
+    // on a render endpoint changes to Active. Called on a WASAPI callback thread:
+    // the receiver must return quickly and must not call back into this class.
+    // Not called for sessions that were already Active when we registered.
+    // Like the other callbacks, set it before start().
+    using RenderSessionActiveCallback = std::function<void(const AudioSessionRef&)>;
+    void setOnRenderSessionActive(RenderSessionActiveCallback cb) { m_onRenderSessionActive = std::move(cb); }
 
     // Called when the active Teams session expires (call definitively ended).
     // Wire this to HandoverController::onTeamsCallEnded() to clear the
@@ -44,13 +59,24 @@ public:
     using SessionEndedCallback = std::function<void()>;
     void setOnSessionEnded(SessionEndedCallback cb) { m_onSessionEnded = std::move(cb); }
 
+    // Called when Teams opens its mic (any Teams capture session Active: a
+    // call or meeting) or closes it (none Active). Raw edges: subscriptions
+    // are dropped and re-made on every default-device change, so the receiver
+    // should debounce the close. Called on a WASAPI or the watcher's STA
+    // thread; return quickly. Set before start().
+    using CallMicCallback = std::function<void(bool open)>;
+    void setOnCallMicChanged(CallMicCallback cb) { m_onCallMicChanged = std::move(cb); }
+
     bool start();
     void stop();
 
     // Called by nested COM objects — not part of the user API.
     void onTeamsSessionActive(DWORD pid, const std::wstring& exe, EDataFlow flow, ERole role);
     void onTeamsSessionEnded(DWORD pid, const std::wstring& exe);
-    void onNewSession(IAudioSessionControl* ctrl, EDataFlow flow, ERole role);
+    void onNewSession(IAudioSessionControl* ctrl, EDataFlow flow, ERole role,
+                      const std::wstring& deviceId);
+    void onRenderSessionActive(const AudioSessionRef& session);
+    void setCallMicActive(const void* session, bool active);
 
 private:
     class Notification;          // IAudioSessionNotification — watches for new sessions
@@ -74,7 +100,9 @@ private:
 
     void staThreadProc(std::promise<bool>& readySignal);
     bool subscribeToEndpoint(EDataFlow flow, ERole role);
-    void watchSession(IAudioSessionControl* ctrl, EDataFlow flow, ERole role);
+    // isNew: created after we subscribed (reported if already Active).
+    void watchSession(IAudioSessionControl* ctrl, EDataFlow flow, ERole role,
+                      const std::wstring& deviceId, bool isNew);
     void unsubscribeEndpoint(EndpointSub& ep);
     void unsubscribeAll();
     // Called on the STA thread (driven by WM_APP messages posted from the
@@ -95,6 +123,11 @@ private:
 
     TriggerCallback       m_onTriggered;
     SessionEndedCallback  m_onSessionEnded;
+    RenderSessionActiveCallback m_onRenderSessionActive;
+    CallMicCallback       m_onCallMicChanged;
+
+    std::mutex m_callMicMutex;
+    std::vector<const void*> m_callMicSessions;  // Teams capture sessions now Active
 
     std::mutex m_dedupeMutex;
     DWORD m_lastReportedPid{0};

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <functional>
 #include <mutex>
 #include <cstdint>
 
@@ -22,9 +23,9 @@ namespace Propods {
 // (on success) hijack audio away from whatever device the user is actually on
 // (Jabra/Dell headset, speakers, etc.).
 //
-// Availability is derived from the freshness of "out-of-case evidence"
-// (lid open OR a pod in-ear). If no such evidence has been seen within
-// kStaleWindowMs, the AirPods are treated as in-case / away.
+// Availability: unavailable only when the latest beacon said in case AND no
+// out-of-case beacon arrived within kOutOfCaseWindowMs (ProximityRules.hpp).
+// The in-case reading does not expire, since a closed case stops advertising.
 class BleProximityWatcher {
 public:
     BleProximityWatcher() = default;
@@ -54,23 +55,35 @@ public:
     // we DO want the handover.)
     bool airpodsAvailable() const;
 
+    // Fresh evidence a bud is in an ear: a beacon saying so within kWornWindowMs.
+    // Gates the playback hold and its panel (Android's airPodsLikelyWorn rule):
+    // a phone reports "held" while its Bluetooth profile is up, which stays true
+    // with the AirPods in their case. Unknown (no beacon, warm-up, scan paused)
+    // counts as not worn; only a watcher that could not start fails open.
+    bool budLikelyWorn() const;
+
+    // Fired (on the BLE callback thread: return quickly) when a case lid is
+    // opened near this PC (lidOpeningStarts in ProximityRules.hpp). Set before
+    // start(). Drives lid-open connect when this PC used the AirPods last.
+    void setOnLidOpened(std::function<void()> cb) { m_onLidOpened = std::move(cb); }
+
 private:
     void onReceived(
         winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementWatcher const&,
         winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEAdvertisementReceivedEventArgs const& args);
 
     // Apple proximity-pairing advertisement: company id 0x004C, payload begins
-    // 0x07 0x19 (type, length). Returns true if parsed; sets inCase = lid closed
+    // 0x07 0x19 0x01 (type, length, prefix); see ProximityRules.hpp. Returns true if parsed; sets inCase = lid closed
     // AND neither pod in an ear (i.e. both pods stowed in a closed case).
-    static bool parseProximity(const uint8_t* data, uint32_t len, bool& inCase);
+    // worn = at least one pod in an ear.
+    static bool parseProximity(const uint8_t* data, uint32_t len, bool& inCase, bool& worn, bool& lidOpen);
 
-    // 15 s mirrors Android's STALE_DEVICE_TIMEOUT_MS. AirPods advertise roughly
-    // every 1-2 s while a lid is open / pods are in use, so 15 s comfortably
-    // bridges sparse advertising without going stale during real use.
-    static constexpr std::int64_t kStaleWindowMs = 15'000;
     // Warm-up grace after start(): fail-open so a freshly-launched app doesn't
     // suppress a legitimate takeover before the first beacon arrives.
     static constexpr std::int64_t kWarmupMs = 20'000;
+    // Out of their case AirPods advertise every 3-9 s (measured on the Mac
+    // 2026-11-23), so 20 s rides out gaps.
+    static constexpr std::int64_t kWornWindowMs = 20'000;
 
     // RSSI proximity guard. AirPods broadcast BLE proximity adverts under a
     // rotating Resolvable Private Address (RPA), not their classic A2DP MAC, so
@@ -93,7 +106,13 @@ private:
     // recent fresh reading is in-case.
     std::atomic<std::int64_t> m_lastInCaseMs{0};
     std::atomic<std::int64_t> m_lastOutOfCaseMs{0};
+    std::atomic<std::int64_t> m_lastWornMs{0};
+    std::atomic<bool> m_startFailed{false};
     std::atomic<std::int64_t> m_startedAtMs{0};
+    std::atomic<bool> m_loggedFirstBeacon{false};
+    std::atomic<std::int64_t> m_lastLidOpenMs{0};
+    std::atomic<std::int64_t> m_lastLidClosedMs{0};
+    std::function<void()> m_onLidOpened;
 };
 
 } // namespace Propods

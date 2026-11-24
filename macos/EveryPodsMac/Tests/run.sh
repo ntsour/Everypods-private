@@ -15,3 +15,7 @@ swiftc -target arm64-apple-macos13.0 Sources/PeerV2.swift Sources/PeerAcquisitio
 cp Tests/ProximityTests.swift "$OUT/main.swift"
 swiftc -target arm64-apple-macos13.0 Sources/ProximityWatcher.swift Sources/Log.swift "$OUT/main.swift" -o "$OUT/proximity-tests"
 "$OUT/proximity-tests"
+# Lid-open detection (lid bit, re-arm rule).
+cp Tests/LidOpenTests.swift "$OUT/main.swift"
+swiftc -target arm64-apple-macos13.0 Sources/ProximityWatcher.swift Sources/Log.swift "$OUT/main.swift" -o "$OUT/lid-tests"
+"$OUT/lid-tests"

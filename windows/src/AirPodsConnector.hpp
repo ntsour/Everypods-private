@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstdint>
 #include <mutex>
+#include <string>
 
 namespace Propods {
 
@@ -28,6 +29,28 @@ public:
     // BluetoothGetDeviceInfo path routes through. WinRT goes directly through
     // the modern Bluetooth driver stack with less overhead.
     bool isClassicallyConnectedWinRT();
+
+    // The AirPods' Bluetooth name (cached per address), or L"AirPods".
+    std::wstring displayName();
+
+    // True when the AirPods' stereo (not Hands-Free) render endpoint is the
+    // default multimedia output and ACTIVE. Reads the default endpoint only:
+    // no audio sessions are polled and no stream is opened.
+    bool isDefaultRenderDevice();
+
+    // The hands-free link (the AirPods' microphone) next to a working stereo
+    // link. Windows sometimes brings the AirPods up with stereo only, e.g. when
+    // they reconnect by themselves: the mic endpoint stays "Disconnected" and
+    // Teams sees no AirPods mic. One enumeration, no audio sessions opened.
+    enum class HandsFree { Unknown, Up, Missing };
+    HandsFree handsFreeState();
+
+    // Ask the Bluetooth audio driver to connect the hands-free link only
+    // (KSPROPERTY_ONESHOT_RECONNECT on the mic endpoint's filter), the same as
+    // Sound settings -> Recording -> right-click -> Connect. Windows briefly
+    // reopens the stereo link too (~3 s gap on 2026-11-24). Returns false when
+    // no filter accepted it.
+    bool reconnectHandsFree();
 
     // True when at least one non-system audio session is in the Active state on
     // the AirPods render endpoint (i.e. a call, meeting, or other app is actively
@@ -67,6 +90,9 @@ public:
 private:
     std::uint64_t m_address;
     std::mutex    m_mutex;          // serialize connect/disconnect to avoid parallel races
+    std::mutex    m_nameMutex;      // guards m_name / m_nameForAddress
+    std::wstring  m_name;
+    std::uint64_t m_nameForAddress{0};
 };
 
 }
