@@ -39,6 +39,8 @@ void BleProximityWatcher::start() {
         // payload (the proximity message) rather than just the scan-response header.
         m_watcher.ScanningMode(BluetoothLEScanningMode::Active);
         m_receivedToken = m_watcher.Received({this, &BleProximityWatcher::onReceived});
+        m_lastLidOpenMs.store(0);   // lid state from before the pause is stale
+        m_lastLidClosedMs.store(0);
         m_startedAtMs.store(nowMs());
         m_watcher.Start();
         log::info("BleProximityWatcher: started (Apple 0x004C proximity scan, {}s out-of-case window)",
@@ -102,8 +104,9 @@ bool BleProximityWatcher::budLikelyWorn() const {
     return worn != 0 && nowMs() - worn < kWornWindowMs;
 }
 
-bool BleProximityWatcher::parseProximity(const uint8_t* data, uint32_t len, bool& inCase, bool& worn) {
-    return parseProximityBeacon(data, len, inCase, worn);
+bool BleProximityWatcher::parseProximity(const uint8_t* data, uint32_t len, bool& inCase, bool& worn,
+                                         bool& lidOpen) {
+    return parseProximityBeacon(data, len, inCase, worn, lidOpen);
 }
 
 void BleProximityWatcher::onReceived(
@@ -127,9 +130,26 @@ void BleProximityWatcher::onReceived(
             auto reader = DataReader::FromBuffer(buffer);
             reader.ReadBytes(bytes);
 
-            bool inCase = false, worn = false;
-            if (!parseProximity(bytes.data(), len, inCase, worn)) continue;
+            bool inCase = false, worn = false, lidOpen = false;
+            if (!parseProximity(bytes.data(), len, inCase, worn, lidOpen)) continue;
             if (worn) m_lastWornMs.store(nowMs());
+            // Lid state only counts from beacons with no bud in an ear: worn
+            // buds can report the lid byte as open (seen on a Mac capture), and
+            // a wearer must never look like a case being opened.
+            if (!worn) {
+                const std::int64_t now = nowMs();
+                if (lidOpen) {
+                    const bool starts = lidOpeningStarts(now, m_startedAtMs.load(), m_lastLidOpenMs.load(),
+                                                         m_lastLidClosedMs.load());
+                    m_lastLidOpenMs.store(now);
+                    if (starts) {
+                        log::info("BleProximityWatcher: case lid opened (RSSI {} dBm)", rssi);
+                        if (m_onLidOpened) { try { m_onLidOpened(); } catch (...) {} }
+                    }
+                } else {
+                    m_lastLidClosedMs.store(now);
+                }
+            }
 
             if (!m_loggedFirstBeacon.exchange(true))
                 log::info("BleProximityWatcher: first beacon — AirPods {} (RSSI {} dBm)",

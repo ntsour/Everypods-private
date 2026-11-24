@@ -49,6 +49,24 @@ public:
     // default audio device on takeover. The user can still trigger it manually
     // via the tray menu "Connect AirPods now" item.
     void setAutoRoute(bool enabled) { m_autoRoute.store(enabled); }
+
+    // ── Lid-open connect (the phones' "Auto-connect on case open (last
+    // device)"). The phones leave a lid opening to the device that used the
+    // AirPods last; when that was this PC, it connects them here.
+    //
+    // The lease ("this PC used them last") is set when the AirPods come to this
+    // PC and kept when they go into the case. It is cleared when a peer claims
+    // them (kAirPodsConnected) or this PC releases them to a peer. Persisted by
+    // the owner through the change callback.
+    void setLidOpenConnect(bool enabled) { m_lidOpenConnect.store(enabled); }
+    bool lidOpenConnect() const { return m_lidOpenConnect.load(); }
+    void setLidLease(bool held) { m_lidLease.store(held); }  // initial value, no callback
+    bool lidLease() const { return m_lidLease.load(); }
+    void setOnLidLeaseChanged(std::function<void(bool held)> cb) { m_onLidLeaseChanged = std::move(cb); }
+    // True when a peer's v2 snapshot says it holds the AirPods.
+    void setPeerHoldsProbe(std::function<bool()> probe) { m_peerHoldsProbe = std::move(probe); }
+    // A case lid was opened near this PC (BleProximityWatcher). Any thread.
+    void onLidOpened();
     bool autoRoute() const          { return m_autoRoute.load(); }
 
     // Optional playback hold + progress panel (not owned). Set before start.
@@ -162,6 +180,13 @@ private:
     // and onMediaPlayingChanged immediately spawns another thread — creating a
     // loop that floods peers with REQUEST_DISCONNECT at the connect-backoff cadence.
     std::atomic<bool> m_takeoverInFlight{false};
+
+    void updateLidLease(bool held, const char* why);
+    std::atomic<bool> m_lidOpenConnect{true};
+    std::atomic<bool> m_lidLease{false};
+    std::atomic<bool> m_lidConnectInFlight{false};
+    std::function<void(bool)> m_onLidLeaseChanged;
+    std::function<bool()> m_peerHoldsProbe;
 
     // The AirPods mic (hands-free link). Windows sometimes brings the AirPods up
     // with stereo only, e.g. when they reconnect by themselves (2026-11-24: mic

@@ -20,6 +20,17 @@ final class ProximityWatcher: NSObject, CBCentralManagerDelegate {
     private var lastInCase = Date.distantPast
     private var lastOutOfCase = Date.distantPast
 
+    /// Called on the main queue when a case lid opens nearby (see `lidOpeningStarts`).
+    var onLidOpened: (() -> Void)?
+    /// An open case advertises every second or so: a lid-open beacon after this long without one is a new opening.
+    static let lidOpenRearm: TimeInterval = 60
+    /// With no lid-closed beacon seen, the first lid-open beacon of a scan counts only after this much scanning:
+    /// a shut case goes quiet, so the silence is the evidence it was shut.
+    static let lidQuiet: TimeInterval = 10
+    private var lidScanStartedAt = Date()
+    private var lastLidOpen: Date?
+    private var lastLidClosed: Date?
+
     func start() {
         guard manager == nil else { return }
         startedAt = Date()
@@ -46,6 +57,10 @@ final class ProximityWatcher: NSObject, CBCentralManagerDelegate {
         if central.state == .poweredOn {
             central.scanForPeripherals(withServices: nil, options: [CBCentralManagerScanOptionAllowDuplicatesKey: true])
             running = true
+            // Lid evidence from an earlier scan (before sleep) says nothing about now.
+            lidScanStartedAt = Date()
+            lastLidOpen = nil
+            lastLidClosed = nil
             Log.write("Proximity: scanning for AirPods beacons")
         } else {
             running = false
@@ -60,10 +75,49 @@ final class ProximityWatcher: NSObject, CBCentralManagerDelegate {
         let company = UInt16(data[data.startIndex]) | UInt16(data[data.startIndex + 1]) << 8
         guard company == Self.appleCompanyID else { return }
         let bytes = [UInt8](data.dropFirst(2))
+        if let open = Self.lidOpen(bytes) {
+            let now = Date()
+            if open {
+                let starts = Self.lidOpeningStarts(now: now, scanStart: lidScanStartedAt, lastOpen: lastLidOpen,
+                                                   lastClosed: lastLidClosed)
+                lastLidOpen = now
+                if starts {
+                    Log.write("Proximity: case lid opened (RSSI \(RSSI.intValue))")
+                    onLidOpened?()
+                }
+            } else {
+                lastLidClosed = now
+            }
+        }
         guard let inCase = Self.parse(bytes) else { return }
         let changed = inCase ? lastInCase < lastOutOfCase : lastOutOfCase < lastInCase
         if inCase { lastInCase = Date() } else { lastOutOfCase = Date() }
         if changed { Log.write("Proximity: AirPods \(inCase ? "in case" : "out of case") (RSSI \(RSSI.intValue))") }
+    }
+
+    /// The lid state from an AirPods proximity-pairing beacon (after the company id): [0]=0x07, [1]=length 0x19,
+    /// [2]=0x01, [8] bit 3 set = lid closed. Nil for any other message, including a shorter type-0x07 message from
+    /// other Apple devices whose byte 8 is 0xff. Also nil while either bud is in an ear: worn buds can report the
+    /// lid open (byte 8 = 0x11 captured with both buds in, 2026-11-23), which would let AirPods worn on a device
+    /// outside EveryPods count as an opening. Opening the case with both buds inside is never worn.
+    static func lidOpen(_ bytes: [UInt8]) -> Bool? {
+        guard bytes.count >= 9, bytes[0] == 0x07, bytes[1] == 0x19, bytes[2] == 0x01 else { return nil }
+        // Status bits 0x02 and 0x08 are the two buds' in-ear flags (which is left depends on the primary bud).
+        if bytes[5] & 0x0A != 0 { return nil }
+        return (bytes[8] >> 3) & 1 == 0
+    }
+
+    /// A lid-open beacon starts a new opening when the lid must have been shut first:
+    /// 1. a lid-closed beacon came after the last lid-open one (or since the scan started);
+    /// 2. else, for the first lid-open beacon of the scan, the scan has run `lidQuiet` without beacons (a shut case
+    ///    is silent). Without this, an open case or a dropped connection counted as an opening as soon as the
+    ///    scan saw the case (0.6 s after a disconnect on Windows);
+    /// 3. else, `lidOpenRearm` passed without a lid-open beacon.
+    /// Times are per scan (cleared when it starts); beacons from worn buds never update them.
+    static func lidOpeningStarts(now: Date, scanStart: Date, lastOpen: Date?, lastClosed: Date?) -> Bool {
+        if let lastClosed, lastClosed > (lastOpen ?? .distantPast) { return true }
+        guard let lastOpen else { return now.timeIntervalSince(scanStart) >= lidQuiet }
+        return now.timeIntervalSince(lastOpen) >= lidOpenRearm
     }
 
     /// Apple proximity-pairing message (after the company id): [0]=0x07, [5]=status, [8]=lid. Returns nil

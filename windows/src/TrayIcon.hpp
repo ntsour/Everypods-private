@@ -27,6 +27,7 @@ public:
     static constexpr int kCmdToggleTakeOnMedia = 1011;
     static constexpr int kCmdToggleTakeOnCall  = 1012;
     static constexpr int kCmdToggleHold        = 1013;
+    static constexpr int kCmdToggleLidOpen     = 1016;
     // Shortcuts for when the automatic routing fails (AirPods on this PC only).
     static constexpr int kCmdConnectMic        = 1014;  // connect the hands-free (mic) link
     static constexpr int kCmdUseAirPodsAudio   = 1015;  // default output + input (and Teams)
@@ -48,6 +49,7 @@ public:
         bool                    takeOnMediaStart{true};
         bool                    takeOnCall{true};
         bool                    holdPlayback{false};
+        bool                    lidOpenConnect{true};
         bool                    hasMutedApps{false};
         std::vector<PeerStatus> peers;
     };

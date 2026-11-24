@@ -18,6 +18,8 @@ struct Settings {
     bool                         takeOnMediaStart{true};  // take the AirPods when this PC starts playing media
     bool                         takeOnCall{true};        // take the AirPods when a call starts on this PC
     bool                         holdPlayback{false};     // hold PC audio while the AirPods connect (PlaybackHold)
+    bool                         lidOpenConnect{true};    // connect when the case opens, if this PC used them last
+    bool                         lidLease{false};         // this PC used the AirPods last (lid-open connect)
 };
 
 class SettingsStore {
