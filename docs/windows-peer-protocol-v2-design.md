@@ -51,8 +51,8 @@ Local SNAPSHOT `{sessionId, revision, headsetId, ownership, audioUse, lastOwnerI
 lastOwnerRevision:null, acquisition}`:
 - `ownership`: `held` when the AirPods' classic link is up on this PC, else `released`
   (measured, not the protocol state).
-- `audioUse`: `call` if a comms session is active on the AirPods, `media` if any other
-  render session is active, else `idle`.
+- `audioUse`: `call` while the Teams mic is open (a call or meeting; a Teams sound or a
+  VLC session alone is not a call), `media` while media is playing, else `idle`.
 - `revision`: monotonic per session, bumped when any of the above or `acquisition` changes.
 - `acquisition`: the current participant reservation, if PREPARING/IN_PROGRESS.
 

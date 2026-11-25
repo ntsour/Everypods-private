@@ -216,7 +216,6 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     // comes from the existing media/Teams events, never from polling audio
     // sessions (polling made Windows drop idle AirPods in June).
     std::atomic<bool> mediaPlaying{false};
-    std::atomic<bool> callActive{false};
     std::atomic<bool> takeOnMediaStart{settings.takeOnMediaStart};
     std::atomic<bool> takeOnCall{settings.takeOnCall};
     v2::PeerV2Mesh peerV2([&]() {
@@ -226,8 +225,12 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
         st.headsetId = v2::headsetIdFromAddress(addr);
         const bool held = airpods.isClassicallyConnectedWinRT();
         st.ownership = held ? v2::Ownership::Held : v2::Ownership::Released;
+        // Only an open Teams mic is a call. An audio session starting (VLC,
+        // a Teams chat ping) is not, and its "ended" event can be hours late:
+        // counting it reported a call for as long as the PC held the AirPods,
+        // and phones then refused to take them back (25 Nov).
         st.audioUse = !held ? v2::AudioUse::Idle
-                    : (controller.callMicOpen() || callActive.load()) ? v2::AudioUse::Call
+                    : controller.callMicOpen() ? v2::AudioUse::Call
                     : mediaPlaying.load() ? v2::AudioUse::Media
                     : v2::AudioUse::Idle;
         return st;
@@ -437,7 +440,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     // the standard debounce and anti-pingpong guards. This prevents an ongoing
     // Teams call from re-triggering a claim after Windows voluntarily released
     // AirPods to a peer.
-    teamsWatcher.setOnTriggered([&controller, &callActive, &takeOnCall, &peerV2, &silencer, &lostOwnershipAtMs](bool comms) {
+    teamsWatcher.setOnTriggered([&controller, &takeOnCall, &peerV2, &silencer, &lostOwnershipAtMs](bool comms) {
         const std::int64_t sinceLost = static_cast<std::int64_t>(GetTickCount64()) - lostOwnershipAtMs.load();
         if (lostOwnershipAtMs.load() != 0 && sinceLost < 15'000) {
             log::handover("SKIP    audio-session trigger {} ms after the AirPods left (output moved to speakers)", sinceLost);
@@ -450,7 +453,6 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
             log::handover("SKIP    audio-session trigger: apps are muted for the phone");
             return;
         }
-        callActive.store(true);
         if (takeOnCall.load()) controller.onCallActive(/*isCall=*/comms);
         peerV2.refreshLocalState();
     });
@@ -462,8 +464,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
 
     // When the Teams audio session expires (call ended), clear the voluntary-release
     // gate so the next new call can trigger a fresh claim.
-    teamsWatcher.setOnSessionEnded([&controller, &callActive, &peerV2]() {
-        callActive.store(false);
+    teamsWatcher.setOnSessionEnded([&controller, &peerV2]() {
         controller.onTeamsCallEnded();
         peerV2.refreshLocalState();
     });
