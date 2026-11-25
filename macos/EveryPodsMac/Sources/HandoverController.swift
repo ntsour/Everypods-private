@@ -6,6 +6,7 @@
 // takeover -> keep them (media only); otherwise release. Differences are listed in PLAN.md. Everything runs on
 // the main thread.
 
+import CoreAudio
 import Foundation
 
 enum Ownership: Equatable {
@@ -56,6 +57,10 @@ final class HandoverController {
     private var pollTimer: Timer?
     /// An automatic takeover trigger held back by a live acquisition reservation; replayed when it ends.
     private var triggerDeferredByReservation = false
+    /// Listens to a paused player's still-open stream after a release, to see a play press (PlaybackLevelProbe).
+    private var resumeProbe: AnyObject?
+    private var resumeProbeTimeout: DispatchWorkItem?
+    private let resumeProbeLimit: TimeInterval = 90
 
     /// Protocol v2: this Mac's snapshots and its vote (grantor role) in a phone's lid-open acquisition round.
     lazy var v2: PeerV2Hub = {
@@ -186,6 +191,7 @@ final class HandoverController {
         router.setPersistent(state == .thisMac)
         if state == .otherDevice { hold.onLost("AirPods went to another device") }
         if state == .thisMac {
+            stopResumeProbe()
             updateLidLease(true, "the AirPods are on this Mac")
             // Claiming the AirPods by any means resets the voluntary-release gate.
             voluntarilyReleased = false
@@ -289,6 +295,9 @@ final class HandoverController {
     /// Port of onMediaPlayingChanged: audio started (or stopped) on this Mac.
     func onMediaPlayingChanged(_ playing: Bool) {
         if !playing {
+            // The stream closed: a play press now shows up as a normal start. Right after the release the
+            // player reopens its paused stream on the new output (a stop, then a start), so keep listening then.
+            if since(lastVoluntaryRelease) > postReleaseWindow { stopResumeProbe() }
             // Only clear the voluntary-release gate once past the immediate post-release window: a stop
             // inside it is our own pause during the handover.
             if since(lastVoluntaryRelease) > postReleaseWindow, voluntarilyReleased {
@@ -470,7 +479,8 @@ final class HandoverController {
     /// Optionally pauses what is playing (so audio does not jump to the speakers), then asks the AirPods to
     /// disconnect, lets the link close on its own and forces it only if it is still up after 4.5 s. The peers
     /// are told once it is down (the phone's acknowledgement timeout is 6 s).
-    private func giveUp() {
+    /// `released` runs once the link is down and the state is `.otherDevice`.
+    private func giveUp(released: (() -> Void)? = nil) {
         hold.onLost("giving the AirPods up")
         updateLidLease(false, "released the AirPods")
         let pause = Settings.pauseOnHandover && media.snapshot.playing && !media.snapshot.inCall
@@ -491,6 +501,7 @@ final class HandoverController {
                 self.setState(.otherDevice)
                 self.lastBluetoothConnected = false
                 self.peers.send(Packet.airPodsDisconnected)
+                released?()
             }
             func wait() {
                 if !self.pods.isConnected { return finish() }
@@ -511,7 +522,65 @@ final class HandoverController {
         voluntaryReleaseApp = media.currentAppID
         lastVoluntaryRelease = Date()
         lastLostOwnership = Date()
-        giveUp()
+        // giveUp pauses the player in this case; its stream may stay open long after (see PlaybackLevelProbe).
+        let pausing = Settings.pauseOnHandover && media.snapshot.playing && !media.snapshot.inCall
+            && since(lastCallEnded) > callTail
+        let processes = media.snapshot.playingProcesses
+        let app = media.currentAppID
+        guard pausing && Settings.takeOnMediaStart else { return giveUp() }
+        // Start listening only once the output has moved off the AirPods: the probe clocks from the default
+        // output device, and the AirPods one disappears with the link.
+        giveUp { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                guard let self, self.ownership == .otherDevice, !self.takeoverInFlight else { return }
+                self.startResumeProbe(processes, app: app)
+            }
+        }
+    }
+
+    private func startResumeProbe(_ processes: [AudioObjectID], app: String) {
+        stopResumeProbe()
+        guard #available(macOS 14.2, *) else { return }
+        let probe = PlaybackLevelProbe()
+        resumeProbe = probe
+        probe.start(processes: processes, onResume: { [weak self] in self?.playbackResumed(app) }) { [weak self] ok in
+            guard let self, self.resumeProbe === probe else { return }
+            if ok {
+                Log.write("Probe: listening to \(app) for a play press while its paused stream stays open")
+            } else {
+                self.stopResumeProbe()
+            }
+        }
+        let timeout = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            if #available(macOS 14.2, *), let probe = self.resumeProbe as? PlaybackLevelProbe, !probe.receivedAudio {
+                Log.write("Probe: no audio samples at all; is \"System Audio Recording Only\" allowed for EveryPods?")
+            }
+            self.stopResumeProbe()
+        }
+        resumeProbeTimeout = timeout
+        DispatchQueue.main.asyncAfter(deadline: .now() + resumeProbeLimit, execute: timeout)
+    }
+
+    private func stopResumeProbe() {
+        resumeProbeTimeout?.cancel()
+        resumeProbeTimeout = nil
+        guard let probe = resumeProbe else { return }
+        resumeProbe = nil
+        if #available(macOS 14.2, *) { (probe as? PlaybackLevelProbe)?.stop() }
+    }
+
+    /// The paused player went silent, then made sound again: the user pressed play. Its stream never closed,
+    /// so MediaWatcher saw no start; treat this as one, past the same-app gate (the player did stop).
+    private func playbackResumed(_ app: String) {
+        guard resumeProbe != nil else { return }
+        stopResumeProbe()
+        Log.write("Media: playback resumed (\(app)); its stream stayed open while paused")
+        voluntarilyReleased = false
+        voluntaryReleaseApp = ""
+        lastAction = Date.distantPast
+        if mediaTakeoverLikely() { hold.preMute() }
+        onMediaPlayingChanged(true)
     }
 
     // MARK: Packets

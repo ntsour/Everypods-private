@@ -15,6 +15,8 @@ final class MediaWatcher {
         var micApps: [String] = []
         /// Apps with both microphone input and audio output at once: a call or meeting, not a recording.
         var callApps: [String] = []
+        /// Core Audio process objects behind `playingApps` (for a level probe).
+        var playingProcesses: [AudioObjectID] = []
         var playing: Bool { !playingApps.isEmpty }
         var inCall: Bool { !callApps.isEmpty }
         var micInUse: Bool { !micApps.isEmpty }
@@ -138,7 +140,10 @@ final class MediaWatcher {
             let input = Self.flag(process, kAudioProcessPropertyIsRunningInput)
             let recorder = recorderPrefixes.contains(where: { bundle.hasPrefix($0) })
             if input { result.micApps.append(bundle) }
-            if output && !(recorder && input) { result.playingApps.append(bundle) }
+            if output && !(recorder && input) {
+                result.playingApps.append(bundle)
+                result.playingProcesses.append(process)
+            }
             if output && input && !recorder { result.callApps.append(bundle) }
             else if output && callAppPrefixes.contains(where: { bundle.hasPrefix($0) }) { result.callApps.append(bundle) }
         }
