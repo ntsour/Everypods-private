@@ -19,3 +19,7 @@ swiftc -target arm64-apple-macos13.0 Sources/ProximityWatcher.swift Sources/Log.
 cp Tests/LidOpenTests.swift "$OUT/main.swift"
 swiftc -target arm64-apple-macos13.0 Sources/ProximityWatcher.swift Sources/Log.swift "$OUT/main.swift" -o "$OUT/lid-tests"
 "$OUT/lid-tests"
+# Resume detection after a release (silence, then sound).
+cp Tests/ResumeDetectorTests.swift "$OUT/main.swift"
+swiftc -target arm64-apple-macos13.0 Sources/PlaybackLevelProbe.swift Sources/Log.swift "$OUT/main.swift" -o "$OUT/resume-tests"
+"$OUT/resume-tests"
