@@ -65,8 +65,9 @@ final class PlaybackHold: PlaybackHoldActions {
     private let routePollInterval: TimeInterval = 0.15
     private let routePollMax: TimeInterval = 3
     private let connectedLinger: TimeInterval = 1.5
-    /// A pre-mute (playback seen, takeover not decided yet) is lifted after this if no hold starts.
-    private let preMuteMax: TimeInterval = 1.5
+    /// A pre-mute (playback seen, takeover not decided yet) is lifted after this if no hold starts. It covers
+    /// MediaWatcher's wait for real sound (tap setup plus 1 s of sound, about 1.5 s).
+    private let preMuteMax: TimeInterval = 2.5
     /// Gap between the AirPods becoming the output and the resume key, so the player resumes on them.
     private let resumeDelay: TimeInterval = 0.3
 

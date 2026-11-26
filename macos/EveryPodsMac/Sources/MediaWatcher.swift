@@ -5,6 +5,12 @@
 //   * inCall:  some app has an active audio input stream (microphone), which means a call or recording
 // Measured behaviour: playback shows up within ~1s; after a pause the flag lingers ~10-15s
 // (browsers keep the stream open), so "started" is a reliable trigger but "stopped" is slow.
+//
+// An open output stream is not proof of playback: a browser opens one for a notification ding and keeps it
+// running 10-15 s, long past the sustain. When a start could move the AirPods here (`levelGate`), the
+// start therefore also needs about 1 s of real sound, measured by a process tap on the playing processes
+// (PlaybackLevelProbe, macOS 14.2+). Calls skip this check. Without the tap (older macOS, tap failure, or the
+// capture permission never seen working) the start fires on the open stream as before.
 
 import CoreAudio
 import Foundation
@@ -32,6 +38,8 @@ final class MediaWatcher {
     /// With a playback hold on, the takeover fires after a short sustain: the speakers are already muted, and a
     /// longer wait would only delay the AirPods (short sounds still end well before this).
     var fastStart: () -> Bool = { false }
+    /// True when a start would take the AirPods from another device: the start then needs real sound too.
+    var levelGate: () -> Bool = { false }
     private(set) var snapshot = Snapshot()
 
     private var sustain: TimeInterval { fastStart() ? 0.6 : 2 }
@@ -40,6 +48,18 @@ final class MediaWatcher {
     private var timer: Timer?
     private var playingSince: Date?
     private var startFired = false
+
+    /// The sound check for the current stream (see the header). `nil` when none runs.
+    private var gate: AnyObject?
+    private var gateProcesses = Set<AudioObjectID>()
+    private var gateState: GateState = .off
+    private var gateLoggedWaiting = false
+    private enum GateState { case off, listening, sustained, failed, gaveUp }
+    /// A stream that stays open this long without real sound is left alone (no tap held forever).
+    private let gateLimit: TimeInterval = 60
+    /// With the capture permission never seen working, all-zero samples this long past the sustain mean
+    /// "no permission" rather than "silence", and the start fires as before.
+    private let unconfirmedGrace: TimeInterval = 1.5
 
     /// Processes that are never "playback" or "call": system plumbing and this app.
     private let ignoredPrefixes = [
@@ -111,17 +131,34 @@ final class MediaWatcher {
         if next.playing {
             if playingSince == nil {
                 playingSince = Date()
-                if !startFired { onPlaybackSeen?() }
+                if !startFired {
+                    onPlaybackSeen?()
+                    if levelGate() && !next.inCall { startGate(next.playingProcesses) }
+                }
                 // Check again right when the sustain elapses rather than on the next 1 s tick.
                 DispatchQueue.main.asyncAfter(deadline: .now() + sustain + 0.05) { [weak self] in self?.poll() }
+                DispatchQueue.main.asyncAfter(deadline: .now() + sustain + unconfirmedGrace + 0.05) { [weak self] in self?.poll() }
+            } else if gateState == .listening, !Set(next.playingProcesses).isSubset(of: gateProcesses) {
+                // Another app started output while we listen: listen to all of them.
+                startGate(next.playingProcesses)
             }
-            if !startFired, let since = playingSince, Date().timeIntervalSince(since) >= sustain {
-                startFired = true
-                Log.write("Media: playback started (\(next.playingApps.joined(separator: ", ")))")
-                onPlaybackStarted?()
+            if !startFired, let since = playingSince {
+                let elapsed = Date().timeIntervalSince(since)
+                if elapsed >= sustain && startAllowed(next, elapsed: elapsed) {
+                    startFired = true
+                    stopGate()
+                    Log.write("Media: playback started (\(next.playingApps.joined(separator: ", ")))")
+                    onPlaybackStarted?()
+                } else if gateState == .listening && elapsed >= gateLimit {
+                    Log.write("Media: no sustained sound from \(next.playingApps.joined(separator: ", ")) in \(Int(gateLimit)) s; not a start")
+                    stopGate()
+                    gateState = .gaveUp   // this stream is done; a new stream gets a new check
+                }
             }
         } else {
             playingSince = nil
+            stopGate()
+            gateState = .off
             if startFired { onPlaybackStopped?() }
             startFired = false
         }
@@ -129,6 +166,59 @@ final class MediaWatcher {
             snapshot = next
             onChange?()
         }
+    }
+
+    // MARK: Sound check
+
+    /// Whether an open stream past its sustain counts as a start.
+    private func startAllowed(_ next: Snapshot, elapsed: TimeInterval) -> Bool {
+        if next.inCall { return true }   // calls and meeting apps: as before
+        switch gateState {
+        case .off, .sustained, .failed:
+            return true
+        case .gaveUp:
+            return false
+        case .listening:
+            if #available(macOS 14.2, *), !PlaybackLevelProbe.captureConfirmed, elapsed >= sustain + unconfirmedGrace,
+               let probe = gate as? PlaybackLevelProbe, !probe.receivedAudio {
+                Log.write("Media: sound check heard nothing and capture was never seen working; starting on the open stream")
+                return true
+            }
+            if !gateLoggedWaiting {
+                gateLoggedWaiting = true
+                Log.write("Media: output from \(next.playingApps.joined(separator: ", ")) but no sustained sound yet (a notification?); waiting")
+            }
+            return false
+        }
+    }
+
+    private func startGate(_ processes: [AudioObjectID]) {
+        stopGate()
+        guard #available(macOS 14.2, *), !processes.isEmpty else { return }
+        let probe = PlaybackLevelProbe(detector: SustainedSoundDetector())
+        gate = probe
+        gateProcesses = Set(processes)
+        gateState = .listening
+        gateLoggedWaiting = false
+        probe.start(processes: processes, onFire: { [weak self] in
+            guard let self, self.gate === probe else { return }
+            self.gateState = .sustained
+            self.stopGate()
+            self.poll()
+        }, completion: { [weak self] ok in
+            guard let self, self.gate === probe, !ok else { return }
+            Log.write("Media: sound check unavailable; starting on the open stream")
+            self.gateState = .failed
+            self.stopGate()
+            self.poll()
+        })
+    }
+
+    private func stopGate() {
+        guard let probe = gate else { return }
+        gate = nil
+        gateProcesses = []
+        if #available(macOS 14.2, *) { (probe as? PlaybackLevelProbe)?.stop() }
     }
 
     private func readSnapshot() -> Snapshot {

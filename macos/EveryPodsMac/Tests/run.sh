@@ -23,3 +23,7 @@ swiftc -target arm64-apple-macos13.0 Sources/ProximityWatcher.swift Sources/Log.
 cp Tests/ResumeDetectorTests.swift "$OUT/main.swift"
 swiftc -target arm64-apple-macos13.0 Sources/PlaybackLevelProbe.swift Sources/Log.swift "$OUT/main.swift" -o "$OUT/resume-tests"
 "$OUT/resume-tests"
+# Media-start sound check (an open stream after a notification ding is not playback).
+cp Tests/SustainedSoundDetectorTests.swift "$OUT/main.swift"
+swiftc -target arm64-apple-macos13.0 Sources/PlaybackLevelProbe.swift Sources/Log.swift "$OUT/main.swift" -o "$OUT/sustained-tests"
+"$OUT/sustained-tests"
