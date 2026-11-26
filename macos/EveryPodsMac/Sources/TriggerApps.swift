@@ -213,14 +213,13 @@ struct TriggerAppList {
     }
 
     /// How a process of `app` using audio counts. `recorder`: a recorder or dictation (its mic is not a call).
-    /// `meetingTab`: a browser with a meeting tab open (joined muted counts as using the mic).
-    func decide(app: String, output: Bool, input: Bool, recorder: Bool, meetingTab: Bool = false) -> AudioUseDecision {
+    func decide(app: String, output: Bool, input: Bool, recorder: Bool) -> AudioUseDecision {
         var d = AudioUseDecision()
         let s = settings(app)
         let meeting = Self.builtIn(key(app))?.meeting == true
         // A recorder's output while it records is part of the recording, not playback; its mic is no call.
         d.playing = output && !(recorder && input)
-        let micUse = !recorder && (input || meetingTab || (meeting && output))
+        let micUse = !recorder && (input || (meeting && output))
         d.call = micUse && s.keepOnMic
         let micTake = micUse && s.takeOnMic
         d.trusted = micTake

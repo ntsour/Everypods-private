@@ -22,7 +22,5 @@
     <string>EveryPods coordinates your AirPods with your Android phone and connects or releases them.</string>
 	<key>NSAudioCaptureUsageDescription</key>
 	<string>EveryPods listens for a paused player starting again, so pressing play brings the AirPods back to this Mac. Nothing is recorded.</string>
-	<key>NSAppleEventsUsageDescription</key>
-	<string>EveryPods looks for an open meeting tab in your browser so the phone does not grab the AirPods during a call.</string>
 </dict>
 </plist>

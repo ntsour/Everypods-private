@@ -6,9 +6,8 @@ var failures = 0
 func check(_ ok: Bool, _ name: String) {
     if ok { print("PASS \(name)") } else { print("FAIL \(name)"); failures += 1 }
 }
-func d(_ l: TriggerAppList, _ app: String, out: Bool = false, mic: Bool = false, recorder: Bool = false,
-       tab: Bool = false) -> AudioUseDecision {
-    l.decide(app: app, output: out, input: mic, recorder: recorder, meetingTab: tab)
+func d(_ l: TriggerAppList, _ app: String, out: Bool = false, mic: Bool = false, recorder: Bool = false) -> AudioUseDecision {
+    l.decide(app: app, output: out, input: mic, recorder: recorder)
 }
 
 do {
@@ -31,8 +30,8 @@ do {
     check(l.key("com.apple.musicrecognition") != "com.apple.music", "other apps don't match by bare prefix")
     let zoom = d(l, "us.zoom.xos", out: true)
     check(zoom.call && zoom.trusted, "a meeting app's sound alone counts as using the mic")
-    let tab = d(l, "com.google.Chrome", out: true, tab: true)
-    check(tab.call && tab.trusted, "a browser meeting tab counts as using the mic")
+    let meet = d(l, "com.google.Chrome", out: true, mic: true)
+    check(meet.call && meet.trusted, "a browser meeting (mic open, even muted) is a call")
     let yt = d(l, "com.google.Chrome", out: true)
     check(yt.triggers && !yt.trusted && !yt.call, "browser playback is filtered, not a call")
 }
