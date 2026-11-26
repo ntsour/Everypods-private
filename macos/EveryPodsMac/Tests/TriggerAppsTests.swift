@@ -23,7 +23,7 @@ do {
 }
 do {
     let l = TriggerAppList()
-    check(l.settings("us.zoom.xos") == .all && l.settings("com.google.Chrome.helper") == .playKeep
+    check(l.settings("us.zoom.xos") == .all && l.settings("com.google.Chrome.helper") == .all
           && l.settings("com.apple.Music") == .play && l.settings("com.spotify.client") == .play, "built-in defaults")
     check(l.key("com.microsoft.teams2") == "com.microsoft.teams", "Teams 2 maps to the Teams entry")
     check(l.key("com.cisco.webexmeetingsapp") == "com.cisco.webex", "meeting apps match by prefix")
@@ -31,21 +31,20 @@ do {
     let zoom = d(l, "us.zoom.xos", out: true)
     check(zoom.call && zoom.trusted, "a meeting app's sound alone counts as using the mic")
     let meet = d(l, "com.google.Chrome", out: true, mic: true)
-    check(meet.call && meet.triggers && !meet.trusted, "a browser meeting keeps the AirPods; it takes them as playback")
-    let voice = d(l, "com.google.Chrome", mic: true)
-    check(voice.call && !voice.triggers, "a browser opening the mic alone doesn't take them")
+    check(meet.call && meet.trusted, "a browser meeting (mic open, even muted) is a call that takes at once")
     let yt = d(l, "com.google.Chrome", out: true)
     check(yt.triggers && !yt.trusted && !yt.call, "browser playback is filtered, not a call")
 }
 do {
     var l = TriggerAppList()
+    l.toggle("com.google.Chrome", .takeOnMic)
     l.toggle("com.google.Chrome", .takeOnPlay)
     check(l.settings("com.google.chrome.helper") == TriggerSettings(keepOnMic: true), "built-ins can be changed (keep only)")
     check(l.isChangedBuiltIn("com.google.Chrome"), "changed built-in is flagged")
     let meet = d(l, "com.google.Chrome", out: true, mic: true)
     check(meet.call && !meet.triggers, "keep only: a call that never takes")
     check(!d(l, "com.google.Chrome", out: true).triggers, "keep only: playback never takes")
-    check(l.reset("com.google.Chrome") && l.settings("com.google.Chrome") == .playKeep && !l.isChangedBuiltIn("com.google.Chrome"),
+    check(l.reset("com.google.Chrome") && l.settings("com.google.Chrome") == .all && !l.isChangedBuiltIn("com.google.Chrome"),
           "reset to built-in")
 }
 do {

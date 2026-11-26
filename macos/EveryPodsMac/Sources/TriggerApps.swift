@@ -14,7 +14,7 @@
 //
 // Where an app's settings come from, first match wins:
 //   1. what the user set (saved, any app);
-//   2. the built-in catalog below (meeting apps: all three; browsers: play + keep; media players: play), shown in the menu even before they
+//   2. the built-in catalog below (meeting apps and browsers: all three; media players: play), shown in the menu even before they
 //      make a sound, with "Reset to built-in" once changed;
 //   3. an app seen using the mic and sound together (a call) starts with all three ticked;
 //   4. any other app starts with "Take the AirPods when it starts playing".
@@ -32,9 +32,6 @@ struct TriggerSettings: Equatable {
     static let none = TriggerSettings()
     static let play = TriggerSettings(takeOnPlay: true)
     static let all = TriggerSettings(takeOnMic: true, takeOnPlay: true, keepOnMic: true)
-    /// Browsers: their meeting sound takes the AirPods (as playback) and their open mic keeps them, but opening the
-    /// mic alone (voice typing, a site asking for it) doesn't take them. Same as Windows.
-    static let playKeep = TriggerSettings(takeOnPlay: true, keepOnMic: true)
 
     init(takeOnMic: Bool = false, takeOnPlay: Bool = false, keepOnMic: Bool = false) {
         self.takeOnMic = takeOnMic
@@ -130,12 +127,12 @@ struct TriggerAppList {
         BuiltInApp(bundle: "com.cisco.webex", name: "Webex", settings: .all, meeting: true),
         BuiltInApp(bundle: "com.webex", name: "Webex Meetings", settings: .all, meeting: true),
         BuiltInApp(bundle: "com.skype", name: "Skype", settings: .all, meeting: true),
-        BuiltInApp(bundle: "com.google.chrome", name: "Google Chrome", settings: .playKeep),
-        BuiltInApp(bundle: "com.apple.safari", name: "Safari", settings: .playKeep),
-        BuiltInApp(bundle: "com.microsoft.edgemac", name: "Microsoft Edge", settings: .playKeep),
-        BuiltInApp(bundle: "com.brave.browser", name: "Brave Browser", settings: .playKeep),
-        BuiltInApp(bundle: "company.thebrowser.browser", name: "Arc", settings: .playKeep),
-        BuiltInApp(bundle: "org.mozilla.firefox", name: "Firefox", settings: .playKeep),
+        BuiltInApp(bundle: "com.google.chrome", name: "Google Chrome", settings: .all),
+        BuiltInApp(bundle: "com.apple.safari", name: "Safari", settings: .all),
+        BuiltInApp(bundle: "com.microsoft.edgemac", name: "Microsoft Edge", settings: .all),
+        BuiltInApp(bundle: "com.brave.browser", name: "Brave Browser", settings: .all),
+        BuiltInApp(bundle: "company.thebrowser.browser", name: "Arc", settings: .all),
+        BuiltInApp(bundle: "org.mozilla.firefox", name: "Firefox", settings: .all),
         BuiltInApp(bundle: "com.apple.music", name: "Music", settings: .play),
         BuiltInApp(bundle: "com.spotify.client", name: "Spotify", settings: .play),
     ]
