@@ -15,8 +15,14 @@
 import CoreAudio
 import Foundation
 
+/// Decides from a stream of buffer peaks when to fire (once).
+protocol LevelDetector {
+    /// Feeds one buffer's peak at time `now` (seconds). Returns true exactly once, when the detector fires.
+    mutating func feed(peak: Float, at now: TimeInterval) -> Bool
+}
+
 /// Pure decision logic: fires once on sound that follows enough silence.
-struct ResumeDetector {
+struct ResumeDetector: LevelDetector {
     /// Peak below this is silence (about -66 dBFS); above `loudPeak` (about -50 dBFS) is playback.
     static let silentPeak: Float = 0.0005
     static let loudPeak: Float = 0.003
@@ -53,6 +59,39 @@ struct ResumeDetector {
     }
 }
 
+/// Pure decision logic for the media-start trigger: fires once when the stream has carried real sound for
+/// `soundNeeded` seconds. An open output stream alone is not playback: a browser keeps it running 10-15 s after
+/// a notification ding, while the ding itself is well under a second of sound. Quiet gaps shorter than
+/// `gapAllowed` (between words, between notes) pause the count; a longer gap starts it over.
+struct SustainedSoundDetector: LevelDetector {
+    static let soundNeeded: TimeInterval = 1.0
+    static let gapAllowed: TimeInterval = 0.4
+    /// A missing buffer or a stall counts as at most this much time.
+    static let maxStep: TimeInterval = 0.1
+
+    private var loudTotal: TimeInterval = 0
+    private var lastLoud: TimeInterval?
+    private var lastFeed: TimeInterval?
+    private(set) var fired = false
+
+    mutating func feed(peak: Float, at now: TimeInterval) -> Bool {
+        defer { lastFeed = now }
+        if fired { return false }
+        if let last = lastLoud, now - last > Self.gapAllowed {
+            loudTotal = 0
+            lastLoud = nil
+        }
+        guard peak >= ResumeDetector.loudPeak else { return false }
+        if let previous = lastFeed { loudTotal += min(max(now - previous, 0), Self.maxStep) }
+        lastLoud = now
+        if loudTotal >= Self.soundNeeded {
+            fired = true
+            return true
+        }
+        return false
+    }
+}
+
 @available(macOS 14.2, *)
 final class PlaybackLevelProbe {
     private var tapID = AudioObjectID(kAudioObjectUnknown)
@@ -63,19 +102,27 @@ final class PlaybackLevelProbe {
     /// prompt is up, which must not hold the main thread (it delayed a release by 6.7 s).
     private let setup = DispatchQueue(label: "everypods.levelprobe.setup", qos: .userInitiated)
     private var stopped = false
-    private var detector = ResumeDetector()
+    private var detector: LevelDetector
     private var heardAnything = false
+    /// Set (persistently) the first time any probe receives a non-zero sample: the capture permission works, so
+    /// a probe that hears only zeros is listening to real silence, not to a missing permission.
+    private static let captureConfirmedKey = "audioCaptureConfirmed"
+    static var captureConfirmed: Bool { UserDefaults.standard.bool(forKey: captureConfirmedKey) }
 
-    /// Starts listening to `processes` (Core Audio process objects) off the main thread. `onResume` runs once on
-    /// the main queue; `completion` reports on the main queue whether the tap is running.
-    func start(processes: [AudioObjectID], onResume: @escaping () -> Void, completion: @escaping (Bool) -> Void) {
+    init(detector: LevelDetector = ResumeDetector()) {
+        self.detector = detector
+    }
+
+    /// Starts listening to `processes` (Core Audio process objects) off the main thread. `onFire` runs once on
+    /// the main queue when the detector fires; `completion` reports on the main queue whether the tap is running.
+    func start(processes: [AudioObjectID], onFire: @escaping () -> Void, completion: @escaping (Bool) -> Void) {
         setup.async {
-            let ok = !self.stopped && self.setUp(processes: processes, onResume: onResume)
+            let ok = !self.stopped && self.setUp(processes: processes, onFire: onFire)
             DispatchQueue.main.async { completion(ok) }
         }
     }
 
-    private func setUp(processes: [AudioObjectID], onResume: @escaping () -> Void) -> Bool {
+    private func setUp(processes: [AudioObjectID], onFire: @escaping () -> Void) -> Bool {
         guard !processes.isEmpty else { return false }
         let description = CATapDescription(stereoMixdownOfProcesses: processes)
         description.uuid = UUID()
@@ -123,9 +170,12 @@ final class PlaybackLevelProbe {
                 let samples = data.assumingMemoryBound(to: Float.self)
                 for i in 0..<Int(buffer.mDataByteSize) / MemoryLayout<Float>.size { peak = max(peak, abs(samples[i])) }
             }
-            if peak > 0 { self.heardAnything = true }
+            if peak > 0, !self.heardAnything {
+                self.heardAnything = true
+                if !Self.captureConfirmed { UserDefaults.standard.set(true, forKey: Self.captureConfirmedKey) }
+            }
             let now = ProcessInfo.processInfo.systemUptime - started
-            if self.detector.feed(peak: peak, at: now) { DispatchQueue.main.async(execute: onResume) }
+            if self.detector.feed(peak: peak, at: now) { DispatchQueue.main.async(execute: onFire) }
         }
         guard status == noErr, let procID else {
             Log.write("Probe: IO proc failed (\(status))")

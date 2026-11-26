@@ -75,6 +75,28 @@ enum Settings {
         set { defaults.set(newValue, forKey: "holdPlayback") }
     }
 
+    /// Every app's "Apps that take or keep the AirPods" settings: what the user set (bundle → settings) and the
+    /// apps seen in a call. Read on every audio poll, so the parsed list is cached until it changes.
+    static var triggerApps: TriggerAppList {
+        get {
+            let raw = defaults.dictionary(forKey: "triggerApps") as? [String: String] ?? [:]
+            let calls = defaults.stringArray(forKey: "callSeenApps") ?? []
+            if raw != cachedTriggerRaw || calls != cachedCallSeen {
+                cachedTriggerRaw = raw
+                cachedCallSeen = calls
+                cachedTriggerApps = TriggerAppList(user: raw, callSeen: calls)
+            }
+            return cachedTriggerApps
+        }
+        set {
+            defaults.set(newValue.savedUser, forKey: "triggerApps")
+            defaults.set(newValue.callSeen.sorted(), forKey: "callSeenApps")
+        }
+    }
+    private static var cachedTriggerRaw: [String: String]?
+    private static var cachedCallSeen: [String]?
+    private static var cachedTriggerApps = TriggerAppList()
+
     /// Set once the first-run discovery has run, so it is not repeated every launch.
     /// "Connect AirPods when the case opens (if this Mac used them last)" (default on).
     static var lidOpenConnect: Bool {

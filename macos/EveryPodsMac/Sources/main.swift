@@ -15,10 +15,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var gattAuthorizer: GattSetupAuthorizer?
     private var menuCandidates: [PeerRegistry.Candidate] = []
 
+    func applicationWillTerminate(_ notification: Notification) {
+        Log.writeNow("Exit: EveryPods quit")
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        Log.installExitLogging()
         // Single instance: if another copy is already running, quit silently.
         if let id = Bundle.main.bundleIdentifier,
            NSRunningApplication.runningApplications(withBundleIdentifier: id).contains(where: { $0 != .current }) {
+            Log.writeNow("Exit: another copy of EveryPods is already running")
             NSApp.terminate(nil)
             return
         }
@@ -138,19 +144,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(release)
         menu.addItem(.separator())
 
-        menu.addItem(toggle("Take over when media starts", #selector(toggleTakeMedia), Settings.takeOnMediaStart))
-        menu.addItem(toggle("Take over when receiving a call", #selector(toggleTakeCall), Settings.takeOnCall))
-        menu.addItem(toggle("Auto-set AirPods as audio device", #selector(toggleAutoRoute), Settings.autoRoute))
-        menu.addItem(toggle("Pause playback when handing over", #selector(togglePause), Settings.pauseOnHandover))
-        menu.addItem(toggle("Hold audio until AirPods connect", #selector(toggleHold), Settings.holdPlayback))
-        menu.addItem(toggle("Connect AirPods when the case opens (if this Mac used them last)", #selector(toggleLidOpen),
-                            Settings.lidOpenConnect))
+        menu.addItem(stayOpenToggle("Take over when media starts", { Settings.takeOnMediaStart }) { [weak self] in self?.toggleTakeMedia() })
+        menu.addItem(stayOpenToggle("Take over when receiving a call", { Settings.takeOnCall }) { [weak self] in self?.toggleTakeCall() })
+        menu.addItem(stayOpenToggle("Auto-set AirPods as audio device", { Settings.autoRoute }) { [weak self] in self?.toggleAutoRoute() })
+        menu.addItem(stayOpenToggle("Pause playback when handing over", { Settings.pauseOnHandover }) { [weak self] in self?.togglePause() })
+        menu.addItem(stayOpenToggle("Hold audio until AirPods connect", { Settings.holdPlayback }) { [weak self] in self?.toggleHold() })
+        menu.addItem(triggerAppsMenu())
+        menu.addItem(stayOpenToggle("Connect AirPods when the case opens (if this Mac used them last)",
+                                    { Settings.lidOpenConnect }) { [weak self] in self?.toggleLidOpen() })
         if !MediaControl.hasPermission {
             menu.addItem(action("Allow Pausing Playback (Accessibility)…", #selector(grantAccessibility)))
         }
         menu.addItem(.separator())
 
-        menu.addItem(toggle("Start at login", #selector(toggleLaunchAtLogin), SMAppService.mainApp.status == .enabled))
+        menu.addItem(stayOpenToggle("Start at login", { SMAppService.mainApp.status == .enabled }) { [weak self] in self?.toggleLaunchAtLogin() })
         menu.addItem(action("Show Log", #selector(showLog)))
         menu.addItem(NSMenuItem(title: "Quit EveryPods", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
     }
@@ -167,10 +174,71 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return item
     }
 
-    private func toggle(_ title: String, _ selector: Selector, _ on: Bool) -> NSMenuItem {
-        let item = action(title, selector)
-        item.state = on ? .on : .off
-        return item
+    /// A setting toggle that keeps the menu open when clicked (StayOpenItemView).
+    private func stayOpenToggle(_ title: String, _ isOn: @escaping () -> Bool, _ onClick: @escaping () -> Void) -> NSMenuItem {
+        StayOpenItemView.item(title, isOn: isOn, onClick: onClick)
+    }
+
+    /// "Apps that take or keep the AirPods" (same settings as the Windows tray menu): the built-in apps, every app
+    /// that used sound, and any the user set, sorted by name. Every app has the same three settings; built-in
+    /// apps start pre-configured and offer "Reset to built-in" once changed. Clicks keep the menu open.
+    private func triggerAppsMenu() -> NSMenuItem {
+        let parent = NSMenuItem(title: "Apps that take or keep the AirPods", action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
+        let rules = Settings.triggerApps
+        var keys: [String] = []
+        func add(_ bundle: String) {
+            let k = rules.key(bundle)
+            if !k.isEmpty, k != "?", !keys.contains(k) { keys.append(k) }
+        }
+        TriggerAppList.builtIn.map(\.bundle).forEach(add)
+        rules.user.keys.forEach(add)
+        controller.media.seenApps.reversed().prefix(40).forEach(add)
+        let apps = keys.map { k in (key: k, name: TriggerAppList.builtIn(k)?.name ?? UserIntentWatcher.displayName(k)) }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        for (key, name) in apps {
+            let label: () -> String = {
+                let now = Settings.triggerApps
+                let tag = TriggerAppList.builtIn(key) == nil ? "" : now.isChangedBuiltIn(key) ? " (built in, changed)" : " (built in)"
+                return "\(name)\(tag): \(now.settings(key).text)"
+            }
+            let item = NSMenuItem(title: label(), action: nil, keyEquivalent: "")
+            let choices = NSMenu()
+            choices.autoenablesItems = false
+            let relabel: () -> Void = { [weak item] in item?.title = label() }
+            for setting in TriggerSetting.allCases {
+                choices.addItem(StayOpenItemView.item(setting.title,
+                                                      isOn: { setting.get(Settings.triggerApps.settings(key)) },
+                                                      onClick: { [weak self] in self?.toggleSetting(key, setting) },
+                                                      afterClick: relabel))
+            }
+            if TriggerAppList.builtIn(key) != nil {
+                choices.addItem(.separator())
+                // Greyed (nothing to reset) until the app is changed.
+                choices.addItem(StayOpenItemView.item("Reset to built-in", enabled: { Settings.triggerApps.isChangedBuiltIn(key) },
+                                                      isOn: { false },
+                                                      onClick: { [weak self] in self?.resetTrigger(key) },
+                                                      afterClick: relabel))
+            }
+            item.submenu = choices
+            submenu.addItem(item)
+        }
+        parent.submenu = submenu
+        return parent
+    }
+
+    private func toggleSetting(_ key: String, _ setting: TriggerSetting) {
+        var rules = Settings.triggerApps
+        guard rules.toggle(key, setting) else { return }
+        Settings.triggerApps = rules
+        Log.write("Trigger apps: \(key): \(rules.settings(key).text)")
+    }
+
+    private func resetTrigger(_ key: String) {
+        var rules = Settings.triggerApps
+        guard rules.reset(key) else { return }
+        Settings.triggerApps = rules
+        Log.write("Trigger apps: \(key) reset to built-in (\(rules.settings(key).text))")
     }
 
     private func selectAirPodsMenu() -> NSMenuItem {

@@ -89,7 +89,7 @@ final class HandoverController {
     private func reservationEnded() {
         guard triggerDeferredByReservation, !v2.reservationLive else { return }
         triggerDeferredByReservation = false
-        guard media.snapshot.playing || media.snapshot.inCall else {
+        guard media.snapshot.triggering else {
             return Log.write("V2: reservation ended; the audio that triggered a takeover has stopped")
         }
         Log.write("V2: reservation ended; running the deferred takeover trigger")
@@ -126,6 +126,18 @@ final class HandoverController {
         hold.isPlaying = { [weak self] in self?.media.snapshot.playing ?? false }
         hold.playingApps = { [weak self] in self?.media.snapshot.playingApps ?? [] }
         media.fastStart = { Settings.holdPlayback }
+        media.apps = { Settings.triggerApps }
+        media.saveApps = { Settings.triggerApps = $0 }
+        for (app, settings) in Settings.triggerApps.user.sorted(by: { $0.key < $1.key }) {
+            Log.write("Trigger app: \(app) \(settings.text)")
+        }
+        // Only a start that could move the AirPods here needs real sound; with the AirPods already on this Mac
+        // the trigger only claims ownership, and no tap is put next to the Bluetooth output.
+        media.levelGate = { [weak self] in
+            guard let self else { return false }
+            return Settings.takeOnMediaStart && self.pods.isConfigured && !self.pods.isConnected
+                && self.proximity.airPodsAvailable
+        }
         media.onPlaybackSeen = { [weak self] in
             guard let self, self.mediaTakeoverLikely() else { return }
             self.hold.preMute()
@@ -284,7 +296,7 @@ final class HandoverController {
     // MARK: Media and call triggers
 
     /// A cheap preview of `onMediaPlayingChanged`'s guards, used to mute the speakers the moment audio appears.
-    /// A wrong guess only costs a short mute (`PlaybackHold.preMute` lifts it after 1.5 s).
+    /// A wrong guess only costs a short mute (`PlaybackHold.preMute` lifts it after 2.5 s).
     private func mediaTakeoverLikely() -> Bool {
         Settings.holdPlayback && v2.anyPeerHoldsAirPods && Settings.takeOnMediaStart && pods.isConfigured && !pods.isConnected
             && !media.snapshot.inCall && proximity.airPodsAvailable && !v2.reservationLive && !takeoverInFlight
@@ -309,7 +321,7 @@ final class HandoverController {
             }
             return
         }
-        let intent: TakeIntent = media.snapshot.inCall ? .call : .media
+        let intent: TakeIntent = media.snapshot.inCall || media.snapshot.callTriggers ? .call : .media
         guard pods.isConfigured else { return }
         guard intent == .call ? Settings.takeOnCall : Settings.takeOnMediaStart else {
             return Log.write("Skip: take over on \(intent == .call ? "call" : "media start") is off")
@@ -364,7 +376,7 @@ final class HandoverController {
     private func recheckWhenQuiet(after delay: TimeInterval) {
         recheck?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            guard let self, self.media.snapshot.playing, self.ownership != .thisMac else { return }
+            guard let self, self.media.snapshot.triggering, self.ownership != .thisMac else { return }
             Log.write("Recheck: audio still playing after the anti-ping-pong window")
             self.lastAction = Date.distantPast
             self.onMediaPlayingChanged(true)
@@ -543,7 +555,7 @@ final class HandoverController {
         guard #available(macOS 14.2, *) else { return }
         let probe = PlaybackLevelProbe()
         resumeProbe = probe
-        probe.start(processes: processes, onResume: { [weak self] in self?.playbackResumed(app) }) { [weak self] ok in
+        probe.start(processes: processes, onFire: { [weak self] in self?.playbackResumed(app) }) { [weak self] ok in
             guard let self, self.resumeProbe === probe else { return }
             if ok {
                 Log.write("Probe: listening to \(app) for a play press while its paused stream stays open")

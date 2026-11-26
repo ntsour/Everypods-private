@@ -7,6 +7,17 @@
 //     releases it when you leave. An open meeting tab alone is not a call (it stays open after hanging up).
 // Measured behaviour: playback shows up within ~1s; after a pause the flag lingers ~10-15s
 // (browsers keep the stream open), so "started" is a reliable trigger but "stopped" is slow.
+//
+// An open output stream is not proof of playback: a browser opens one for a notification ding and keeps it
+// running 10-15 s, long past the sustain. Each app's settings (TriggerApps) decide what it may do:
+//   * "Take the AirPods when it opens the mic": an open mic (or a meeting) takes them at once.
+//   * "Take the AirPods when it starts playing": playback takes them only when it is real. When the start
+//     could move the AirPods here (`levelGate`) it must be audio the user asked for (UserIntent: a click or tap
+//     in the playing app just before, or a player's "Playing" broadcast), or sustained sound: about 1 s of real
+//     audio, measured by a process tap on the playing processes (PlaybackLevelProbe, macOS 14.2+). Without the
+//     tap (older macOS, tap failure, or the capture permission never seen working) the start fires on the open
+//     stream as before.
+// An app with neither setting never starts a takeover.
 
 import CoreAudio
 import Foundation
@@ -19,9 +30,15 @@ final class MediaWatcher {
         var callApps: [String] = []
         /// Core Audio process objects behind `playingApps` (for a level probe).
         var playingProcesses: [AudioObjectID] = []
+        /// Apps (as the user knows them, e.g. Chrome) whose audio may start a takeover, and their processes.
+        var triggerOwners: [String] = []
+        var triggerProcesses: [AudioObjectID] = []
+        /// An open mic (or a meeting) whose app has "Take the AirPods when it opens the mic": takes them at once.
+        var callTriggers = false
         var playing: Bool { !playingApps.isEmpty }
         var inCall: Bool { !callApps.isEmpty }
         var micInUse: Bool { !micApps.isEmpty }
+        var triggering: Bool { !triggerOwners.isEmpty }
     }
 
     /// Fires once when audio has been playing for `sustain` seconds (not for short system sounds).
@@ -34,6 +51,16 @@ final class MediaWatcher {
     /// With a playback hold on, the takeover fires after a short sustain: the speakers are already muted, and a
     /// longer wait would only delay the AirPods (short sounds still end well before this).
     var fastStart: () -> Bool = { false }
+    /// True when a start would take the AirPods from another device: the start then needs real sound too.
+    var levelGate: () -> Bool = { false }
+    /// Every app's settings (Settings.triggerApps), and where to save an app newly seen in a call.
+    var apps: () -> TriggerAppList = { TriggerAppList() }
+    var saveApps: (TriggerAppList) -> Void = { _ in }
+    let intent = UserIntentWatcher()
+    /// Apps that ever used audio (owner bundles), newest last, for the apps menu. Remembered across launches so
+    /// the menu lists them before they play again.
+    private(set) var seenApps: [String] = UserDefaults.standard.stringArray(forKey: "seenAudioApps") ?? []
+    private let seenLimit = 40
     private(set) var snapshot = Snapshot()
 
     private var sustain: TimeInterval { fastStart() ? 0.6 : 2 }
@@ -42,6 +69,20 @@ final class MediaWatcher {
     private var timer: Timer?
     private var playingSince: Date?
     private var startFired = false
+
+    /// The sound check for the current stream (see the header). `nil` when none runs.
+    private var gate: AnyObject?
+    private var gateProcesses = Set<AudioObjectID>()
+    private var gateState: GateState = .off
+    private var gateLoggedWaiting = false
+    /// The user clicked in the playing app just before this stream was seen.
+    private var clickIntent = false
+    private enum GateState { case off, listening, sustained, failed, gaveUp }
+    /// A stream that stays open this long without real sound is left alone (no tap held forever).
+    private let gateLimit: TimeInterval = 60
+    /// With the capture permission never seen working, all-zero samples this long past the sustain mean
+    /// "no permission" rather than "silence", and the start fires as before.
+    private let unconfirmedGrace: TimeInterval = 1.5
 
     /// Processes that are never "playback" or "call": system plumbing and this app.
     private let ignoredPrefixes = [
@@ -56,13 +97,9 @@ final class MediaWatcher {
         "com.apple.dictation", "com.apple.speech", "com.apple.siri", "com.apple.assistant",
     ]
 
-    /// Native meeting apps: audio output alone means a call (the mic is closed while muted).
-    private let callAppPrefixes = [
-        "us.zoom.xos", "com.microsoft.teams", "com.apple.FaceTime", "com.cisco.webex", "com.webex",
-        "com.skype", "com.apple.facetime",
-    ]
-
     func start() {
+        intent.onPlayerPlaying = { [weak self] in self?.poll() }
+        intent.start()
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.poll() }
         watchProcessList()
         poll()
@@ -99,20 +136,43 @@ final class MediaWatcher {
 
     private func poll() {
         let next = readSnapshot()
-        if next.playing {
+        if next.triggering {
             if playingSince == nil {
                 playingSince = Date()
-                if !startFired { onPlaybackSeen?() }
+                if !startFired {
+                    clickIntent = UserIntent.clickAsked(secondsSinceClick: intent.secondsSinceClick,
+                                                        frontmost: intent.frontmost, owners: next.triggerOwners)
+                    if clickIntent { Log.write("Media: \(next.triggerOwners.joined(separator: ", ")) started right after a click in it") }
+                    onPlaybackSeen?()
+                    if levelGate() && !next.callTriggers && !clickIntent && !playerIntent(next) {
+                        startGate(next.triggerProcesses)
+                    }
+                }
                 // Check again right when the sustain elapses rather than on the next 1 s tick.
                 DispatchQueue.main.asyncAfter(deadline: .now() + sustain + 0.05) { [weak self] in self?.poll() }
+                DispatchQueue.main.asyncAfter(deadline: .now() + sustain + unconfirmedGrace + 0.05) { [weak self] in self?.poll() }
+            } else if gateState == .listening, !Set(next.triggerProcesses).isSubset(of: gateProcesses) {
+                // Another app started output while we listen: listen to all of them.
+                startGate(next.triggerProcesses)
             }
-            if !startFired, let since = playingSince, Date().timeIntervalSince(since) >= sustain {
-                startFired = true
-                Log.write("Media: playback started (\(next.playingApps.joined(separator: ", ")))")
-                onPlaybackStarted?()
+            if !startFired, let since = playingSince {
+                let elapsed = Date().timeIntervalSince(since)
+                if elapsed >= sustain && startAllowed(next, elapsed: elapsed) {
+                    startFired = true
+                    stopGate()
+                    Log.write("Media: playback started (\(next.playingApps.joined(separator: ", ")))")
+                    onPlaybackStarted?()
+                } else if gateState == .listening && elapsed >= gateLimit {
+                    Log.write("Media: no sustained sound from \(next.triggerOwners.joined(separator: ", ")) in \(Int(gateLimit)) s; not a start")
+                    stopGate()
+                    gateState = .gaveUp   // this stream is done; a new stream gets a new check
+                }
             }
         } else {
             playingSince = nil
+            clickIntent = false
+            stopGate()
+            gateState = .off
             if startFired { onPlaybackStopped?() }
             startFired = false
         }
@@ -122,23 +182,127 @@ final class MediaWatcher {
         }
     }
 
+    private func playerIntent(_ next: Snapshot) -> Bool {
+        UserIntent.playerAsked(events: intent.playerEvents, owners: next.triggerOwners, seenAt: playingSince ?? Date())
+    }
+
+    // MARK: Sound check
+
+    /// Whether an open stream past its sustain counts as a start.
+    private func startAllowed(_ next: Snapshot, elapsed: TimeInterval) -> Bool {
+        if next.callTriggers { return true }   // calls and meeting apps: as before
+        if clickIntent { return true }
+        if playerIntent(next) {
+            if gateState == .listening { Log.write("Media: \(next.triggerOwners.joined(separator: ", ")) announced playback") }
+            return true
+        }
+        switch gateState {
+        case .off, .sustained, .failed:
+            return true
+        case .gaveUp:
+            return false
+        case .listening:
+            if #available(macOS 14.2, *), !PlaybackLevelProbe.captureConfirmed, elapsed >= sustain + unconfirmedGrace,
+               let probe = gate as? PlaybackLevelProbe, !probe.receivedAudio {
+                Log.write("Media: sound check heard nothing and capture was never seen working; starting on the open stream")
+                return true
+            }
+            if !gateLoggedWaiting {
+                gateLoggedWaiting = true
+                Log.write("Media: output from \(next.playingApps.joined(separator: ", ")) but no sustained sound yet (a notification?); waiting")
+            }
+            return false
+        }
+    }
+
+    private func startGate(_ processes: [AudioObjectID]) {
+        stopGate()
+        guard #available(macOS 14.2, *), !processes.isEmpty else { return }
+        let probe = PlaybackLevelProbe(detector: SustainedSoundDetector())
+        gate = probe
+        gateProcesses = Set(processes)
+        gateState = .listening
+        gateLoggedWaiting = false
+        probe.start(processes: processes, onFire: { [weak self] in
+            guard let self, self.gate === probe else { return }
+            self.gateState = .sustained
+            self.stopGate()
+            self.poll()
+        }, completion: { [weak self] ok in
+            guard let self, self.gate === probe, !ok else { return }
+            Log.write("Media: sound check unavailable; starting on the open stream")
+            self.gateState = .failed
+            self.stopGate()
+            self.poll()
+        })
+    }
+
+    private func stopGate() {
+        guard let probe = gate else { return }
+        gate = nil
+        gateProcesses = []
+        if #available(macOS 14.2, *) { (probe as? PlaybackLevelProbe)?.stop() }
+    }
+
     private func readSnapshot() -> Snapshot {
         var result = Snapshot()
-        for process in Self.objects(AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyProcessObjectList) {
+        var rules = apps()
+        let processes = Self.objects(AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyProcessObjectList)
+        if owners.count > processes.count + 32 { owners = owners.filter { processes.contains($0.key) } }
+        for process in processes {
             let bundle = Self.string(process, kAudioProcessPropertyBundleID)
             if ignoredPrefixes.contains(where: { bundle.hasPrefix($0) }) { continue }
             let output = Self.flag(process, kAudioProcessPropertyIsRunningOutput)
             let input = Self.flag(process, kAudioProcessPropertyIsRunningInput)
+            guard output || input else { continue }
             let recorder = recorderPrefixes.contains(where: { bundle.hasPrefix($0) })
+            let owner = ownerBundle(process, bundle)
+            noteSeen(owner)
+            if output && input && !recorder && rules.noteCall(owner) {
+                saveApps(rules)
+                Log.write("Trigger apps: \(owner) used the mic and sound together; it starts with all three settings")
+            }
+            let decision = rules.decide(app: owner, output: output, input: input, recorder: recorder)
             if input { result.micApps.append(bundle) }
-            if output && !(recorder && input) {
+            if decision.playing {
                 result.playingApps.append(bundle)
                 result.playingProcesses.append(process)
             }
-            if output && input && !recorder { result.callApps.append(bundle) }
-            else if output && callAppPrefixes.contains(where: { bundle.hasPrefix($0) }) { result.callApps.append(bundle) }
+            if decision.call { result.callApps.append(bundle) }
+            if decision.triggers {
+                if !result.triggerOwners.contains(owner) { result.triggerOwners.append(owner) }
+                if decision.playing { result.triggerProcesses.append(process) }
+                if decision.trusted { result.callTriggers = true }
+            }
         }
         return result
+    }
+
+    /// Owner bundles per process object (a process keeps its object ID while it lives).
+    private var owners: [AudioObjectID: String] = [:]
+
+    private func ownerBundle(_ process: AudioObjectID, _ bundle: String) -> String {
+        if let known = owners[process] { return known }
+        var parent: String?
+        if bundle.isEmpty || bundle == "?" {
+            var address = AudioObjectPropertyAddress(mSelector: kAudioProcessPropertyPID, mScope: kAudioObjectPropertyScopeGlobal,
+                                                     mElement: kAudioObjectPropertyElementMain)
+            var pid: pid_t = 0
+            var size = UInt32(MemoryLayout<pid_t>.size)
+            if AudioObjectGetPropertyData(process, &address, 0, nil, &size, &pid) == noErr { parent = UserIntentWatcher.parentBundle(of: pid) }
+        }
+        let owner = UserIntent.owner(processBundle: bundle, parentBundle: parent)
+        owners[process] = owner
+        return owner
+    }
+
+    private func noteSeen(_ owner: String) {
+        guard !owner.isEmpty, owner != "?" else { return }
+        if seenApps.last == owner { return }
+        seenApps.removeAll { $0 == owner }
+        seenApps.append(owner)
+        if seenApps.count > seenLimit { seenApps.removeFirst(seenApps.count - seenLimit) }
+        UserDefaults.standard.set(seenApps, forKey: "seenAudioApps")
     }
 
     // MARK: CoreAudio helpers
