@@ -22,7 +22,7 @@ struct Settings {
     bool                         holdPlayback{false};     // hold PC audio while the AirPods connect (PlaybackHold)
     bool                         lidOpenConnect{true};    // connect when the case opens, if this PC used them last
     bool                         lidLease{false};         // this PC used the AirPods last (lid-open connect)
-    // Apps the user added ("callapp=" / "mediaapp=" / "protectapp=" lines).
+    // Apps the user added ("takeonmic=" / "takeonplay=" / "keeponmic=" lines, one per setting).
     std::vector<TriggerApp>      triggerApps;
 };
 

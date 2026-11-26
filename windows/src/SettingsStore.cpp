@@ -128,15 +128,22 @@ Settings SettingsStore::load() const {
         } else if (key == "lidlease") {
             s.lidLease = (val != "0");
             log::debug("  lidlease = {}", s.lidLease);
-        } else if (key == "callapp" || key == "mediaapp" || key == "protectapp") {
+        } else if (key == "takeonmic" || key == "takeonplay" || key == "keeponmic" ||
+                   key == "callapp" || key == "mediaapp" || key == "protectapp") {
+            // One line per setting; lines for the same app are merged by
+            // TriggerAppList. callapp/protectapp/mediaapp come from the first
+            // test builds (one choice per app): call = mic + keep.
             // Cleaned (normalized, de-duplicated) when handed to TriggerAppList.
             const std::wstring exe = normalizeExeName(fromUtf8(val));
             if (exe.empty()) {
                 log::warn("  {} = {} -> (not a program name)", key, val);
             } else {
-                const TriggerKind kind = key == "callapp" ? TriggerKind::Call
-                                       : key == "protectapp" ? TriggerKind::Protect : TriggerKind::Media;
-                s.triggerApps.push_back({exe, kind, false});
+                TriggerApp app;
+                app.exe = exe;
+                app.takeOnMic = key == "takeonmic" || key == "callapp";
+                app.takeOnPlay = key == "takeonplay" || key == "mediaapp";
+                app.keepOnMic = key == "keeponmic" || key == "callapp" || key == "protectapp";
+                s.triggerApps.push_back(std::move(app));
                 log::debug("  {} = {}", key, toUtf8(exe));
             }
         }
@@ -163,8 +170,11 @@ void SettingsStore::save(const Settings& s) const {
     f << "lidopenconnect=" << (s.lidOpenConnect ? "1" : "0") << '\n';
     f << "lidlease=" << (s.lidLease ? "1" : "0") << '\n';
     for (const auto& app : s.triggerApps)
-        f << (app.kind == TriggerKind::Call ? "callapp=" : app.kind == TriggerKind::Protect ? "protectapp=" : "mediaapp=")
-          << toUtf8(app.exe) << '\n';
+    {
+        if (app.takeOnMic)  f << "takeonmic=" << toUtf8(app.exe) << '\n';
+        if (app.takeOnPlay) f << "takeonplay=" << toUtf8(app.exe) << '\n';
+        if (app.keepOnMic)  f << "keeponmic=" << toUtf8(app.exe) << '\n';
+    }
 }
 
 }

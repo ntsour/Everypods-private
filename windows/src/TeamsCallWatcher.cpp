@@ -123,8 +123,9 @@ public:
         owner->setCallMicActive(this, app && isCallMic(*app, capture) && state == AudioSessionStateActive, m_exe);
         if (state == AudioSessionStateActive) {
             if (m_pid != GetCurrentProcessId()) owner->noteSeen(m_exe, capture, /*active=*/true);
-            if (app && triggersOn(*app, capture))
-                owner->onTeamsSessionActive(m_pid, m_exe, m_flow, m_role, app->kind == TriggerKind::Call);
+            const TriggerEvent ev = app ? triggerFor(*app, capture) : TriggerEvent::None;
+            if (ev != TriggerEvent::None)
+                owner->onTeamsSessionActive(m_pid, m_exe, m_flow, m_role, ev == TriggerEvent::Call);
             if (m_flow == eRender && m_pid != GetCurrentProcessId()) {
                 AudioSessionRef ref;
                 ref.endpointId = m_endpointId;
@@ -294,7 +295,7 @@ void TeamsCallWatcher::setCallMicActive(const void* session, bool active, const 
         edge = open != wasOpen;
     }
     if (!edge) return;
-    log::info("TeamsCallWatcher: call app mic {} ({})", open ? "open (call or meeting)" : "closed",
+    log::info("TeamsCallWatcher: keep app mic {} ({})", open ? "open (call or meeting)" : "closed",
               exe.empty() ? std::string{"session gone"} : narrow(exe));
     CallMicCallback cb = m_onCallMicChanged;
     if (cb) cb(open);
@@ -396,8 +397,9 @@ void TeamsCallWatcher::watchSession(IAudioSessionControl* ctrl,
     // If a trigger app is already active right now (Teams was in a call before
     // we started), report. Other apps already playing at registration time are
     // deliberately not reported: only real transitions are.
-    if (app && triggersOn(*app, capture) && state == AudioSessionStateActive)
-        onTeamsSessionActive(pid, exe, flow, role, app->kind == TriggerKind::Call);
+    const TriggerEvent trigger = app ? triggerFor(*app, capture) : TriggerEvent::None;
+    if (trigger != TriggerEvent::None && state == AudioSessionStateActive)
+        onTeamsSessionActive(pid, exe, flow, role, trigger == TriggerEvent::Call);
 
     std::wstring instanceId;
     LPWSTR rawInstance = nullptr;

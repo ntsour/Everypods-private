@@ -42,7 +42,7 @@ public:
 
     // Called when a trigger app's audio session becomes active (see
     // TriggerApps.hpp: Teams, VLC and the apps the user added). `comms` is true
-    // for a call app, false for a media app.
+    // when it opened the mic (or any Teams session), false when it started playing.
     // Wire this to HandoverController::onCallActive() so the WASAPI-based
     // trigger feeds into the handover state machine with voluntary-release gating.
     using TriggerCallback = std::function<void(bool comms)>;
@@ -62,7 +62,7 @@ public:
     using SessionEndedCallback = std::function<void()>;
     void setOnSessionEnded(SessionEndedCallback cb) { m_onSessionEnded = std::move(cb); }
 
-    // Called when a call app (Teams or one the user added) opens its mic (any
+    // Called when a keep app (Teams, a meeting app, or one set in the tray) opens its mic (any
     // of its capture sessions Active: a call or meeting) or closes it (none
     // Active). Raw edges: subscriptions
     // are dropped and re-made on every default-device change, so the receiver
@@ -147,7 +147,7 @@ private:
     TriggerAppList m_apps;
 
     std::mutex m_callMicMutex;
-    std::vector<const void*> m_callMicSessions;  // call-app capture sessions now Active
+    std::vector<const void*> m_callMicSessions;  // keep-app capture sessions now Active
 
     mutable std::mutex m_seenMutex;
     std::vector<SeenAudioApp> m_seen;

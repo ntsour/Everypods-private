@@ -75,8 +75,8 @@ allowlist is in `AirPodsConnector.cpp::isCommsAppExe()` and currently covers:
 | Slack | `slack.exe` |
 | Cisco WebEx | `webex.exe`, `webexd.exe` |
 
-An open microphone in a **call or keep app** (see below: Zoom, Webex, Slack and
-Discord are built in) also rejects it, and tells phones a call is running so they
+An open microphone in an app set to **keep the AirPods while it uses the mic**
+(see below: Teams, Zoom, Webex, Slack and Discord are built in) also rejects it, and tells phones a call is running so they
 don't take the AirPods for music or their own call.
 
 Passive media (YouTube, Spotify, browser audio, system sounds) does **not**
@@ -87,25 +87,33 @@ phone to take a call, the AirPods migrate to the phone instantly.
 Windows takes the AirPods when media starts in the Windows media controls, when
 Teams (`ms-teams.exe`, `Teams.exe`) starts a call or meeting, and when VLC starts
 playing. While Teams, Zoom (`zoom.exe`), Webex (`webex.exe`), Slack (`slack.exe`)
-or Discord (`discord.exe`) has the mic open, the AirPods stay on the PC. There is no reliable "a call started" signal for every app (voice
-typing, recorders and browser tabs open the mic too), so other apps are added by
-hand: tray menu → **Apps that take or keep the AirPods**. The menu lists apps that used
-sound since Propods started; use the app once, then open the menu. Each app is
-added one of two ways:
+or Discord (`discord.exe`) has the mic open, the AirPods stay on the PC.
 
-- **when it opens the mic (calls)**: takes the AirPods when the app opens the
-  default microphone, and holds them while the mic stays open, like a Teams call
-  (phones are told a call is running and do not take them for their own call).
-  Follows "Take AirPods when a call starts on this PC".
-- **keep the AirPods while it uses the mic (never take them)**: for a browser
-  used for meetings (Zoom or Meet in Chrome). The app never moves the AirPods to
-  the PC, but while it has the mic open they stay here as in a call.
-- **when it starts playing**: takes the AirPods when the app starts playing
-  sound. Follows "Take AirPods when this PC starts playing media".
+There is no reliable "a call started" signal for every app (voice typing,
+recorders and browser tabs open the mic too), so other apps are set up by hand:
+tray menu → **Apps that take or keep the AirPods**. It lists the built-in apps,
+the apps you added, and the apps that used sound since Propods started (use an
+app once, then open the menu). Each app has three independent settings, in any
+combination:
 
-The list is saved in `%APPDATA%\Propods\config.txt` as `callapp=name.exe`,
-`protectapp=name.exe` and `mediaapp=name.exe` lines, which can also be edited by hand while Propods is
-closed.
+- **Take the AirPods when it opens the mic**: the app opening the default
+  microphone moves the AirPods here. Follows "Take AirPods when a call starts on
+  this PC".
+- **Take the AirPods when it starts playing**: the app starting to play sound
+  moves them here. Follows "Take AirPods when this PC starts playing media".
+- **Keep the AirPods while it uses the mic**: while the app has the mic open it
+  is a call. Phones and the Mac are told so and don't take the AirPods (for
+  music or their own call), and Windows refuses their requests.
+
+A call app such as a voice assistant gets the first and third; a browser used for
+Meet or Zoom web gets only the third (its videos already take the AirPods through
+the media controls). Ticking a setting adds an app; unticking all three removes it.
+Built-in apps show their settings greyed.
+
+The list is saved in `%APPDATA%\Propods\config.txt` as `takeonmic=name.exe`,
+`takeonplay=name.exe` and `keeponmic=name.exe` lines (one per setting), which can
+also be edited by hand while Propods is closed. Lines from the first test builds
+(`callapp=` = mic + keep, `protectapp=` = keep, `mediaapp=` = play) are still read.
 
 ### Multi-window pause
 On a Windows → phone handover, all three GSMTC pause methods (current

@@ -269,8 +269,11 @@ static void proximityTests() {
 static void triggerAppTests() {
     using Propods::TriggerApp;
     using Propods::TriggerAppList;
-    using Propods::TriggerKind;
+    using Propods::TriggerEvent;
+    using Propods::TriggerRule;
     using Propods::normalizeExeName;
+    using Propods::triggerFor;
+    using Propods::isCallMic;
     CHECK(normalizeExeName(L"Dots.EXE") == L"dots.exe");
     CHECK(normalizeExeName(L"  dots ") == L"dots.exe");
     CHECK(normalizeExeName(L"C:\\Program Files\\OpenAI\\Dots.exe") == L"dots.exe");
@@ -280,43 +283,54 @@ static void triggerAppTests() {
     CHECK(normalizeExeName(L"bad|name").empty());
 
     TriggerAppList list;
-    CHECK(list.find(L"MS-Teams.exe") && list.find(L"ms-teams.exe")->kind == TriggerKind::Call);
-    CHECK(list.find(L"vlc.exe") && list.find(L"vlc.exe")->builtIn);
-    CHECK(!list.find(L"dots.exe"));
-    CHECK(list.add(L"Dots.exe", TriggerKind::Call));
-    CHECK(!list.add(L"dots", TriggerKind::Call));            // already there
-    CHECK(list.add(L"dots", TriggerKind::Media));            // kind changed
-    CHECK(list.find(L"DOTS.EXE")->kind == TriggerKind::Media);
-    CHECK(!list.add(L"teams.exe", TriggerKind::Media));      // built-ins stay as they are
+    // Built-ins.
+    const auto teams = *list.find(L"MS-Teams.exe");
+    CHECK(teams.builtIn && teams.takeOnMic && teams.keepOnMic);
+    CHECK(triggerFor(teams, false) == TriggerEvent::Call);  // any Teams session is a call
+    CHECK(isCallMic(teams, true) && !isCallMic(teams, false));
+    const auto vlc = *list.find(L"vlc.exe");
+    CHECK(triggerFor(vlc, false) == TriggerEvent::Media && triggerFor(vlc, true) == TriggerEvent::None);
+    const auto zoom = *list.find(L"zoom.exe");
+    CHECK(triggerFor(zoom, true) == TriggerEvent::None && triggerFor(zoom, false) == TriggerEvent::None);
+    CHECK(isCallMic(zoom, true));
+    CHECK(!list.setRule(L"zoom.exe", TriggerRule::TakeOnPlay, true));  // built-ins can't change
+
+    // Independent settings on a user app.
+    CHECK(!list.find(L"chrome.exe"));
+    CHECK(!list.setRule(L"chrome", TriggerRule::KeepOnMic, false));     // nothing to turn off
+    CHECK(list.setRule(L"Chrome.exe", TriggerRule::KeepOnMic, true));   // adds it
+    CHECK(!list.setRule(L"chrome", TriggerRule::KeepOnMic, true));      // no change
+    CHECK(list.setRule(L"chrome", TriggerRule::TakeOnPlay, true));      // keep + take on play
+    auto chrome = *list.find(L"chrome.exe");
+    CHECK(chrome.keepOnMic && chrome.takeOnPlay && !chrome.takeOnMic && !chrome.builtIn);
+    CHECK(triggerFor(chrome, true) == TriggerEvent::None);    // mic: keeps, doesn't take
+    CHECK(triggerFor(chrome, false) == TriggerEvent::Media);  // playback: takes
+    CHECK(isCallMic(chrome, true) && !isCallMic(chrome, false));
+    CHECK(list.setRule(L"chrome", TriggerRule::KeepOnMic, false));
+    CHECK(list.find(L"chrome.exe") && !isCallMic(*list.find(L"chrome.exe"), true));
+    CHECK(list.setRule(L"chrome", TriggerRule::TakeOnPlay, false));     // last one off: removed
+    CHECK(!list.find(L"chrome.exe"));
+
+    // Take on mic without keeping: a takeover, but not a call to protect.
+    CHECK(list.setRule(L"dots", TriggerRule::TakeOnMic, true));
+    const auto dots = *list.find(L"dots.exe");
+    CHECK(triggerFor(dots, true) == TriggerEvent::Call && !isCallMic(dots, true));
     CHECK(list.userApps().size() == 1);
     CHECK(list.all().size() == Propods::builtInTriggerApps().size() + 1);
     CHECK(list.remove(L"dots.exe") && !list.find(L"dots.exe"));
     CHECK(!list.remove(L"dots.exe"));
 
-    list.setUserApps({{L"Dots", TriggerKind::Call, false}, {L"dots.exe", TriggerKind::Media, false},
-                      {L"vlc.exe", TriggerKind::Call, false}, {L"", TriggerKind::Call, false}});
-    CHECK(list.userApps().size() == 1 && list.userApps()[0].exe == L"dots.exe");
-    CHECK(list.find(L"vlc.exe")->kind == TriggerKind::Media);  // config can't override a built-in
-
-    // User call apps trigger on the mic only, media apps on playback only;
-    // built-ins on any session, as before.
-    const TriggerApp call{L"dots.exe", TriggerKind::Call, false};
-    const TriggerApp media{L"spotify.exe", TriggerKind::Media, false};
-    const TriggerApp teams{L"ms-teams.exe", TriggerKind::Call, true};
-    CHECK(Propods::triggersOn(call, true) && !Propods::triggersOn(call, false));
-    CHECK(!Propods::triggersOn(media, true) && Propods::triggersOn(media, false));
-    CHECK(Propods::triggersOn(teams, true) && Propods::triggersOn(teams, false));
-    CHECK(Propods::isCallMic(call, true) && !Propods::isCallMic(call, false));
-    CHECK(Propods::isCallMic(teams, true) && !Propods::isCallMic(media, true));
-    // Protect apps: an open mic is a call, but never a trigger.
-    const TriggerApp chrome{L"chrome.exe", TriggerKind::Protect, false};
-    CHECK(!Propods::triggersOn(chrome, true) && !Propods::triggersOn(chrome, false));
-    CHECK(Propods::isCallMic(chrome, true) && !Propods::isCallMic(chrome, false));
-    TriggerAppList plist;
-    CHECK(plist.find(L"Zoom.exe") && plist.find(L"zoom.exe")->kind == TriggerKind::Protect);
-    CHECK(!Propods::triggersOn(*plist.find(L"zoom.exe"), true));
-    CHECK(Propods::isCallMic(*plist.find(L"zoom.exe"), true));
-    CHECK(plist.add(L"chrome", TriggerKind::Protect) && plist.find(L"chrome.exe")->kind == TriggerKind::Protect);
+    // Config lines: one per setting, merged per app; built-ins, empty names
+    // and apps with no setting are dropped.
+    TriggerApp mic{L"Dots"};      mic.takeOnMic = true;
+    TriggerApp keep{L"dots.exe"}; keep.keepOnMic = true;
+    TriggerApp vlcCall{L"vlc.exe"}; vlcCall.takeOnMic = true;
+    TriggerApp empty{L""};        empty.keepOnMic = true;
+    TriggerApp none{L"idle.exe"};
+    list.setUserApps({mic, keep, vlcCall, empty, none});
+    CHECK(list.userApps().size() == 1);
+    CHECK(list.userApps()[0].exe == L"dots.exe" && list.userApps()[0].takeOnMic && list.userApps()[0].keepOnMic);
+    CHECK(!list.find(L"vlc.exe")->takeOnMic);  // config can't override a built-in
 }
 
 int main() {

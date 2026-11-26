@@ -197,10 +197,10 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     hold.setEnabled(settings.holdPlayback);
     HandoverController controller{peers, airpods, media};
     TeamsCallWatcher teamsWatcher;
-    // Apps that take the AirPods, beyond the built-in Teams and VLC (tray menu).
+    // Apps that take or keep the AirPods, beyond the built-in ones (tray menu).
     teamsWatcher.triggerApps().setUserApps(settings.triggerApps);
     for (const auto& app : teamsWatcher.triggerApps().userApps())
-        log::info("Trigger app: {} ({})", log::toUtf8(app.exe), triggerKindText(app.kind));
+        log::info("Trigger app: {} ({})", log::toUtf8(app.exe), triggerRulesText(app));
     BleProximityWatcher bleWatcher;
     TrayIcon tray;
 
@@ -229,7 +229,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
         st.headsetId = v2::headsetIdFromAddress(addr);
         const bool held = airpods.isClassicallyConnectedWinRT();
         st.ownership = held ? v2::Ownership::Held : v2::Ownership::Released;
-        // Only an open call-app mic (Teams or one the user added) is a call. An audio session starting (VLC,
+        // Only an open keep-app mic (Teams, a meeting app, or one set in the tray) is a call. An audio session starting (VLC,
         // a Teams chat ping) is not, and its "ended" event can be hours late:
         // counting it reported a call for as long as the PC held the AirPods,
         // and phones then refused to take them back (25 Nov).
@@ -347,10 +347,9 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     });
 
     // Provide live status to the tray menu (queried each time the menu opens).
-    // Trigger apps as the menu last showed them: the add/remove commands carry
-    // an index into these lists. Both run on the tray thread.
-    std::vector<std::wstring> menuAudioApps;
-    std::vector<std::wstring> menuUserTriggerApps;
+    // Apps as the "take or keep" menu last showed them: its commands carry an
+    // index into this list. Both run on the tray thread.
+    std::vector<std::wstring> menuApps;
     tray.setStatusProvider([&]() -> TrayIcon::StatusInfo {
         TrayIcon::StatusInfo info;
         info.airpodsConnected = airpods.isClassicallyConnected();
@@ -363,21 +362,18 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
         info.hasMutedApps = silencer.hasMuted();
         for (auto& p : peers.peerInfos())
             info.peers.push_back({p.address, p.name, p.connected});
-        menuUserTriggerApps.clear();
+        menuApps.clear();
         for (const auto& app : teamsWatcher.triggerApps().all()) {
-            info.triggerApps.push_back({app.exe,
-                app.kind == TriggerKind::Call    ? TrayIcon::TriggerAppKind::Call
-                : app.kind == TriggerKind::Protect ? TrayIcon::TriggerAppKind::Protect
-                                                   : TrayIcon::TriggerAppKind::Media,
-                app.builtIn});
-            if (!app.builtIn) menuUserTriggerApps.push_back(app.exe);
+            if ((int)info.apps.size() >= TrayIcon::kMaxMenuApps) break;
+            info.apps.push_back({app.exe, app.takeOnMic, app.takeOnPlay, app.keepOnMic,
+                                 app.builtIn, /*listed=*/true, /*usedMic=*/false});
+            menuApps.push_back(app.exe);
         }
-        menuAudioApps.clear();
         for (const auto& seen : teamsWatcher.seenAudioApps()) {
-            if ((int)info.audioApps.size() >= TrayIcon::kMaxMenuApps) break;
+            if ((int)info.apps.size() >= TrayIcon::kMaxMenuApps) break;
             if (teamsWatcher.triggerApps().find(seen.exe)) continue;  // already listed
-            info.audioApps.push_back({seen.exe, seen.usedMic});
-            menuAudioApps.push_back(seen.exe);
+            info.apps.push_back({seen.exe, false, false, false, false, /*listed=*/false, seen.usedMic});
+            menuApps.push_back(seen.exe);
         }
         return info;
     });
@@ -483,7 +479,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
         peerV2.refreshLocalState();
     });
 
-    // A call app's mic open (Teams or one the user added) = in a call or
+    // A keep app's mic open (Teams, a meeting app, or one set in the tray) = in a call or
     // meeting: protects the AirPods from a phone
     // call takeover while they are on this PC (kPeerAudioActive to peers).
     controller.setOnCallMicSettled([&peerV2]() { peerV2.refreshLocalState(); });
@@ -680,38 +676,27 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
                 tray.toggleAutoStart();
                 break;
             default:
-                auto inRange = [cmd](int base) { return cmd >= base && cmd < base + TrayIcon::kMaxMenuApps; };
-                if (inRange(TrayIcon::kCmdAddCallApp) || inRange(TrayIcon::kCmdAddMediaApp) ||
-                    inRange(TrayIcon::kCmdAddProtectApp) || inRange(TrayIcon::kCmdRemoveTriggerApp)) {
-                    std::wstring exe;
+                if (cmd >= TrayIcon::kCmdAppRule && cmd < TrayIcon::kCmdRemoveTriggerApp + TrayIcon::kMaxMenuApps) {
+                    const bool remove = cmd >= TrayIcon::kCmdRemoveTriggerApp;
+                    const int idx = remove ? cmd - TrayIcon::kCmdRemoveTriggerApp : (cmd - TrayIcon::kCmdAppRule) / 3;
+                    if (idx >= (int)menuApps.size()) break;
+                    const std::wstring exe = menuApps[idx];
+                    auto& list = teamsWatcher.triggerApps();
                     bool changed = false;
-                    if (inRange(TrayIcon::kCmdRemoveTriggerApp)) {
-                        const int idx = cmd - TrayIcon::kCmdRemoveTriggerApp;
-                        if (idx < (int)menuUserTriggerApps.size()) {
-                            exe = menuUserTriggerApps[idx];
-                            changed = teamsWatcher.triggerApps().remove(exe);
-                            if (changed) log::info("Trigger apps: removed {}", log::toUtf8(exe));
-                        }
+                    if (remove) {
+                        changed = list.remove(exe);
                     } else {
-                        const TriggerKind kind = inRange(TrayIcon::kCmdAddCallApp)    ? TriggerKind::Call
-                                               : inRange(TrayIcon::kCmdAddProtectApp) ? TriggerKind::Protect
-                                                                                      : TriggerKind::Media;
-                        const int base = kind == TriggerKind::Call    ? TrayIcon::kCmdAddCallApp
-                                       : kind == TriggerKind::Protect ? TrayIcon::kCmdAddProtectApp
-                                                                      : TrayIcon::kCmdAddMediaApp;
-                        const int idx = cmd - base;
-                        if (idx < (int)menuAudioApps.size()) {
-                            exe = menuAudioApps[idx];
-                            changed = teamsWatcher.triggerApps().add(exe, kind);
-                            if (changed)
-                                log::info("Trigger apps: added {} ({})", log::toUtf8(exe), triggerKindText(kind));
-                        }
+                        const auto rule = static_cast<TriggerRule>((cmd - TrayIcon::kCmdAppRule) % 3);
+                        const auto current = list.find(exe);
+                        changed = list.setRule(exe, rule, !(current && current->get(rule)));
                     }
-                    if (changed) {
-                        std::scoped_lock lk{settingsMutex};
-                        settings.triggerApps = teamsWatcher.triggerApps().userApps();
-                        store.save(settings);
-                    }
+                    if (!changed) break;
+                    const auto now = list.find(exe);
+                    log::info("Trigger apps: {} now {}", log::toUtf8(exe),
+                              now ? triggerRulesText(*now) : std::string{"not listed"});
+                    std::scoped_lock lk{settingsMutex};
+                    settings.triggerApps = list.userApps();
+                    store.save(settings);
                     break;
                 }
                 if (cmd >= TrayIcon::kCmdRemovePeer) {

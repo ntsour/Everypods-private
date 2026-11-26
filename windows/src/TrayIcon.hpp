@@ -33,14 +33,13 @@ public:
     static constexpr int kCmdUseAirPodsAudio   = 1015;  // default output + input (and Teams)
     // kCmdRemovePeer+i removes the peer at index i in the StatusInfo::peers list.
     static constexpr int kCmdRemovePeer      = 2000;
-    // Trigger apps ("Apps that take the AirPods" submenu). The index is into
-    // StatusInfo::audioApps (add) or the user entries of StatusInfo::triggerApps
-    // (remove), in the order the menu was built from.
-    static constexpr int kMaxMenuApps         = 20;
-    static constexpr int kCmdAddCallApp       = 3000;
-    static constexpr int kCmdAddMediaApp      = 3100;
-    static constexpr int kCmdRemoveTriggerApp = 3200;
-    static constexpr int kCmdAddProtectApp    = 3300;
+    // "Apps that take or keep the AirPods" submenu. App i of StatusInfo::apps
+    // (in the order the menu was built from): kCmdAppRule + i*3 + rule toggles
+    // one setting (0 take on mic, 1 take on play, 2 keep on mic);
+    // kCmdRemoveTriggerApp + i removes a user app.
+    static constexpr int kMaxMenuApps         = 40;
+    static constexpr int kCmdAppRule          = 3000;  // .. 3000 + kMaxMenuApps*3
+    static constexpr int kCmdRemoveTriggerApp = 3200;  // .. 3200 + kMaxMenuApps
 
     // Per-peer info shown in the menu.
     struct PeerStatus {
@@ -49,17 +48,16 @@ public:
         bool          connected{false};
     };
 
-    // An app that takes or keeps the AirPods (built in or added by the user).
-    enum class TriggerAppKind { Call, Media, Protect };
+    // An app in the "take or keep" submenu: built in, added by the user
+    // (listed), or one that used sound since Propods started (not listed yet).
     struct TriggerAppStatus {
-        std::wstring   exe;
-        TriggerAppKind kind{TriggerAppKind::Media};
-        bool           builtIn{false};
-    };
-    // An app that used audio since Propods started and can be added.
-    struct AudioAppStatus {
         std::wstring exe;
-        bool         usedMic{false};
+        bool takeOnMic{false};
+        bool takeOnPlay{false};
+        bool keepOnMic{false};
+        bool builtIn{false};
+        bool listed{false};
+        bool usedMic{false};
     };
 
     // Snapshot of app status, fetched just before the menu opens.
@@ -73,8 +71,8 @@ public:
         bool                    lidOpenConnect{true};
         bool                    hasMutedApps{false};
         std::vector<PeerStatus> peers;
-        std::vector<TriggerAppStatus> triggerApps;  // built-ins first
-        std::vector<AudioAppStatus>   audioApps;    // at most kMaxMenuApps, not yet listed
+        // Built-ins, then the user's apps, then apps not listed yet (at most kMaxMenuApps).
+        std::vector<TriggerAppStatus> apps;
     };
 
     using StatusProvider  = std::function<StatusInfo()>;

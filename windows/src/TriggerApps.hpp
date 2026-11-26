@@ -1,15 +1,16 @@
 #pragma once
 
-// Apps whose audio moves the AirPods to this PC. Teams and VLC are built in;
-// the user adds more from the tray menu (saved in config.txt). There is no
-// reliable catch-all for "a call started": any app may open the mic (voice
-// typing, recorders, a browser tab) or play a sound, so only listed apps count.
+// Apps whose audio moves the AirPods to this PC, or keeps them here. Teams,
+// VLC and the common meeting apps are built in; the user adds more from the
+// tray menu (saved in config.txt). There is no reliable catch-all for "a call
+// started": any app may open the mic (voice typing, recorders, a browser tab)
+// or play a sound, so only listed apps count.
 //
-//   Call  - takes the AirPods when the app opens the microphone, and holds them
-//           while it stays open (phones are told not to take them for a call).
-//   Media - takes the AirPods when the app starts playing sound.
-//   Protect - never takes them, but while the app has the microphone open the
-//           AirPods stay here like in a call (a meeting in a browser).
+// Each app has three independent settings, in any combination:
+//   takeOnMic  - take the AirPods when the app opens the microphone
+//   takeOnPlay - take the AirPods when the app starts playing sound
+//   keepOnMic  - keep the AirPods while the app has the microphone open: it is
+//                a call, so phones and other computers are told not to take them
 //
 // Pure logic, no Windows headers: unit-tested in tools/peer_v2_tests.cpp.
 
@@ -23,12 +24,32 @@
 
 namespace Propods {
 
-enum class TriggerKind { Call, Media, Protect };
+enum class TriggerRule { TakeOnMic, TakeOnPlay, KeepOnMic };
 
 struct TriggerApp {
-    std::wstring exe;   // normalized: lower-case file name ending in ".exe"
-    TriggerKind  kind{TriggerKind::Media};
-    bool         builtIn{false};
+    std::wstring exe;          // normalized: lower-case file name ending in ".exe"
+    bool takeOnMic{false};
+    bool takeOnPlay{false};
+    bool keepOnMic{false};
+    bool builtIn{false};
+    bool anySessionIsCall{false};  // built-in Teams: any of its sessions starting is a call
+
+    bool any() const { return takeOnMic || takeOnPlay || keepOnMic; }
+    bool get(TriggerRule r) const {
+        switch (r) {
+            case TriggerRule::TakeOnMic:  return takeOnMic;
+            case TriggerRule::TakeOnPlay: return takeOnPlay;
+            case TriggerRule::KeepOnMic:  return keepOnMic;
+        }
+        return false;
+    }
+    void set(TriggerRule r, bool on) {
+        switch (r) {
+            case TriggerRule::TakeOnMic:  takeOnMic = on; break;
+            case TriggerRule::TakeOnPlay: takeOnPlay = on; break;
+            case TriggerRule::KeepOnMic:  keepOnMic = on; break;
+        }
+    }
 };
 
 // "C:\\Apps\\Dots.EXE", " dots " -> "dots.exe". Empty if it can't be a file name.
@@ -51,60 +72,65 @@ inline std::wstring normalizeExeName(std::wstring_view raw) {
 }
 
 inline const std::vector<TriggerApp>& builtInTriggerApps() {
-    // Teams: any of its audio sessions starting counts (ringtone, meeting join),
-    // as before user apps existed. VLC creates new sessions on seek/track
-    // change; the watcher's per-process dedupe stops repeated triggers.
+    // Teams: any of its audio sessions starting counts as a call (ringtone,
+    // meeting join), as before user apps existed. VLC creates new sessions on
+    // seek/track change; the watcher's per-process dedupe stops repeated
+    // triggers. Meeting apps only keep: Windows already refused peer requests
+    // while they held the AirPods.
+    //                  exe              mic    play   keep   builtIn anySessionIsCall
     static const std::vector<TriggerApp> k = {
-        {L"ms-teams.exe", TriggerKind::Call,  true},
-        {L"teams.exe",    TriggerKind::Call,  true},
-        {L"vlc.exe",      TriggerKind::Media, true},
-        // Meeting apps: their open mic is a call, protected but never a trigger
-        // (Windows already refused peer requests while they held the AirPods).
-        {L"zoom.exe",     TriggerKind::Protect, true},
-        {L"webex.exe",    TriggerKind::Protect, true},
-        {L"slack.exe",    TriggerKind::Protect, true},
-        {L"discord.exe",  TriggerKind::Protect, true},
+        {L"ms-teams.exe", true,  true,  true,  true, true},
+        {L"teams.exe",    true,  true,  true,  true, true},
+        {L"vlc.exe",      false, true,  false, true, false},
+        {L"zoom.exe",     false, false, true,  true, false},
+        {L"webex.exe",    false, false, true,  true, false},
+        {L"slack.exe",    false, false, true,  true, false},
+        {L"discord.exe",  false, false, true,  true, false},
     };
     return k;
 }
 
-// Does an audio session of this app becoming active raise a takeover?
-// User call apps: only the mic (capture). User media apps: only playback.
-// Built-in Teams and VLC keep their original rule: any session. Protect apps
-// never trigger.
-constexpr bool triggersOn(const TriggerApp& app, bool capture) {
-    if (app.kind == TriggerKind::Protect) return false;
-    if (app.builtIn) return true;
-    return app.kind == TriggerKind::Call ? capture : !capture;
+// What an audio session of this app becoming active raises.
+enum class TriggerEvent { None, Call, Media };
+constexpr TriggerEvent triggerFor(const TriggerApp& app, bool capture) {
+    if (app.anySessionIsCall) return TriggerEvent::Call;
+    if (capture) return app.takeOnMic ? TriggerEvent::Call : TriggerEvent::None;
+    return app.takeOnPlay ? TriggerEvent::Media : TriggerEvent::None;
 }
 
-// An open mic of a call or protect app is a call in progress (protects the AirPods).
+// An open mic of a keep app is a call in progress (protects the AirPods).
 constexpr bool isCallMic(const TriggerApp& app, bool capture) {
-    return capture && (app.kind == TriggerKind::Call || app.kind == TriggerKind::Protect);
+    return capture && app.keepOnMic;
 }
 
 // For the log.
-constexpr const char* triggerKindText(TriggerKind kind) {
-    switch (kind) {
-        case TriggerKind::Call:    return "takes the AirPods when it opens the mic";
-        case TriggerKind::Protect: return "keeps the AirPods while it uses the mic";
-        case TriggerKind::Media:   break;
-    }
-    return "takes the AirPods when it starts playing";
+inline std::string triggerRulesText(const TriggerApp& app) {
+    std::string s;
+    auto add = [&s](const char* t) { if (!s.empty()) s += ", "; s += t; };
+    if (app.takeOnMic)  add("takes the AirPods when it opens the mic");
+    if (app.takeOnPlay) add("takes the AirPods when it starts playing");
+    if (app.keepOnMic)  add("keeps the AirPods while it uses the mic");
+    return s.empty() ? "nothing" : s;
 }
 
 // Thread-safe: read on WASAPI callback threads, changed from the tray.
 class TriggerAppList {
 public:
-    // Normalizes, drops invalid names, built-ins and duplicates (first wins).
+    // Normalizes, drops invalid names, built-ins and apps with no setting;
+    // entries for the same app are merged.
     void setUserApps(const std::vector<TriggerApp>& apps) {
         std::vector<TriggerApp> clean;
         for (const auto& a : apps) {
-            TriggerApp t{normalizeExeName(a.exe), a.kind, false};
-            if (t.exe.empty() || isBuiltIn(t.exe)) continue;
-            if (std::any_of(clean.begin(), clean.end(), [&](const TriggerApp& c) { return c.exe == t.exe; }))
-                continue;
-            clean.push_back(std::move(t));
+            const std::wstring n = normalizeExeName(a.exe);
+            if (n.empty() || isBuiltIn(n) || !a.any()) continue;
+            auto it = std::find_if(clean.begin(), clean.end(), [&](const TriggerApp& c) { return c.exe == n; });
+            if (it == clean.end()) {
+                clean.push_back({n, a.takeOnMic, a.takeOnPlay, a.keepOnMic, false, false});
+            } else {
+                it->takeOnMic = it->takeOnMic || a.takeOnMic;
+                it->takeOnPlay = it->takeOnPlay || a.takeOnPlay;
+                it->keepOnMic = it->keepOnMic || a.keepOnMic;
+            }
         }
         std::scoped_lock lk{m_mutex};
         m_user = std::move(clean);
@@ -134,19 +160,25 @@ public:
         return std::nullopt;
     }
 
-    // Adds the app, or changes its kind if already listed. False for an
-    // invalid name, a built-in, or no change.
-    bool add(std::wstring_view exe, TriggerKind kind) {
+    // Turns one setting on or off. Adds an unlisted app; an app with no
+    // setting left is removed. False for an invalid name, a built-in, or no
+    // change.
+    bool setRule(std::wstring_view exe, TriggerRule rule, bool on) {
         const std::wstring n = normalizeExeName(exe);
         if (n.empty() || isBuiltIn(n)) return false;
         std::scoped_lock lk{m_mutex};
-        for (auto& a : m_user) {
-            if (a.exe != n) continue;
-            if (a.kind == kind) return false;
-            a.kind = kind;
+        auto it = std::find_if(m_user.begin(), m_user.end(), [&](const TriggerApp& a) { return a.exe == n; });
+        if (it == m_user.end()) {
+            if (!on) return false;
+            TriggerApp a;
+            a.exe = n;
+            a.set(rule, true);
+            m_user.push_back(std::move(a));
             return true;
         }
-        m_user.push_back({n, kind, false});
+        if (it->get(rule) == on) return false;
+        it->set(rule, on);
+        if (!it->any()) m_user.erase(it);
         return true;
     }
 
