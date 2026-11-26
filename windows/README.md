@@ -105,13 +105,20 @@ combination:
   is a call. Phones and the Mac are told so and don't take the AirPods (for
   music or their own call), and Windows refuses their requests.
 
+Below them, **Never take the AirPods** refuses an app outright: none of its sound
+or mic moves the AirPods (not even a start in the Windows media controls), and its
+open mic is not a call; it still counts as playing for pausing. It is exclusive:
+choosing it clears the three settings, ticking any of them clears it, and choosing
+it again removes the app.
+
 A call app such as a voice assistant gets the first and third; a browser used for
 Meet or Zoom web gets only the third (its videos already take the AirPods through
-the media controls). Ticking a setting adds an app; unticking all three removes it.
+the media controls). Ticking a setting adds an app; unticking all three removes it (back to the
+defaults, where a media-controls start still takes the AirPods).
 Built-in apps show their settings greyed.
 
 The list is saved in `%APPDATA%\Propods\config.txt` as `takeonmic=name.exe`,
-`takeonplay=name.exe` and `keeponmic=name.exe` lines (one per setting), which can
+`takeonplay=name.exe`, `keeponmic=name.exe` and `nevertake=name.exe` lines (one per setting), which can
 also be edited by hand while Propods is closed. Lines from the first test builds
 (`callapp=` = mic + keep, `protectapp=` = keep, `mediaapp=` = play) are still read.
 

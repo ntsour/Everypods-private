@@ -34,11 +34,12 @@ public:
     // kCmdRemovePeer+i removes the peer at index i in the StatusInfo::peers list.
     static constexpr int kCmdRemovePeer      = 2000;
     // "Apps that take or keep the AirPods" submenu. App i of StatusInfo::apps
-    // (in the order the menu was built from): kCmdAppRule + i*3 + rule toggles
-    // one setting (0 take on mic, 1 take on play, 2 keep on mic);
+    // (in the order the menu was built from): kCmdAppRule + i*4 + rule toggles
+    // one setting (0 take on mic, 1 take on play, 2 keep on mic, 3 never take);
     // kCmdRemoveTriggerApp + i removes a user app.
     static constexpr int kMaxMenuApps         = 40;
-    static constexpr int kCmdAppRule          = 3000;  // .. 3000 + kMaxMenuApps*3
+    static constexpr int kAppRules            = 4;
+    static constexpr int kCmdAppRule          = 3000;  // .. 3000 + kMaxMenuApps*kAppRules
     static constexpr int kCmdRemoveTriggerApp = 3200;  // .. 3200 + kMaxMenuApps
 
     // Per-peer info shown in the menu.
@@ -55,6 +56,7 @@ public:
         bool takeOnMic{false};
         bool takeOnPlay{false};
         bool keepOnMic{false};
+        bool neverTake{false};
         bool builtIn{false};
         bool listed{false};
         bool usedMic{false};

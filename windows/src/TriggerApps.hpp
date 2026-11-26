@@ -11,6 +11,11 @@
 //   takeOnPlay - take the AirPods when the app starts playing sound
 //   keepOnMic  - keep the AirPods while the app has the microphone open: it is
 //                a call, so phones and other computers are told not to take them
+// or, exclusive of those three:
+//   neverTake  - none of the app's audio or mic takes the AirPods (not even a
+//                media-controls start) and its open mic is not a call. An app
+//                with none of the four set is not listed and follows the
+//                defaults (a media-controls start takes the AirPods).
 //
 // Pure logic, no Windows headers: unit-tested in tools/peer_v2_tests.cpp.
 
@@ -24,22 +29,24 @@
 
 namespace Propods {
 
-enum class TriggerRule { TakeOnMic, TakeOnPlay, KeepOnMic };
+enum class TriggerRule { TakeOnMic, TakeOnPlay, KeepOnMic, NeverTake };
 
 struct TriggerApp {
     std::wstring exe;          // normalized: lower-case file name ending in ".exe"
     bool takeOnMic{false};
     bool takeOnPlay{false};
     bool keepOnMic{false};
+    bool neverTake{false};     // exclusive of the three above
     bool builtIn{false};
     bool anySessionIsCall{false};  // built-in Teams: any of its sessions starting is a call
 
-    bool any() const { return takeOnMic || takeOnPlay || keepOnMic; }
+    bool any() const { return takeOnMic || takeOnPlay || keepOnMic || neverTake; }
     bool get(TriggerRule r) const {
         switch (r) {
             case TriggerRule::TakeOnMic:  return takeOnMic;
             case TriggerRule::TakeOnPlay: return takeOnPlay;
             case TriggerRule::KeepOnMic:  return keepOnMic;
+            case TriggerRule::NeverTake:  return neverTake;
         }
         return false;
     }
@@ -48,6 +55,7 @@ struct TriggerApp {
             case TriggerRule::TakeOnMic:  takeOnMic = on; break;
             case TriggerRule::TakeOnPlay: takeOnPlay = on; break;
             case TriggerRule::KeepOnMic:  keepOnMic = on; break;
+            case TriggerRule::NeverTake:  neverTake = on; break;
         }
     }
 };
@@ -77,15 +85,15 @@ inline const std::vector<TriggerApp>& builtInTriggerApps() {
     // seek/track change; the watcher's per-process dedupe stops repeated
     // triggers. Meeting apps only keep: Windows already refused peer requests
     // while they held the AirPods.
-    //                  exe              mic    play   keep   builtIn anySessionIsCall
+    //                  exe              mic    play   keep   never  builtIn anySessionIsCall
     static const std::vector<TriggerApp> k = {
-        {L"ms-teams.exe", true,  true,  true,  true, true},
-        {L"teams.exe",    true,  true,  true,  true, true},
-        {L"vlc.exe",      false, true,  false, true, false},
-        {L"zoom.exe",     false, false, true,  true, false},
-        {L"webex.exe",    false, false, true,  true, false},
-        {L"slack.exe",    false, false, true,  true, false},
-        {L"discord.exe",  false, false, true,  true, false},
+        {L"ms-teams.exe", true,  true,  true,  false, true, true},
+        {L"teams.exe",    true,  true,  true,  false, true, true},
+        {L"vlc.exe",      false, true,  false, false, true, false},
+        {L"zoom.exe",     false, false, true,  false, true, false},
+        {L"webex.exe",    false, false, true,  false, true, false},
+        {L"slack.exe",    false, false, true,  false, true, false},
+        {L"discord.exe",  false, false, true,  false, true, false},
     };
     return k;
 }
@@ -93,6 +101,7 @@ inline const std::vector<TriggerApp>& builtInTriggerApps() {
 // What an audio session of this app becoming active raises.
 enum class TriggerEvent { None, Call, Media };
 constexpr TriggerEvent triggerFor(const TriggerApp& app, bool capture) {
+    if (app.neverTake) return TriggerEvent::None;
     if (app.anySessionIsCall) return TriggerEvent::Call;
     if (capture) return app.takeOnMic ? TriggerEvent::Call : TriggerEvent::None;
     return app.takeOnPlay ? TriggerEvent::Media : TriggerEvent::None;
@@ -100,7 +109,23 @@ constexpr TriggerEvent triggerFor(const TriggerApp& app, bool capture) {
 
 // An open mic of a keep app is a call in progress (protects the AirPods).
 constexpr bool isCallMic(const TriggerApp& app, bool capture) {
-    return capture && app.keepOnMic;
+    return capture && app.keepOnMic && !app.neverTake;
+}
+
+// Does the media-controls (GSMTC) session `appId` (SourceAppUserModelId)
+// belong to the process image `exe`? Heuristic: unpackaged apps use their exe
+// name ("Spotify.exe", "Chrome", "MSEdge"); Firefox uses a 16-hex-digit
+// install hash; the new Media Player is packaged.
+inline bool gsmtcAppMatchesExe(std::wstring_view appId, std::wstring_view exe) {
+    std::wstring a, b;
+    for (wchar_t c : appId) a.push_back(static_cast<wchar_t>(std::towlower(c)));
+    for (wchar_t c : exe) b.push_back(static_cast<wchar_t>(std::towlower(c)));
+    if (b.size() > 4 && b.compare(b.size() - 4, 4, L".exe") == 0) b.resize(b.size() - 4);
+    if (b.size() >= 3 && a.find(b) != std::wstring::npos) return true;
+    const bool hex16 = a.size() == 16 && std::all_of(a.begin(), a.end(), [](wchar_t c) { return std::iswxdigit(c) != 0; });
+    if (b == L"firefox" && hex16) return true;
+    if (b == L"microsoft.media.player" && a.find(L"zunemusic") != std::wstring::npos) return true;
+    return false;
 }
 
 // For the log.
@@ -110,6 +135,7 @@ inline std::string triggerRulesText(const TriggerApp& app) {
     if (app.takeOnMic)  add("takes the AirPods when it opens the mic");
     if (app.takeOnPlay) add("takes the AirPods when it starts playing");
     if (app.keepOnMic)  add("keeps the AirPods while it uses the mic");
+    if (app.neverTake)  add("never takes the AirPods");
     return s.empty() ? "nothing" : s;
 }
 
@@ -125,13 +151,17 @@ public:
             if (n.empty() || isBuiltIn(n) || !a.any()) continue;
             auto it = std::find_if(clean.begin(), clean.end(), [&](const TriggerApp& c) { return c.exe == n; });
             if (it == clean.end()) {
-                clean.push_back({n, a.takeOnMic, a.takeOnPlay, a.keepOnMic, false, false});
+                clean.push_back({n, a.takeOnMic, a.takeOnPlay, a.keepOnMic, a.neverTake, false, false});
             } else {
                 it->takeOnMic = it->takeOnMic || a.takeOnMic;
                 it->takeOnPlay = it->takeOnPlay || a.takeOnPlay;
                 it->keepOnMic = it->keepOnMic || a.keepOnMic;
+                it->neverTake = it->neverTake || a.neverTake;
             }
         }
+        // Never is exclusive: a setting to take or keep wins over it.
+        for (auto& c : clean)
+            if (c.takeOnMic || c.takeOnPlay || c.keepOnMic) c.neverTake = false;
         std::scoped_lock lk{m_mutex};
         m_user = std::move(clean);
     }
@@ -161,8 +191,9 @@ public:
     }
 
     // Turns one setting on or off. Adds an unlisted app; an app with no
-    // setting left is removed. False for an invalid name, a built-in, or no
-    // change.
+    // setting left is removed (back to the defaults). Never is exclusive:
+    // turning it on clears the other three, turning any of them on clears it.
+    // False for an invalid name, a built-in, or no change.
     bool setRule(std::wstring_view exe, TriggerRule rule, bool on) {
         const std::wstring n = normalizeExeName(exe);
         if (n.empty() || isBuiltIn(n)) return false;
@@ -177,9 +208,24 @@ public:
             return true;
         }
         if (it->get(rule) == on) return false;
+        if (on && rule == TriggerRule::NeverTake) {
+            it->takeOnMic = it->takeOnPlay = it->keepOnMic = false;
+        } else if (on) {
+            it->neverTake = false;
+        }
         it->set(rule, on);
         if (!it->any()) m_user.erase(it);
         return true;
+    }
+
+    // The media-controls session `gsmtcAppId` belongs to an app set to never
+    // take the AirPods.
+    bool neverTakesMedia(std::wstring_view gsmtcAppId) const {
+        if (gsmtcAppId.empty()) return false;
+        std::scoped_lock lk{m_mutex};
+        return std::any_of(m_user.begin(), m_user.end(), [&](const TriggerApp& a) {
+            return a.neverTake && gsmtcAppMatchesExe(gsmtcAppId, a.exe);
+        });
     }
 
     bool remove(std::wstring_view exe) {

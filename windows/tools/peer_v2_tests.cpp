@@ -331,6 +331,35 @@ static void triggerAppTests() {
     CHECK(list.userApps().size() == 1);
     CHECK(list.userApps()[0].exe == L"dots.exe" && list.userApps()[0].takeOnMic && list.userApps()[0].keepOnMic);
     CHECK(!list.find(L"vlc.exe")->takeOnMic);  // config can't override a built-in
+
+    // Never take: exclusive of the other three.
+    TriggerAppList nlist;
+    CHECK(nlist.setRule(L"slack2", TriggerRule::TakeOnPlay, true));
+    CHECK(nlist.setRule(L"slack2", TriggerRule::KeepOnMic, true));
+    CHECK(nlist.setRule(L"slack2", TriggerRule::NeverTake, true));   // clears the three
+    auto never = *nlist.find(L"slack2.exe");
+    CHECK(never.neverTake && !never.takeOnMic && !never.takeOnPlay && !never.keepOnMic);
+    CHECK(triggerFor(never, true) == TriggerEvent::None && triggerFor(never, false) == TriggerEvent::None);
+    CHECK(!isCallMic(never, true));
+    CHECK(nlist.setRule(L"slack2", TriggerRule::KeepOnMic, true));   // clears never
+    CHECK(!nlist.find(L"slack2.exe")->neverTake && nlist.find(L"slack2.exe")->keepOnMic);
+    CHECK(nlist.setRule(L"slack2", TriggerRule::NeverTake, true));
+    CHECK(nlist.setRule(L"slack2", TriggerRule::NeverTake, false));  // chosen again: back to defaults
+    CHECK(!nlist.find(L"slack2.exe"));
+    CHECK(!nlist.setRule(L"zoom.exe", TriggerRule::NeverTake, true)); // built-ins can't be set to never
+    // Media-controls starts of a never app are skipped (session id -> exe).
+    CHECK(nlist.setRule(L"spotify", TriggerRule::NeverTake, true));
+    CHECK(nlist.neverTakesMedia(L"Spotify.exe"));
+    CHECK(!nlist.neverTakesMedia(L"Chrome"));
+    CHECK(!nlist.neverTakesMedia(L""));
+    CHECK(Propods::gsmtcAppMatchesExe(L"Chrome", L"chrome.exe"));
+    CHECK(Propods::gsmtcAppMatchesExe(L"308046B0AF4A39CB", L"firefox.exe"));
+    CHECK(!Propods::gsmtcAppMatchesExe(L"MSEdge", L"chrome.exe"));
+    // Config: a never line next to a keep line for the same app: keep wins.
+    TriggerApp nv{L"app.exe"}; nv.neverTake = true;
+    TriggerApp kp{L"app.exe"}; kp.keepOnMic = true;
+    nlist.setUserApps({nv, kp});
+    CHECK(nlist.find(L"app.exe")->keepOnMic && !nlist.find(L"app.exe")->neverTake);
 }
 
 int main() {

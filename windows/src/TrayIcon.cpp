@@ -266,10 +266,11 @@ void TrayIcon::showContextMenu(HWND hwnd) {
     HMENU appsMenu = CreatePopupMenu();
     {
         const UINT info = MF_BYPOSITION | MF_STRING | MF_DISABLED | MF_GRAYED;
-        static const wchar_t* kRuleLabels[3] = {
+        static const wchar_t* kRuleLabels[kAppRules] = {
             L"Take the AirPods when it opens the mic",
             L"Take the AirPods when it starts playing",
             L"Keep the AirPods while it uses the mic",
+            L"Never take the AirPods",
         };
         bool shownUnlistedHeader = false;
         bool anyUnlisted = false;
@@ -283,13 +284,15 @@ void TrayIcon::showContextMenu(HWND hwnd) {
             }
             if (!app.listed && !app.builtIn) anyUnlisted = true;
             HMENU sub = CreatePopupMenu();
-            const bool rules[3] = {app.takeOnMic, app.takeOnPlay, app.keepOnMic};
-            for (int r = 0; r < 3; ++r) {
+            // Never is exclusive of the other three (kept apart by a separator).
+            const bool rules[kAppRules] = {app.takeOnMic, app.takeOnPlay, app.keepOnMic, app.neverTake};
+            for (int r = 0; r < kAppRules; ++r) {
+                if (r == 3) InsertMenuW(sub, static_cast<UINT>(-1), MF_BYPOSITION | MF_SEPARATOR, 0u, nullptr);
                 UINT flags = MF_BYPOSITION | MF_STRING;
                 if (rules[r]) flags |= MF_CHECKED;
                 if (app.builtIn) flags |= MF_DISABLED | MF_GRAYED;
                 InsertMenuW(sub, static_cast<UINT>(-1), flags,
-                    static_cast<UINT_PTR>(kCmdAppRule + i * 3 + r), kRuleLabels[r]);
+                    static_cast<UINT_PTR>(kCmdAppRule + i * kAppRules + r), kRuleLabels[r]);
             }
             if (app.listed && !app.builtIn) {
                 InsertMenuW(sub, static_cast<UINT>(-1), MF_BYPOSITION | MF_SEPARATOR, 0u, nullptr);

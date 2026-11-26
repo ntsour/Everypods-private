@@ -294,7 +294,9 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     media.setOnSessionPlayback([&hold](const std::wstring& appId, bool playing) {
         hold.onSessionPlaybackChanged(appId, playing);
     });
-    teamsWatcher.setOnRenderSessionActive([&hold](const AudioSessionRef& session) {
+    teamsWatcher.setOnRenderSessionActive([&hold, &teamsWatcher](const AudioSessionRef& session) {
+        // No pre-mute for an app that never takes the AirPods: no takeover follows.
+        if (const auto app = teamsWatcher.triggerApps().find(session.exe); app && app->neverTake) return;
         hold.onRenderSessionActive(session);
     });
 
@@ -365,14 +367,14 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
         menuApps.clear();
         for (const auto& app : teamsWatcher.triggerApps().all()) {
             if ((int)info.apps.size() >= TrayIcon::kMaxMenuApps) break;
-            info.apps.push_back({app.exe, app.takeOnMic, app.takeOnPlay, app.keepOnMic,
+            info.apps.push_back({app.exe, app.takeOnMic, app.takeOnPlay, app.keepOnMic, app.neverTake,
                                  app.builtIn, /*listed=*/true, /*usedMic=*/false});
             menuApps.push_back(app.exe);
         }
         for (const auto& seen : teamsWatcher.seenAudioApps()) {
             if ((int)info.apps.size() >= TrayIcon::kMaxMenuApps) break;
             if (teamsWatcher.triggerApps().find(seen.exe)) continue;  // already listed
-            info.apps.push_back({seen.exe, false, false, false, false, /*listed=*/false, seen.usedMic});
+            info.apps.push_back({seen.exe, false, false, false, false, false, /*listed=*/false, seen.usedMic});
             menuApps.push_back(seen.exe);
         }
         return info;
@@ -446,9 +448,19 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
         controller.onPeerConnectionChanged(connected);
     });
 
-    media.setCallback([&controller, &mediaPlaying, &takeOnMediaStart, &peerV2, restoreAsync](bool playing) {
+    media.setCallback([&controller, &mediaPlaying, &takeOnMediaStart, &peerV2, &media, &teamsWatcher, restoreAsync](bool playing) {
         mediaPlaying.store(playing);
         if (playing) restoreAsync("media started on this PC");
+        // An app set to "Never take the AirPods" still counts as playing, but
+        // its start raises no takeover.
+        if (playing) {
+            const std::wstring appId = media.lastStartedAppId();
+            if (teamsWatcher.triggerApps().neverTakesMedia(appId)) {
+                log::handover("SKIP    media start by '{}': set to never take the AirPods", log::toUtf8(appId));
+                peerV2.refreshLocalState();
+                return;
+            }
+        }
         // "Take AirPods when this PC starts playing media" off: never raise a
         // media-start takeover (stop notifications still pass through).
         if (!playing || takeOnMediaStart.load()) controller.onMediaPlayingChanged(playing);
@@ -678,7 +690,8 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
             default:
                 if (cmd >= TrayIcon::kCmdAppRule && cmd < TrayIcon::kCmdRemoveTriggerApp + TrayIcon::kMaxMenuApps) {
                     const bool remove = cmd >= TrayIcon::kCmdRemoveTriggerApp;
-                    const int idx = remove ? cmd - TrayIcon::kCmdRemoveTriggerApp : (cmd - TrayIcon::kCmdAppRule) / 3;
+                    const int idx = remove ? cmd - TrayIcon::kCmdRemoveTriggerApp
+                                           : (cmd - TrayIcon::kCmdAppRule) / TrayIcon::kAppRules;
                     if (idx >= (int)menuApps.size()) break;
                     const std::wstring exe = menuApps[idx];
                     auto& list = teamsWatcher.triggerApps();
@@ -686,7 +699,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
                     if (remove) {
                         changed = list.remove(exe);
                     } else {
-                        const auto rule = static_cast<TriggerRule>((cmd - TrayIcon::kCmdAppRule) % 3);
+                        const auto rule = static_cast<TriggerRule>((cmd - TrayIcon::kCmdAppRule) % TrayIcon::kAppRules);
                         const auto current = list.find(exe);
                         changed = list.setRule(exe, rule, !(current && current->get(rule)));
                     }

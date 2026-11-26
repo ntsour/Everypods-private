@@ -128,7 +128,7 @@ Settings SettingsStore::load() const {
         } else if (key == "lidlease") {
             s.lidLease = (val != "0");
             log::debug("  lidlease = {}", s.lidLease);
-        } else if (key == "takeonmic" || key == "takeonplay" || key == "keeponmic" ||
+        } else if (key == "takeonmic" || key == "takeonplay" || key == "keeponmic" || key == "nevertake" ||
                    key == "callapp" || key == "mediaapp" || key == "protectapp") {
             // One line per setting; lines for the same app are merged by
             // TriggerAppList. callapp/protectapp/mediaapp come from the first
@@ -143,6 +143,7 @@ Settings SettingsStore::load() const {
                 app.takeOnMic = key == "takeonmic" || key == "callapp";
                 app.takeOnPlay = key == "takeonplay" || key == "mediaapp";
                 app.keepOnMic = key == "keeponmic" || key == "callapp" || key == "protectapp";
+                app.neverTake = key == "nevertake";
                 s.triggerApps.push_back(std::move(app));
                 log::debug("  {} = {}", key, toUtf8(exe));
             }
@@ -174,6 +175,7 @@ void SettingsStore::save(const Settings& s) const {
         if (app.takeOnMic)  f << "takeonmic=" << toUtf8(app.exe) << '\n';
         if (app.takeOnPlay) f << "takeonplay=" << toUtf8(app.exe) << '\n';
         if (app.keepOnMic)  f << "keeponmic=" << toUtf8(app.exe) << '\n';
+        if (app.neverTake)  f << "nevertake=" << toUtf8(app.exe) << '\n';
     }
 }
 

@@ -2,6 +2,7 @@
 
 #include "Logger.hpp"
 #include "MediaPlaybackWatcher.hpp"
+#include "TriggerApps.hpp"
 
 #include <windows.h>
 
@@ -59,22 +60,10 @@ bool isCommsExe(const std::wstring& base) {
     return false;
 }
 
-bool isHex16(const std::wstring& s) {
-    if (s.size() != 16) return false;
-    return std::all_of(s.begin(), s.end(), [](wchar_t c) { return std::iswxdigit(c) != 0; });
-}
-
-// Does the GSMTC session `appId` (SourceAppUserModelId) belong to the process
-// image `exe`? Heuristic: unpackaged apps use their exe name ("Spotify.exe",
-// "Chrome", "MSEdge"); Firefox uses a 16-hex-digit install hash; the new
-// Media Player is packaged.
+// Does the GSMTC session `appId` belong to the process image `exe`? (Shared
+// with the trigger-app list.)
 bool appMatchesExe(const std::wstring& appId, const std::wstring& exe) {
-    const std::wstring a = lower(appId);
-    const std::wstring b = exeBase(exe);
-    if (b.size() >= 3 && a.find(b) != std::wstring::npos) return true;
-    if (b == L"firefox" && isHex16(a)) return true;
-    if (b == L"microsoft.media.player" && a.find(L"zunemusic") != std::wstring::npos) return true;
-    return false;
+    return gsmtcAppMatchesExe(appId, exe);
 }
 
 // Apps worth a pre-mute: media players and browsers. Anything else (games,
