@@ -201,6 +201,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     teamsWatcher.triggerApps().setUserApps(settings.triggerApps);
     for (const auto& app : teamsWatcher.triggerApps().userApps())
         log::info("Trigger app: {} ({})", log::toUtf8(app.exe), triggerRulesText(app));
+    teamsWatcher.seedSeenApps(settings.seenApps);
     BleProximityWatcher bleWatcher;
     TrayIcon tray;
 
@@ -348,6 +349,21 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
             restoreAsync("AirPods back on this PC");
     });
 
+    std::mutex settingsMutex;
+    // Remember the apps that used sound or the mic (the 40 most recent), so the
+    // tray lists them after a restart. Saved when the menu opens and on quit.
+    auto persistSeenApps = [&]() {
+        std::vector<std::wstring> recent;
+        for (const auto& seen : teamsWatcher.seenAudioApps()) {
+            if (recent.size() >= 40) break;
+            recent.push_back(seen.exe);
+        }
+        std::scoped_lock lk{settingsMutex};
+        if (recent == settings.seenApps) return;
+        settings.seenApps = std::move(recent);
+        store.save(settings);
+    };
+
     // Provide live status to the tray menu (queried each time the menu opens).
     // Apps as the "take or keep" menu last showed them: its commands carry an
     // index into this list. Both run on the tray thread.
@@ -364,26 +380,26 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
         info.hasMutedApps = silencer.hasMuted();
         for (auto& p : peers.peerInfos())
             info.peers.push_back({p.address, p.name, p.connected});
-        menuApps.clear();
-        for (const auto& app : teamsWatcher.triggerApps().all()) {
-            if ((int)info.apps.size() >= TrayIcon::kMaxMenuApps) break;
-            info.apps.push_back({app.exe, app.takeOnMic, app.takeOnPlay, app.keepOnMic, app.neverTake,
-                                 app.builtIn, /*listed=*/true, /*usedMic=*/false});
-            menuApps.push_back(app.exe);
-        }
+        persistSeenApps();
+        // One list: built-ins, the user's apps and every remembered app, by name.
+        std::vector<TrayIcon::TriggerAppStatus> apps;
+        for (const auto& app : teamsWatcher.triggerApps().all())
+            apps.push_back({app.exe, app.takeOnMic, app.takeOnPlay, app.keepOnMic, app.neverTake, app.builtIn});
         for (const auto& seen : teamsWatcher.seenAudioApps()) {
-            if ((int)info.apps.size() >= TrayIcon::kMaxMenuApps) break;
-            if (teamsWatcher.triggerApps().find(seen.exe)) continue;  // already listed
-            info.apps.push_back({seen.exe, false, false, false, false, false, /*listed=*/false, seen.usedMic});
-            menuApps.push_back(seen.exe);
+            if (std::any_of(apps.begin(), apps.end(), [&](const auto& a) { return a.exe == seen.exe; })) continue;
+            apps.push_back({seen.exe, false, false, false, false, false});
         }
+        std::sort(apps.begin(), apps.end(), [](const auto& a, const auto& b) { return a.exe < b.exe; });
+        if ((int)apps.size() > TrayIcon::kMaxMenuApps) apps.resize(TrayIcon::kMaxMenuApps);
+        menuApps.clear();
+        for (const auto& app : apps) menuApps.push_back(app.exe);
+        info.apps = std::move(apps);
         return info;
     });
 
     // Answer a peer's "add BT handover device" exchange. Without this the peer
     // keeps the PC pending and refuses its CrossDevice connection.
     // When a peer enables handover with this PC, start coordinating with it.
-    std::mutex settingsMutex;
     // Persist the lid-open lease ("this PC used the AirPods last") across restarts.
     controller.setOnLidLeaseChanged([&](bool held) {
         std::scoped_lock lk{settingsMutex};
@@ -688,25 +704,24 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
                 tray.toggleAutoStart();
                 break;
             default:
-                if (cmd >= TrayIcon::kCmdAppRule && cmd < TrayIcon::kCmdRemoveTriggerApp + TrayIcon::kMaxMenuApps) {
-                    const bool remove = cmd >= TrayIcon::kCmdRemoveTriggerApp;
-                    const int idx = remove ? cmd - TrayIcon::kCmdRemoveTriggerApp
-                                           : (cmd - TrayIcon::kCmdAppRule) / TrayIcon::kAppRules;
+                if (TrayIcon::isAppChoice(cmd)) {
+                    const int idx = (cmd - TrayIcon::kCmdAppRule) / TrayIcon::kAppChoices;
+                    const int choice = (cmd - TrayIcon::kCmdAppRule) % TrayIcon::kAppChoices;
                     if (idx >= (int)menuApps.size()) break;
                     const std::wstring exe = menuApps[idx];
                     auto& list = teamsWatcher.triggerApps();
                     bool changed = false;
-                    if (remove) {
-                        changed = list.remove(exe);
+                    if (choice == 0) {
+                        changed = list.remove(exe);  // Default: no settings, no config lines
                     } else {
-                        const auto rule = static_cast<TriggerRule>((cmd - TrayIcon::kCmdAppRule) % TrayIcon::kAppRules);
+                        const auto rule = static_cast<TriggerRule>(choice - 1);
                         const auto current = list.find(exe);
                         changed = list.setRule(exe, rule, !(current && current->get(rule)));
                     }
                     if (!changed) break;
                     const auto now = list.find(exe);
                     log::info("Trigger apps: {} now {}", log::toUtf8(exe),
-                              now ? triggerRulesText(*now) : std::string{"not listed"});
+                              now ? triggerRulesText(*now) : std::string{"default"});
                     std::scoped_lock lk{settingsMutex};
                     settings.triggerApps = list.userApps();
                     store.save(settings);
@@ -751,6 +766,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     teamsWatcher.start();
 
     tray.runMessageLoop();
+    persistSeenApps();
 
     // Undo any hold mute now (media a hold paused stays paused); the hold
     // object itself lives on until the controller and its threads are gone.

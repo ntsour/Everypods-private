@@ -78,14 +78,17 @@ public:
     // the next session state change uses the new list.
     TriggerAppList& triggerApps() { return m_apps; }
 
-    // An app with an audio session on a watched endpoint since start (not
-    // this process), most recently active first: what the tray offers to add.
+    // An app with an audio session on a watched endpoint (not this process),
+    // most recently active first: what the tray lists.
     struct SeenAudioApp {
         std::wstring exe;      // normalized (lower case, ".exe")
         bool usedMic{false};   // had a capture (microphone) session
         std::int64_t lastActiveMs{0};  // GetTickCount64 of its last Active, 0 if never
     };
     std::vector<SeenAudioApp> seenAudioApps() const;
+    // Apps seen in earlier runs (from config.txt), most recent first; they
+    // sort after anything seen in this run. Call before start().
+    void seedSeenApps(const std::vector<std::wstring>& exes);
 
     // Called by nested COM objects — not part of the user API.
     void onTeamsSessionActive(DWORD pid, const std::wstring& exe, EDataFlow flow, ERole role, bool comms);

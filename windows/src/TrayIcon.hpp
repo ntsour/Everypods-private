@@ -34,13 +34,13 @@ public:
     // kCmdRemovePeer+i removes the peer at index i in the StatusInfo::peers list.
     static constexpr int kCmdRemovePeer      = 2000;
     // "Apps that take or keep the AirPods" submenu. App i of StatusInfo::apps
-    // (in the order the menu was built from): kCmdAppRule + i*4 + rule toggles
-    // one setting (0 take on mic, 1 take on play, 2 keep on mic, 3 never take);
-    // kCmdRemoveTriggerApp + i removes a user app.
-    static constexpr int kMaxMenuApps         = 40;
-    static constexpr int kAppRules            = 4;
-    static constexpr int kCmdAppRule          = 3000;  // .. 3000 + kMaxMenuApps*kAppRules
-    static constexpr int kCmdRemoveTriggerApp = 3200;  // .. 3200 + kMaxMenuApps
+    // (in the order the menu was built from): kCmdAppRule + i*kAppChoices + c
+    // picks choice c (0 default, 1 take on mic, 2 take on play, 3 keep on mic,
+    // 4 never take).
+    static constexpr int kMaxMenuApps         = 64;
+    static constexpr int kAppChoices          = 5;
+    static constexpr int kCmdAppRule          = 4000;  // .. 4000 + kMaxMenuApps*kAppChoices
+    static bool isAppChoice(int cmd) { return cmd >= kCmdAppRule && cmd < kCmdAppRule + kMaxMenuApps * kAppChoices; }
 
     // Per-peer info shown in the menu.
     struct PeerStatus {
@@ -49,8 +49,8 @@ public:
         bool          connected{false};
     };
 
-    // An app in the "take or keep" submenu: built in, added by the user
-    // (listed), or one that used sound since Propods started (not listed yet).
+    // An app in the "take or keep" submenu: built in, set by the user, or
+    // one that used sound or the mic (remembered across restarts).
     struct TriggerAppStatus {
         std::wstring exe;
         bool takeOnMic{false};
@@ -58,8 +58,6 @@ public:
         bool keepOnMic{false};
         bool neverTake{false};
         bool builtIn{false};
-        bool listed{false};
-        bool usedMic{false};
     };
 
     // Snapshot of app status, fetched just before the menu opens.
@@ -73,7 +71,7 @@ public:
         bool                    lidOpenConnect{true};
         bool                    hasMutedApps{false};
         std::vector<PeerStatus> peers;
-        // Built-ins, then the user's apps, then apps not listed yet (at most kMaxMenuApps).
+        // Every app, sorted by name (at most kMaxMenuApps).
         std::vector<TriggerAppStatus> apps;
     };
 
@@ -110,6 +108,11 @@ private:
     static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
     LRESULT handleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
     void showContextMenu(HWND hwnd);
+    HMENU buildMenu(const StatusInfo& status);
+    static HMENU buildAppSubmenu(const TriggerAppStatus& app, int index);
+    // Setting toggles: the menu reopens after them, so ticks can be changed
+    // one after another (Win32 popup menus have no keep-open flag).
+    static bool keepsMenuOpen(int cmd);
 
     HWND m_hwnd{};
     NOTIFYICONDATAW m_nid{};

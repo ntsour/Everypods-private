@@ -24,6 +24,9 @@ struct Settings {
     bool                         lidLease{false};         // this PC used the AirPods last (lid-open connect)
     // Apps the user added ("takeonmic=" / "takeonplay=" / "keeponmic=" / "nevertake=" lines, one per setting).
     std::vector<TriggerApp>      triggerApps;
+    // Apps that used sound or the mic, most recent first, at most 40
+    // ("seenapp=" lines): the tray lists them across restarts.
+    std::vector<std::wstring>    seenApps;
 };
 
 class SettingsStore {

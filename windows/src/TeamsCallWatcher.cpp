@@ -307,12 +307,29 @@ void TeamsCallWatcher::noteSeen(const std::wstring& exe, bool capture, bool acti
     std::scoped_lock lk{m_seenMutex};
     auto it = std::find_if(m_seen.begin(), m_seen.end(), [&](const SeenAudioApp& a) { return a.exe == n; });
     if (it == m_seen.end()) {
-        if (m_seen.size() >= 64) return;  // bounded; the first apps seen are the ones that matter
-        m_seen.push_back({n, false, 0});
-        it = m_seen.end() - 1;
+        if (m_seen.size() >= 64) {
+            // Bounded: the app idle the longest makes room.
+            it = std::min_element(m_seen.begin(), m_seen.end(), [](const SeenAudioApp& a, const SeenAudioApp& b) {
+                return a.lastActiveMs < b.lastActiveMs;
+            });
+            *it = {n, false, 0};
+        } else {
+            m_seen.push_back({n, false, 0});
+            it = m_seen.end() - 1;
+        }
     }
     if (capture) it->usedMic = true;
     if (active) it->lastActiveMs = static_cast<std::int64_t>(GetTickCount64());
+}
+
+void TeamsCallWatcher::seedSeenApps(const std::vector<std::wstring>& exes) {
+    std::scoped_lock lk{m_seenMutex};
+    for (const auto& raw : exes) {
+        const std::wstring n = normalizeExeName(raw);
+        if (n.empty() || m_seen.size() >= 64) continue;
+        if (std::none_of(m_seen.begin(), m_seen.end(), [&](const SeenAudioApp& a) { return a.exe == n; }))
+            m_seen.push_back({n, false, 0});
+    }
 }
 
 std::vector<TeamsCallWatcher::SeenAudioApp> TeamsCallWatcher::seenAudioApps() const {

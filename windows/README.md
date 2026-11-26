@@ -91,10 +91,13 @@ or Discord (`discord.exe`) has the mic open, the AirPods stay on the PC.
 
 There is no reliable "a call started" signal for every app (voice typing,
 recorders and browser tabs open the mic too), so other apps are set up by hand:
-tray menu → **Apps that take or keep the AirPods**. It lists the built-in apps,
-the apps you added, and the apps that used sound since Propods started (use an
-app once, then open the menu). Each app has three independent settings, in any
-combination:
+tray menu → **Apps that take or keep the AirPods**. It lists, sorted by name,
+the built-in apps, the apps you set, and every app that used sound or the mic
+(the 40 most recent are remembered across restarts). Each line shows the app's
+mode ("chrome.exe: default", "chrome.exe: keeps the AirPods while it uses the
+mic", "zoom.exe: built in"). An app's submenu starts with **Default: take them
+when it plays in the Windows media controls**, ticked when nothing is set; then
+three independent settings, in any combination:
 
 - **Take the AirPods when it opens the mic**: the app opening the default
   microphone moves the AirPods here. Follows "Take AirPods when a call starts on
@@ -111,14 +114,19 @@ open mic is not a call; it still counts as playing for pausing. It is exclusive:
 choosing it clears the three settings, ticking any of them clears it, and choosing
 it again removes the app.
 
+The menu stays open while you change settings (here and the main toggles):
+after a click it reopens at the same spot, on the same app's submenu. Actions
+such as Connect AirPods now and Quit close it.
+
 A call app such as a voice assistant gets the first and third; a browser used for
 Meet or Zoom web gets only the third (its videos already take the AirPods through
-the media controls). Ticking a setting adds an app; unticking all three removes it (back to the
-defaults, where a media-controls start still takes the AirPods).
+the media controls). Choosing **Default**, or unticking the last setting, clears the app's settings
+(a media-controls start still takes the AirPods).
 Built-in apps show their settings greyed.
 
 The list is saved in `%APPDATA%\Propods\config.txt` as `takeonmic=name.exe`,
-`takeonplay=name.exe`, `keeponmic=name.exe` and `nevertake=name.exe` lines (one per setting), which can
+`takeonplay=name.exe`, `keeponmic=name.exe` and `nevertake=name.exe` lines (one per setting;
+remembered apps are `seenapp=name.exe` lines), which can
 also be edited by hand while Propods is closed. Lines from the first test builds
 (`callapp=` = mic + keep, `protectapp=` = keep, `mediaapp=` = play) are still read.
 

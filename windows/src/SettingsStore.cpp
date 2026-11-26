@@ -128,6 +128,10 @@ Settings SettingsStore::load() const {
         } else if (key == "lidlease") {
             s.lidLease = (val != "0");
             log::debug("  lidlease = {}", s.lidLease);
+        } else if (key == "seenapp") {
+            const std::wstring exe = normalizeExeName(fromUtf8(val));
+            if (!exe.empty() && std::find(s.seenApps.begin(), s.seenApps.end(), exe) == s.seenApps.end())
+                s.seenApps.push_back(exe);
         } else if (key == "takeonmic" || key == "takeonplay" || key == "keeponmic" || key == "nevertake" ||
                    key == "callapp" || key == "mediaapp" || key == "protectapp") {
             // One line per setting; lines for the same app are merged by
@@ -177,6 +181,8 @@ void SettingsStore::save(const Settings& s) const {
         if (app.keepOnMic)  f << "keeponmic=" << toUtf8(app.exe) << '\n';
         if (app.neverTake)  f << "nevertake=" << toUtf8(app.exe) << '\n';
     }
+    for (const auto& exe : s.seenApps)
+        f << "seenapp=" << toUtf8(exe) << '\n';
 }
 
 }
