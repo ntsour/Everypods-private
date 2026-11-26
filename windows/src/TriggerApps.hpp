@@ -8,6 +8,8 @@
 //   Call  - takes the AirPods when the app opens the microphone, and holds them
 //           while it stays open (phones are told not to take them for a call).
 //   Media - takes the AirPods when the app starts playing sound.
+//   Protect - never takes them, but while the app has the microphone open the
+//           AirPods stay here like in a call (a meeting in a browser).
 //
 // Pure logic, no Windows headers: unit-tested in tools/peer_v2_tests.cpp.
 
@@ -21,7 +23,7 @@
 
 namespace Propods {
 
-enum class TriggerKind { Call, Media };
+enum class TriggerKind { Call, Media, Protect };
 
 struct TriggerApp {
     std::wstring exe;   // normalized: lower-case file name ending in ".exe"
@@ -56,21 +58,39 @@ inline const std::vector<TriggerApp>& builtInTriggerApps() {
         {L"ms-teams.exe", TriggerKind::Call,  true},
         {L"teams.exe",    TriggerKind::Call,  true},
         {L"vlc.exe",      TriggerKind::Media, true},
+        // Meeting apps: their open mic is a call, protected but never a trigger
+        // (Windows already refused peer requests while they held the AirPods).
+        {L"zoom.exe",     TriggerKind::Protect, true},
+        {L"webex.exe",    TriggerKind::Protect, true},
+        {L"slack.exe",    TriggerKind::Protect, true},
+        {L"discord.exe",  TriggerKind::Protect, true},
     };
     return k;
 }
 
 // Does an audio session of this app becoming active raise a takeover?
 // User call apps: only the mic (capture). User media apps: only playback.
-// Built-ins keep their original rule: any session.
+// Built-in Teams and VLC keep their original rule: any session. Protect apps
+// never trigger.
 constexpr bool triggersOn(const TriggerApp& app, bool capture) {
+    if (app.kind == TriggerKind::Protect) return false;
     if (app.builtIn) return true;
     return app.kind == TriggerKind::Call ? capture : !capture;
 }
 
-// An open mic of a call app is a call in progress (protects the AirPods).
+// An open mic of a call or protect app is a call in progress (protects the AirPods).
 constexpr bool isCallMic(const TriggerApp& app, bool capture) {
-    return capture && app.kind == TriggerKind::Call;
+    return capture && (app.kind == TriggerKind::Call || app.kind == TriggerKind::Protect);
+}
+
+// For the log.
+constexpr const char* triggerKindText(TriggerKind kind) {
+    switch (kind) {
+        case TriggerKind::Call:    return "takes the AirPods when it opens the mic";
+        case TriggerKind::Protect: return "keeps the AirPods while it uses the mic";
+        case TriggerKind::Media:   break;
+    }
+    return "takes the AirPods when it starts playing";
 }
 
 // Thread-safe: read on WASAPI callback threads, changed from the tray.

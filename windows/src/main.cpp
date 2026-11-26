@@ -200,8 +200,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     // Apps that take the AirPods, beyond the built-in Teams and VLC (tray menu).
     teamsWatcher.triggerApps().setUserApps(settings.triggerApps);
     for (const auto& app : teamsWatcher.triggerApps().userApps())
-        log::info("Trigger app: {} ({})", log::toUtf8(app.exe),
-                  app.kind == TriggerKind::Call ? "takes the AirPods when it opens the mic" : "takes the AirPods when it starts playing");
+        log::info("Trigger app: {} ({})", log::toUtf8(app.exe), triggerKindText(app.kind));
     BleProximityWatcher bleWatcher;
     TrayIcon tray;
 
@@ -366,7 +365,11 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
             info.peers.push_back({p.address, p.name, p.connected});
         menuUserTriggerApps.clear();
         for (const auto& app : teamsWatcher.triggerApps().all()) {
-            info.triggerApps.push_back({app.exe, app.kind == TriggerKind::Call, app.builtIn});
+            info.triggerApps.push_back({app.exe,
+                app.kind == TriggerKind::Call    ? TrayIcon::TriggerAppKind::Call
+                : app.kind == TriggerKind::Protect ? TrayIcon::TriggerAppKind::Protect
+                                                   : TrayIcon::TriggerAppKind::Media,
+                app.builtIn});
             if (!app.builtIn) menuUserTriggerApps.push_back(app.exe);
         }
         menuAudioApps.clear();
@@ -677,10 +680,12 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
                 tray.toggleAutoStart();
                 break;
             default:
-                if (cmd >= TrayIcon::kCmdAddCallApp && cmd < TrayIcon::kCmdRemoveTriggerApp + TrayIcon::kMaxMenuApps) {
+                auto inRange = [cmd](int base) { return cmd >= base && cmd < base + TrayIcon::kMaxMenuApps; };
+                if (inRange(TrayIcon::kCmdAddCallApp) || inRange(TrayIcon::kCmdAddMediaApp) ||
+                    inRange(TrayIcon::kCmdAddProtectApp) || inRange(TrayIcon::kCmdRemoveTriggerApp)) {
                     std::wstring exe;
                     bool changed = false;
-                    if (cmd >= TrayIcon::kCmdRemoveTriggerApp) {
+                    if (inRange(TrayIcon::kCmdRemoveTriggerApp)) {
                         const int idx = cmd - TrayIcon::kCmdRemoveTriggerApp;
                         if (idx < (int)menuUserTriggerApps.size()) {
                             exe = menuUserTriggerApps[idx];
@@ -688,14 +693,18 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
                             if (changed) log::info("Trigger apps: removed {}", log::toUtf8(exe));
                         }
                     } else {
-                        const bool call = cmd < TrayIcon::kCmdAddMediaApp;
-                        const int idx = cmd - (call ? TrayIcon::kCmdAddCallApp : TrayIcon::kCmdAddMediaApp);
-                        if (idx >= 0 && idx < (int)menuAudioApps.size()) {
+                        const TriggerKind kind = inRange(TrayIcon::kCmdAddCallApp)    ? TriggerKind::Call
+                                               : inRange(TrayIcon::kCmdAddProtectApp) ? TriggerKind::Protect
+                                                                                      : TriggerKind::Media;
+                        const int base = kind == TriggerKind::Call    ? TrayIcon::kCmdAddCallApp
+                                       : kind == TriggerKind::Protect ? TrayIcon::kCmdAddProtectApp
+                                                                      : TrayIcon::kCmdAddMediaApp;
+                        const int idx = cmd - base;
+                        if (idx < (int)menuAudioApps.size()) {
                             exe = menuAudioApps[idx];
-                            changed = teamsWatcher.triggerApps().add(exe, call ? TriggerKind::Call : TriggerKind::Media);
+                            changed = teamsWatcher.triggerApps().add(exe, kind);
                             if (changed)
-                                log::info("Trigger apps: added {} ({})", log::toUtf8(exe),
-                                          call ? "takes the AirPods when it opens the mic" : "takes the AirPods when it starts playing");
+                                log::info("Trigger apps: added {} ({})", log::toUtf8(exe), triggerKindText(kind));
                         }
                     }
                     if (changed) {

@@ -293,9 +293,9 @@ static void triggerAppTests() {
     CHECK(list.remove(L"dots.exe") && !list.find(L"dots.exe"));
     CHECK(!list.remove(L"dots.exe"));
 
-    list.setUserApps({{L"Discord", TriggerKind::Call, false}, {L"discord.exe", TriggerKind::Media, false},
+    list.setUserApps({{L"Dots", TriggerKind::Call, false}, {L"dots.exe", TriggerKind::Media, false},
                       {L"vlc.exe", TriggerKind::Call, false}, {L"", TriggerKind::Call, false}});
-    CHECK(list.userApps().size() == 1 && list.userApps()[0].exe == L"discord.exe");
+    CHECK(list.userApps().size() == 1 && list.userApps()[0].exe == L"dots.exe");
     CHECK(list.find(L"vlc.exe")->kind == TriggerKind::Media);  // config can't override a built-in
 
     // User call apps trigger on the mic only, media apps on playback only;
@@ -308,6 +308,15 @@ static void triggerAppTests() {
     CHECK(Propods::triggersOn(teams, true) && Propods::triggersOn(teams, false));
     CHECK(Propods::isCallMic(call, true) && !Propods::isCallMic(call, false));
     CHECK(Propods::isCallMic(teams, true) && !Propods::isCallMic(media, true));
+    // Protect apps: an open mic is a call, but never a trigger.
+    const TriggerApp chrome{L"chrome.exe", TriggerKind::Protect, false};
+    CHECK(!Propods::triggersOn(chrome, true) && !Propods::triggersOn(chrome, false));
+    CHECK(Propods::isCallMic(chrome, true) && !Propods::isCallMic(chrome, false));
+    TriggerAppList plist;
+    CHECK(plist.find(L"Zoom.exe") && plist.find(L"zoom.exe")->kind == TriggerKind::Protect);
+    CHECK(!Propods::triggersOn(*plist.find(L"zoom.exe"), true));
+    CHECK(Propods::isCallMic(*plist.find(L"zoom.exe"), true));
+    CHECK(plist.add(L"chrome", TriggerKind::Protect) && plist.find(L"chrome.exe")->kind == TriggerKind::Protect);
 }
 
 int main() {

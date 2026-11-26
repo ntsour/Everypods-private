@@ -128,13 +128,15 @@ Settings SettingsStore::load() const {
         } else if (key == "lidlease") {
             s.lidLease = (val != "0");
             log::debug("  lidlease = {}", s.lidLease);
-        } else if (key == "callapp" || key == "mediaapp") {
+        } else if (key == "callapp" || key == "mediaapp" || key == "protectapp") {
             // Cleaned (normalized, de-duplicated) when handed to TriggerAppList.
             const std::wstring exe = normalizeExeName(fromUtf8(val));
             if (exe.empty()) {
                 log::warn("  {} = {} -> (not a program name)", key, val);
             } else {
-                s.triggerApps.push_back({exe, key == "callapp" ? TriggerKind::Call : TriggerKind::Media, false});
+                const TriggerKind kind = key == "callapp" ? TriggerKind::Call
+                                       : key == "protectapp" ? TriggerKind::Protect : TriggerKind::Media;
+                s.triggerApps.push_back({exe, kind, false});
                 log::debug("  {} = {}", key, toUtf8(exe));
             }
         }
@@ -161,7 +163,8 @@ void SettingsStore::save(const Settings& s) const {
     f << "lidopenconnect=" << (s.lidOpenConnect ? "1" : "0") << '\n';
     f << "lidlease=" << (s.lidLease ? "1" : "0") << '\n';
     for (const auto& app : s.triggerApps)
-        f << (app.kind == TriggerKind::Call ? "callapp=" : "mediaapp=") << toUtf8(app.exe) << '\n';
+        f << (app.kind == TriggerKind::Call ? "callapp=" : app.kind == TriggerKind::Protect ? "protectapp=" : "mediaapp=")
+          << toUtf8(app.exe) << '\n';
 }
 
 }

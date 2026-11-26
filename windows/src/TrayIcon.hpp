@@ -40,6 +40,7 @@ public:
     static constexpr int kCmdAddCallApp       = 3000;
     static constexpr int kCmdAddMediaApp      = 3100;
     static constexpr int kCmdRemoveTriggerApp = 3200;
+    static constexpr int kCmdAddProtectApp    = 3300;
 
     // Per-peer info shown in the menu.
     struct PeerStatus {
@@ -48,11 +49,12 @@ public:
         bool          connected{false};
     };
 
-    // An app that takes the AirPods (built in or added by the user).
+    // An app that takes or keeps the AirPods (built in or added by the user).
+    enum class TriggerAppKind { Call, Media, Protect };
     struct TriggerAppStatus {
-        std::wstring exe;
-        bool         call{false};     // call app (mic) vs media app (playback)
-        bool         builtIn{false};
+        std::wstring   exe;
+        TriggerAppKind kind{TriggerAppKind::Media};
+        bool           builtIn{false};
     };
     // An app that used audio since Propods started and can be added.
     struct AudioAppStatus {
