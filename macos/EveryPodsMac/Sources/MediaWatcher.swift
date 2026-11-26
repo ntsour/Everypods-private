@@ -57,8 +57,10 @@ final class MediaWatcher {
     /// The user's app rules (Settings.triggerApps).
     var apps: () -> TriggerAppList = { TriggerAppList() }
     let intent = UserIntentWatcher()
-    /// Apps that used audio since launch (owner bundle → used the microphone), newest last, for the apps menu.
-    private(set) var seenApps: [(bundle: String, usedMic: Bool)] = []
+    /// Apps that ever used audio (owner bundles), newest last, for the apps menu. Remembered across launches so
+    /// the menu lists them before they play again.
+    private(set) var seenApps: [String] = UserDefaults.standard.stringArray(forKey: "seenAudioApps") ?? []
+    private let seenLimit = 40
     private(set) var snapshot = Snapshot()
 
     private var sustain: TimeInterval { fastStart() ? 0.6 : 2 }
@@ -267,7 +269,7 @@ final class MediaWatcher {
             guard output || input else { continue }
             let recorder = recorderPrefixes.contains(where: { bundle.hasPrefix($0) })
             let owner = ownerBundle(process, bundle)
-            noteSeen(owner, mic: input)
+            noteSeen(owner)
             let decision = rules.decide(app: owner, output: output, input: input, recorder: recorder)
             if input { result.micApps.append(bundle) }
             if decision.playing {
@@ -304,13 +306,13 @@ final class MediaWatcher {
         return owner
     }
 
-    private func noteSeen(_ owner: String, mic: Bool) {
+    private func noteSeen(_ owner: String) {
         guard !owner.isEmpty, owner != "?" else { return }
-        if let i = seenApps.firstIndex(where: { $0.bundle == owner }) {
-            if mic && !seenApps[i].usedMic { seenApps[i].usedMic = true }
-        } else {
-            seenApps.append((owner, mic))
-        }
+        if seenApps.last == owner { return }
+        seenApps.removeAll { $0 == owner }
+        seenApps.append(owner)
+        if seenApps.count > seenLimit { seenApps.removeFirst(seenApps.count - seenLimit) }
+        UserDefaults.standard.set(seenApps, forKey: "seenAudioApps")
     }
 
     /// A browser that is playing audio while a meeting tab is open counts as a call (joined muted: no mic).
