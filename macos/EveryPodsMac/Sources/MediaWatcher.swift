@@ -3,6 +3,8 @@
 // Watches what this Mac is doing with audio using only public CoreAudio APIs (macOS 14.4+):
 //   * playing: some app has an active audio output stream
 //   * inCall:  some app has an active audio input stream (microphone), which means a call or recording
+//     A browser meeting counts through its microphone: Meet keeps the mic stream open while muted, and
+//     releases it when you leave. An open meeting tab alone is not a call (it stays open after hanging up).
 // Measured behaviour: playback shows up within ~1s; after a pause the flag lingers ~10-15s
 // (browsers keep the stream open), so "started" is a reliable trigger but "stopped" is slow.
 
@@ -59,17 +61,6 @@ final class MediaWatcher {
         "us.zoom.xos", "com.microsoft.teams", "com.apple.FaceTime", "com.cisco.webex", "com.webex",
         "com.skype", "com.apple.facetime",
     ]
-
-    /// Chromium browsers, scripted to look for an open meeting tab when one is playing audio.
-    private let browsers: [(bundlePrefix: String, appName: String)] = [
-        ("com.google.Chrome", "Google Chrome"), ("com.brave.Browser", "Brave Browser"),
-        ("com.microsoft.edgemac", "Microsoft Edge"), ("company.thebrowser.Browser", "Arc"),
-    ]
-    private let meetingURL = try! NSRegularExpression(
-        pattern: #"https://(meet\.google\.com/[a-z]{3}-[a-z]{4}-[a-z]{3}|[a-z0-9.-]*zoom\.us/(wc|j)/|whereby\.com/[^/?]+|teams\.(microsoft|live)\.com/.*(meetup-join|meet))"#)
-    private var meetingTabs: [String: Bool] = [:]
-    private var lastTabCheck: [String: Date] = [:]
-    private let scriptQueue = DispatchQueue(label: "everypods.tabs", qos: .utility)
 
     func start() {
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.poll() }
@@ -147,45 +138,7 @@ final class MediaWatcher {
             if output && input && !recorder { result.callApps.append(bundle) }
             else if output && callAppPrefixes.contains(where: { bundle.hasPrefix($0) }) { result.callApps.append(bundle) }
         }
-        if result.callApps.isEmpty { addBrowserMeetings(to: &result) }
         return result
-    }
-
-    /// A browser that is playing audio while a meeting tab is open counts as a call (joined muted: no mic).
-    private func addBrowserMeetings(to result: inout Snapshot) {
-        for browser in browsers where result.playingApps.contains(where: { $0.hasPrefix(browser.bundlePrefix) }) {
-            refreshMeetingTabs(browser)
-            if meetingTabs[browser.appName] == true { result.callApps.append(browser.bundlePrefix + " (meeting tab)") }
-        }
-    }
-
-    private func refreshMeetingTabs(_ browser: (bundlePrefix: String, appName: String)) {
-        let name = browser.appName
-        if let last = lastTabCheck[name], Date().timeIntervalSince(last) < 5 { return }
-        lastTabCheck[name] = Date()
-        scriptQueue.async { [weak self] in
-            guard let self else { return }
-            let source = "tell application \"\(name)\" to get URL of every tab of every window"
-            var error: NSDictionary?
-            let output = NSAppleScript(source: source)?.executeAndReturnError(&error)
-            var found = false
-            if let output, output.numberOfItems > 0 {
-                // A list of windows, each a list of URLs (or a flat list).
-                var urls: [String] = []
-                func collect(_ d: NSAppleEventDescriptor) {
-                    if d.numberOfItems > 0 { for i in 1...d.numberOfItems { if let item = d.atIndex(i) { collect(item) } } }
-                    else if let s = d.stringValue { urls.append(s) }
-                }
-                collect(output)
-                found = urls.contains { self.meetingURL.firstMatch(in: $0, range: NSRange($0.startIndex..., in: $0)) != nil }
-            } else if let error {
-                Log.write("Meeting tabs (\(name)): \(error[NSAppleScript.errorMessage] ?? error)")
-            }
-            DispatchQueue.main.async {
-                if self.meetingTabs[name] != found { Log.write("Meeting tab in \(name): \(found)") }
-                self.meetingTabs[name] = found
-            }
-        }
     }
 
     // MARK: CoreAudio helpers
