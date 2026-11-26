@@ -292,7 +292,7 @@ static void triggerAppTests() {
     const auto zoom = list.resolve(L"zoom.exe");
     CHECK(!zoom.takeOnMic && !zoom.takeOnPlay && zoom.keepOnMic);
     const auto chrome = list.resolve(L"chrome.exe");
-    CHECK(chrome.builtIn && !chrome.takeOnMic && chrome.takeOnPlay && chrome.keepOnMic);
+    CHECK(chrome.builtIn && chrome.takeOnMic && chrome.takeOnPlay && chrome.keepOnMic);
     CHECK(triggerFor(chrome, false) == TriggerEvent::None);  // its plays come from the media controls
     const auto vlc = list.resolve(L"vlc.exe");
     CHECK(triggerFor(vlc, false) == TriggerEvent::Media);    // outside the media controls

@@ -114,7 +114,7 @@ Where an app's settings come from, first match wins:
    | --- | --- |
    | Teams (`ms-teams.exe`, `Teams.exe`) | opens the mic, keep |
    | Zoom, Webex, Slack, Discord | keep |
-   | Chrome, Edge, Firefox, Brave | starts playing, keep |
+   | Chrome, Edge, Firefox, Brave | opens the mic, starts playing, keep |
    | Spotify, VLC | starts playing |
 
 3. all three, for an app first seen using the mic and sound together (a call app

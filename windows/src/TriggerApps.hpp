@@ -87,8 +87,9 @@ inline const std::vector<TriggerApp>& builtInTriggerApps() {
     // - Teams: a call opens the mic; its other sounds (chat pings) don't count.
     // - Zoom, Webex, Slack, Discord: an open mic is a call (they never took the
     //   AirPods by themselves).
-    // - Browsers: media-controls starts take the AirPods (YouTube...), and a
-    //   meeting tab's open mic keeps them.
+    // - Browsers: all three (as on the Mac): media-controls starts take the
+    //   AirPods (YouTube...), and a meeting tab opening the mic takes and
+    //   keeps them.
     // - Media players: playback takes them. VLC 3 is outside the media controls.
     auto app = [](const wchar_t* exe, bool mic, bool play, bool keep, bool outsideMc = false) {
         TriggerApp a;
@@ -108,10 +109,10 @@ inline const std::vector<TriggerApp>& builtInTriggerApps() {
         app(L"webex.exe",       false, false, true),
         app(L"slack.exe",       false, false, true),
         app(L"discord.exe",     false, false, true),
-        app(L"chrome.exe",      false, true,  true),
-        app(L"msedge.exe",      false, true,  true),
-        app(L"firefox.exe",     false, true,  true),
-        app(L"brave.exe",       false, true,  true),
+        app(L"chrome.exe",      true,  true,  true),
+        app(L"msedge.exe",      true,  true,  true),
+        app(L"firefox.exe",     true,  true,  true),
+        app(L"brave.exe",       true,  true,  true),
         app(L"spotify.exe",     false, true,  false),
         app(L"vlc.exe",         false, true,  false, /*outsideMc=*/true),
     };
