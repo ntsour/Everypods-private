@@ -278,7 +278,7 @@ final class MediaWatcher {
             if decision.triggers {
                 if !result.triggerOwners.contains(owner) { result.triggerOwners.append(owner) }
                 if decision.playing { result.triggerProcesses.append(process) }
-                if decision.call { result.callTriggers = true }
+                if decision.callTrigger { result.callTriggers = true }
                 if decision.trusted { result.trustedPlaying = true }
             }
         }
@@ -314,15 +314,16 @@ final class MediaWatcher {
     }
 
     /// A browser that is playing audio while a meeting tab is open counts as a call (joined muted: no mic).
-    /// A "keep" browser's meeting tab keeps the AirPods but never takes them; a "never takes" browser is left out.
+    /// A muted meeting tab (no mic) in a listed browser follows its mic settings: "keep" reports the call,
+    /// "take on mic" takes the AirPods; a browser with none set is left out.
     private func addBrowserMeetings(to result: inout Snapshot, rules: TriggerAppList) {
         for browser in browsers where result.playingApps.contains(where: { $0.hasPrefix(browser.bundlePrefix) }) {
-            let kind = rules.find(browser.bundlePrefix)?.kind
-            if kind == .ignore { continue }
+            let settings = rules.find(browser.bundlePrefix)?.settings
+            if settings?.isNever == true { continue }
             refreshMeetingTabs(browser)
             guard meetingTabs[browser.appName] == true else { continue }
-            result.callApps.append(browser.bundlePrefix + " (meeting tab)")
-            if kind != .keep {
+            if settings?.keepOnMic ?? true { result.callApps.append(browser.bundlePrefix + " (meeting tab)") }
+            if settings?.takeOnMic ?? true {
                 result.callTriggers = true
                 if !result.triggerOwners.contains(browser.bundlePrefix) { result.triggerOwners.append(browser.bundlePrefix) }
             }

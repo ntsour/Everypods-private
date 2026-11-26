@@ -127,7 +127,7 @@ final class HandoverController {
         hold.playingApps = { [weak self] in self?.media.snapshot.playingApps ?? [] }
         media.fastStart = { Settings.holdPlayback }
         media.apps = { Settings.triggerApps }
-        for app in Settings.triggerApps.user { Log.write("Trigger app: \(app.bundle) \(app.kind.text)") }
+        for app in Settings.triggerApps.user { Log.write("Trigger app: \(app.bundle) \(app.settings.text)") }
         // Only a start that could move the AirPods here needs real sound; with the AirPods already on this Mac
         // the trigger only claims ownership, and no tap is put next to the Bluetooth output.
         media.levelGate = { [weak self] in
@@ -318,7 +318,7 @@ final class HandoverController {
             }
             return
         }
-        let intent: TakeIntent = media.snapshot.inCall ? .call : .media
+        let intent: TakeIntent = media.snapshot.inCall || media.snapshot.callTriggers ? .call : .media
         guard pods.isConfigured else { return }
         guard intent == .call ? Settings.takeOnCall : Settings.takeOnMediaStart else {
             return Log.write("Skip: take over on \(intent == .call ? "call" : "media start") is off")
