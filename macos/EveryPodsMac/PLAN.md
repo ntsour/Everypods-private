@@ -40,7 +40,7 @@ Windows is layered (`PeerRegistry` / `AirPodsConnector` / watchers / `HandoverCo
 | AirPods | `AirPodsConnector` | `AirPodsConnector.swift` | connect with 3 attempts (0 / 1.5 s / 3 s), disconnect, `isConnected` |
 | Audio routing | `setAsDefaultAudioDevice` + persistent arm | `AudioRouter.swift` | CoreAudio default output; re-apply while we hold the AirPods |
 | Media | `MediaPlaybackWatcher` | `MediaWatcher.swift` | Per-process CoreAudio output (no GSMTC on macOS) |
-| Calls | `TeamsCallWatcher` + `hasActiveCallSessions` | `MediaWatcher.swift` | Comms apps, mic+output, browser meeting tabs |
+| Calls | `TeamsCallWatcher` + `hasActiveCallSessions` | `MediaWatcher.swift` | Comms apps, mic+output |
 | In-case probe | `BleProximityWatcher` | `ProximityWatcher.swift` | CoreBluetooth scan, same Apple 0x004C parse, same rules |
 | Controller | `HandoverController` | `HandoverController.swift` | Direct port of the state machine and its timers |
 | Menu | `TrayIcon` | `main.swift` + `Menu.swift` | NSStatusItem |
@@ -80,8 +80,8 @@ The controller is ported rule for rule, with the same constants:
 - **What is playing**: CoreAudio process objects (macOS 14.4+). Playback shows within ~1 s; stops lag 10–15 s
   (browsers keep the stream), so "started" is the trigger and "stopped" is used only for gate clearing.
 - **Calls**: Windows matches comms-app process names on the AirPods endpoint. Mac equivalent: a process with
-  mic and output at once, a native call app playing, or a Chromium browser playing with a meeting tab open
-  (joined muted). Recorders are excluded.
+  mic and output at once, or a native call app playing. A browser meeting counts through its mic (Meet keeps
+  it open while muted); an open meeting tab alone does not (it stays open after hanging up). Recorders are excluded.
 - **Audio routing**: CoreAudio `DefaultOutputDevice`/`DefaultSystemOutputDevice` set to the AirPods, only when
   not already default; re-applied while we hold the AirPods.
 - **Start at login**: `SMAppService`. **Single instance**: bundle-id check at launch.
