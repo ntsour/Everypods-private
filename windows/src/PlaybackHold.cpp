@@ -2,6 +2,7 @@
 
 #include "Logger.hpp"
 #include "MediaPlaybackWatcher.hpp"
+#include "TriggerApps.hpp"
 
 #include <windows.h>
 
@@ -59,22 +60,10 @@ bool isCommsExe(const std::wstring& base) {
     return false;
 }
 
-bool isHex16(const std::wstring& s) {
-    if (s.size() != 16) return false;
-    return std::all_of(s.begin(), s.end(), [](wchar_t c) { return std::iswxdigit(c) != 0; });
-}
-
-// Does the GSMTC session `appId` (SourceAppUserModelId) belong to the process
-// image `exe`? Heuristic: unpackaged apps use their exe name ("Spotify.exe",
-// "Chrome", "MSEdge"); Firefox uses a 16-hex-digit install hash; the new
-// Media Player is packaged.
+// Does the GSMTC session `appId` belong to the process image `exe`? (Shared
+// with the trigger-app list.)
 bool appMatchesExe(const std::wstring& appId, const std::wstring& exe) {
-    const std::wstring a = lower(appId);
-    const std::wstring b = exeBase(exe);
-    if (b.size() >= 3 && a.find(b) != std::wstring::npos) return true;
-    if (b == L"firefox" && isHex16(a)) return true;
-    if (b == L"microsoft.media.player" && a.find(L"zunemusic") != std::wstring::npos) return true;
-    return false;
+    return gsmtcAppMatchesExe(appId, exe);
 }
 
 // Apps worth a pre-mute: media players and browsers. Anything else (games,
@@ -280,7 +269,7 @@ public:
 
     // ---- hold lifecycle ----
 
-    void start(HoldKind kind, bool peerAsked, const std::wstring& appId) {
+    void start(HoldKind kind, bool peerAsked, const std::wstring& appId, bool holdAudio) {
         cancel("preMuteCap");
         if (active()) {
             if (m_status->kind == kind) {
@@ -294,11 +283,6 @@ public:
         cancel("resume");
         cancel("safetyReplay");
 
-        if (kind == HoldKind::Media && !m_owner.enabled()) {
-            m_mute.restoreAll("hold disabled");
-            return;
-        }
-
         m_wePaused = false;
         m_sawPaused = false;
         m_heldAppId.clear();
@@ -306,6 +290,11 @@ public:
         if (kind == HoldKind::Call) {
             // Calls are never held; undo a pre-mute that may have caught a web call.
             m_mute.restoreAll("call: nothing is held");
+        } else if (!holdAudio || !m_owner.enabled()) {
+            // Progress only: the hold is off, or no peer is using the AirPods.
+            m_mute.restoreAll("media: progress only");
+            log::handover("HOLD    media progress only ({})",
+                          m_owner.enabled() ? "AirPods not in use on a peer" : "hold setting off");
         } else {
             m_heldAppId = appId;
             if (!appId.empty()) {
@@ -557,10 +546,10 @@ void PlaybackHold::onSessionPlaybackChanged(const std::wstring& appId, bool play
     m_impl->m_worker.post([this, appId, playing] { m_impl->onSessionPlaybackChanged(appId, playing); });
 }
 
-void PlaybackHold::start(HoldKind kind, bool peerAsked, const std::wstring& appId) {
+void PlaybackHold::start(HoldKind kind, bool peerAsked, const std::wstring& appId, bool holdAudio) {
     // Mark active at once so a racing trigger sees the hold before the worker runs.
-    if (kind == HoldKind::Call || enabled()) m_active.store(true);
-    m_impl->m_worker.post([this, kind, peerAsked, appId] { m_impl->start(kind, peerAsked, appId); });
+    m_active.store(true);
+    m_impl->m_worker.post([this, kind, peerAsked, appId, holdAudio] { m_impl->start(kind, peerAsked, appId, holdAudio); });
 }
 
 void PlaybackHold::onPeerReleased()  { m_impl->m_worker.post([this] { m_impl->onPeerReleased(); }); }

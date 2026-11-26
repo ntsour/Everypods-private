@@ -75,9 +75,57 @@ allowlist is in `AirPodsConnector.cpp::isCommsAppExe()` and currently covers:
 | Slack | `slack.exe` |
 | Cisco WebEx | `webex.exe`, `webexd.exe` |
 
+An open microphone in an app set to **keep the AirPods while it uses the mic**
+(see below: Teams, Zoom, Webex, Slack, Discord and the browsers by default) also rejects it, and tells phones a call is running so they
+don't take the AirPods for music or their own call.
+
 Passive media (YouTube, Spotify, browser audio, system sounds) does **not**
 trigger the reject. If you're listening to music on the PC and pick up your
 phone to take a call, the AirPods migrate to the phone instantly.
+
+### Apps that take or keep the AirPods
+Tray menu → **Apps that take or keep the AirPods** lists, sorted by name, the
+built-in apps (even before they make a sound), every app with saved settings, and
+every app that used sound or the mic (the 40 most recent, remembered across
+restarts). Every app has the same three independent settings, in any combination:
+
+- **Take the AirPods when it opens the mic**: follows "Take AirPods when a call
+  starts on this PC".
+- **Take the AirPods when it starts playing**: only a start in the Windows media
+  controls counts, so notification dings never take the AirPods (VLC, outside
+  the media controls, counts when its audio starts). Follows "Take AirPods when
+  this PC starts playing media".
+- **Keep the AirPods while it uses the mic**: while the app has the default mic
+  open it is a call. Phones and the Mac are told so and don't take the AirPods
+  (for music or their own call), and Windows refuses their requests.
+
+With nothing ticked, the app never takes or keeps the AirPods. Each line shows
+the settings in force, e.g. "chrome.exe (built in): takes the AirPods when it
+starts playing; keeps the AirPods while it uses the mic". Clicking a setting saves
+it and keeps the menu open (it reopens at the same spot); actions such as Connect
+AirPods now and Quit close it.
+
+Where an app's settings come from, first match wins:
+1. what you saved (built-ins included: their line then says "(built in,
+   changed)", and **Reset to built-in** in their submenu undoes it);
+2. the built-in catalog:
+
+   | Apps | Pre-ticked |
+   | --- | --- |
+   | Teams (`ms-teams.exe`, `Teams.exe`) | opens the mic, keep |
+   | Zoom, Webex, Slack, Discord | keep |
+   | Chrome, Edge, Firefox, Brave | opens the mic, starts playing, keep |
+   | Spotify, VLC | starts playing |
+
+3. all three, for an app first seen using the mic and sound together (a call app
+   works out of the box; saved at that moment);
+4. **Take the AirPods when it starts playing**.
+
+Saved in `%APPDATA%\Propods\config.txt`: an `appset=name.exe` line per app with
+saved settings, plus `takeonmic=`, `takeonplay=` and `keeponmic=` lines for each
+ticked setting; remembered apps are `seenapp=` lines. Lines from earlier test
+builds still load (`callapp=` = mic + keep, `protectapp=` = keep, `mediaapp=` =
+play, `nevertake=` = nothing ticked).
 
 ### Multi-window pause
 On a Windows → phone handover, all three GSMTC pause methods (current

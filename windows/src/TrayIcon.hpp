@@ -33,12 +33,32 @@ public:
     static constexpr int kCmdUseAirPodsAudio   = 1015;  // default output + input (and Teams)
     // kCmdRemovePeer+i removes the peer at index i in the StatusInfo::peers list.
     static constexpr int kCmdRemovePeer      = 2000;
+    // "Apps that take or keep the AirPods" submenu. App i of StatusInfo::apps
+    // (in the order the menu was built from): kCmdAppRule + i*kAppChoices + c
+    // picks choice c (0 take on mic, 1 take on play, 2 keep on mic, 3 reset to
+    // built-in).
+    static constexpr int kMaxMenuApps         = 64;
+    static constexpr int kAppChoices          = 4;
+    static constexpr int kCmdAppRule          = 4000;  // .. 4000 + kMaxMenuApps*kAppChoices
+    static bool isAppChoice(int cmd) { return cmd >= kCmdAppRule && cmd < kCmdAppRule + kMaxMenuApps * kAppChoices; }
 
     // Per-peer info shown in the menu.
     struct PeerStatus {
         std::uint64_t address{};
         std::wstring  name;
         bool          connected{false};
+    };
+
+    // An app in the "take or keep" submenu: built in, set by the user, or
+    // one that used sound or the mic (remembered across restarts), with the
+    // settings in force.
+    struct TriggerAppStatus {
+        std::wstring exe;
+        bool takeOnMic{false};
+        bool takeOnPlay{false};
+        bool keepOnMic{false};
+        bool builtIn{false};
+        bool changed{false};   // a built-in with saved changes
     };
 
     // Snapshot of app status, fetched just before the menu opens.
@@ -52,6 +72,8 @@ public:
         bool                    lidOpenConnect{true};
         bool                    hasMutedApps{false};
         std::vector<PeerStatus> peers;
+        // Every app, sorted by name (at most kMaxMenuApps).
+        std::vector<TriggerAppStatus> apps;
     };
 
     using StatusProvider  = std::function<StatusInfo()>;
@@ -87,6 +109,11 @@ private:
     static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
     LRESULT handleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
     void showContextMenu(HWND hwnd);
+    HMENU buildMenu(const StatusInfo& status);
+    static HMENU buildAppSubmenu(const TriggerAppStatus& app, int index);
+    // Setting toggles: the menu reopens after them, so ticks can be changed
+    // one after another (Win32 popup menus have no keep-open flag).
+    static bool keepsMenuOpen(int cmd);
 
     HWND m_hwnd{};
     NOTIFYICONDATAW m_nid{};

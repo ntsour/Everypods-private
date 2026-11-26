@@ -28,6 +28,22 @@ std::filesystem::path resolveConfigPath() {
     return std::filesystem::current_path() / L"config.txt";
 }
 
+std::wstring fromUtf8(const std::string& s) {
+    if (s.empty()) return {};
+    const int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(), nullptr, 0);
+    std::wstring w(n > 0 ? n : 0, L'\0');
+    if (n > 0) MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(), w.data(), n);
+    return w;
+}
+
+std::string toUtf8(const std::wstring& w) {
+    if (w.empty()) return {};
+    const int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), nullptr, 0, nullptr, nullptr);
+    std::string s(n > 0 ? n : 0, '\0');
+    if (n > 0) WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), s.data(), n, nullptr, nullptr);
+    return s;
+}
+
 }
 
 SettingsStore::SettingsStore() : m_path(resolveConfigPath()) {}
@@ -112,6 +128,29 @@ Settings SettingsStore::load() const {
         } else if (key == "lidlease") {
             s.lidLease = (val != "0");
             log::debug("  lidlease = {}", s.lidLease);
+        } else if (key == "seenapp") {
+            const std::wstring exe = normalizeExeName(fromUtf8(val));
+            if (!exe.empty() && std::find(s.seenApps.begin(), s.seenApps.end(), exe) == s.seenApps.end())
+                s.seenApps.push_back(exe);
+        } else if (key == "appset" || key == "takeonmic" || key == "takeonplay" || key == "keeponmic" || key == "nevertake" ||
+                   key == "callapp" || key == "mediaapp" || key == "protectapp") {
+            // One line per setting; lines for the same app are merged by
+            // TriggerAppList. appset (and the older nevertake) alone means
+            // nothing ticked. callapp/protectapp/mediaapp come from the first
+            // test builds (one choice per app): call = mic + keep.
+            // Cleaned (normalized, de-duplicated) when handed to TriggerAppList.
+            const std::wstring exe = normalizeExeName(fromUtf8(val));
+            if (exe.empty()) {
+                log::warn("  {} = {} -> (not a program name)", key, val);
+            } else {
+                TriggerApp app;
+                app.exe = exe;
+                app.takeOnMic = key == "takeonmic" || key == "callapp";
+                app.takeOnPlay = key == "takeonplay" || key == "mediaapp";
+                app.keepOnMic = key == "keeponmic" || key == "callapp" || key == "protectapp";
+                s.triggerApps.push_back(std::move(app));
+                log::debug("  {} = {}", key, toUtf8(exe));
+            }
         }
     }
     return s;
@@ -135,6 +174,15 @@ void SettingsStore::save(const Settings& s) const {
     f << "holdplayback=" << (s.holdPlayback ? "1" : "0") << '\n';
     f << "lidopenconnect=" << (s.lidOpenConnect ? "1" : "0") << '\n';
     f << "lidlease=" << (s.lidLease ? "1" : "0") << '\n';
+    for (const auto& app : s.triggerApps)
+    {
+        f << "appset=" << toUtf8(app.exe) << '\n';
+        if (app.takeOnMic)  f << "takeonmic=" << toUtf8(app.exe) << '\n';
+        if (app.takeOnPlay) f << "takeonplay=" << toUtf8(app.exe) << '\n';
+        if (app.keepOnMic)  f << "keeponmic=" << toUtf8(app.exe) << '\n';
+    }
+    for (const auto& exe : s.seenApps)
+        f << "seenapp=" << toUtf8(exe) << '\n';
 }
 
 }

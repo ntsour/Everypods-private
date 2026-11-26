@@ -4,6 +4,7 @@
 
 #include "PeerDialPolicy.hpp"
 #include "ProximityRules.hpp"
+#include "TriggerApps.hpp"
 #include "v2/PeerV2Arbitration.hpp"
 #include "v2/PeerV2Frame.hpp"
 #include "v2/PeerV2Identity.hpp"
@@ -265,6 +266,97 @@ static void proximityTests() {
     CHECK(!airpodsAvailableFor(t, t - 1000, t - kOutOfCaseWindowMs));     // out beacon just expired
 }
 
+static void triggerAppTests() {
+    using Propods::TriggerApp;
+    using Propods::TriggerAppList;
+    using Propods::TriggerEvent;
+    using Propods::TriggerRule;
+    using Propods::normalizeExeName;
+    using Propods::triggerFor;
+    using Propods::isCallMic;
+    CHECK(normalizeExeName(L"Dots.EXE") == L"dots.exe");
+    CHECK(normalizeExeName(L"  dots ") == L"dots.exe");
+    CHECK(normalizeExeName(L"C:\\Program Files\\OpenAI\\Dots.exe") == L"dots.exe");
+    CHECK(normalizeExeName(L"dots.exe\r") == L"dots.exe");  // CRLF config line
+    CHECK(normalizeExeName(L"").empty());
+    CHECK(normalizeExeName(L".exe").empty());
+    CHECK(normalizeExeName(L"bad|name").empty());
+
+    TriggerAppList list;
+    // Built-in catalog, pre-ticked.
+    const auto teams = list.resolve(L"MS-Teams.exe");
+    CHECK(teams.builtIn && !teams.changed && teams.takeOnMic && !teams.takeOnPlay && teams.keepOnMic);
+    CHECK(triggerFor(teams, true) == TriggerEvent::Call);
+    CHECK(triggerFor(teams, false) == TriggerEvent::None);  // a chat ping doesn't take them
+    CHECK(isCallMic(teams, true) && !isCallMic(teams, false));
+    const auto zoom = list.resolve(L"zoom.exe");
+    CHECK(!zoom.takeOnMic && !zoom.takeOnPlay && zoom.keepOnMic);
+    const auto chrome = list.resolve(L"chrome.exe");
+    CHECK(chrome.builtIn && chrome.takeOnMic && chrome.takeOnPlay && chrome.keepOnMic);
+    CHECK(triggerFor(chrome, false) == TriggerEvent::None);  // its plays come from the media controls
+    const auto vlc = list.resolve(L"vlc.exe");
+    CHECK(triggerFor(vlc, false) == TriggerEvent::Media);    // outside the media controls
+    CHECK(list.listed().size() == Propods::builtInTriggerApps().size());
+
+    // Any other app: take on play (rule 4), not saved.
+    const auto other = list.resolve(L"Dots.exe");
+    CHECK(other.exe == L"dots.exe" && !other.builtIn && !other.saved);
+    CHECK(other.takeOnPlay && !other.takeOnMic && !other.keepOnMic);
+    CHECK(triggerFor(other, true) == TriggerEvent::None && triggerFor(other, false) == TriggerEvent::None);
+
+    // Settings are saved from what is in force; nothing ticked is kept.
+    CHECK(list.setRule(L"dots", TriggerRule::KeepOnMic, true));
+    auto dots = list.resolve(L"dots.exe");
+    CHECK(dots.saved && dots.takeOnPlay && dots.keepOnMic && !dots.takeOnMic);
+    CHECK(!list.setRule(L"dots", TriggerRule::KeepOnMic, true));  // no change
+    CHECK(list.setRule(L"dots", TriggerRule::KeepOnMic, false));
+    CHECK(list.setRule(L"dots", TriggerRule::TakeOnPlay, false));
+    dots = list.resolve(L"dots.exe");
+    CHECK(dots.saved && !dots.takeOnMic && !dots.takeOnPlay && !dots.keepOnMic);  // never
+    CHECK(list.userApps().size() == 1);
+
+    // Built-ins can be changed, show as changed, and reset.
+    CHECK(!list.resetToBuiltIn(L"zoom.exe"));                 // nothing to reset
+    CHECK(list.setRule(L"zoom", TriggerRule::TakeOnMic, true));
+    const auto zoomChanged = list.resolve(L"zoom.exe");
+    CHECK(zoomChanged.builtIn && zoomChanged.changed && zoomChanged.takeOnMic && zoomChanged.keepOnMic);
+    CHECK(list.resetToBuiltIn(L"zoom.exe"));
+    CHECK(!list.resolve(L"zoom.exe").changed && !list.resolve(L"zoom.exe").takeOnMic);
+    CHECK(!list.resetToBuiltIn(L"dots.exe"));                 // not a built-in
+
+    // Rule 3: first seen in a call -> all three, saved; never over a saved or built-in app.
+    CHECK(list.adoptCallApp(L"chatgpt.exe"));
+    const auto gpt = list.resolve(L"chatgpt.exe");
+    CHECK(gpt.saved && gpt.takeOnMic && gpt.takeOnPlay && gpt.keepOnMic);
+    CHECK(!list.adoptCallApp(L"chatgpt.exe"));
+    CHECK(!list.adoptCallApp(L"dots.exe"));
+    CHECK(!list.adoptCallApp(L"zoom.exe"));
+
+    // Media-controls starts: the matched app's take-on-play decides.
+    CHECK(list.takesOnMediaStart(L"Chrome"));
+    CHECK(!list.takesOnMediaStart(L"MSTeams_8wekyb3d8bbwe!MSTeams"));  // Teams: play unticked
+    CHECK(!list.takesOnMediaStart(L"Dots.exe"));                       // saved with nothing ticked
+    CHECK(list.takesOnMediaStart(L"SomethingElse.exe"));               // unknown: rule 4
+    CHECK(list.takesOnMediaStart(L""));
+    CHECK(list.setRule(L"chrome", TriggerRule::TakeOnPlay, false));
+    CHECK(!list.takesOnMediaStart(L"Chrome"));
+    CHECK(Propods::gsmtcAppMatchesExe(L"308046B0AF4A39CB", L"firefox.exe"));
+    CHECK(!Propods::gsmtcAppMatchesExe(L"MSEdge", L"chrome.exe"));
+
+    // Config: lines merged per app, nothing-ticked entries kept, built-ins can be saved.
+    TriggerApp mic{L"Dots"};      mic.takeOnMic = true;
+    TriggerApp keep{L"dots.exe"}; keep.keepOnMic = true;
+    TriggerApp none{L"idle.exe"};
+    TriggerApp vlcOff{L"vlc.exe"};
+    TriggerApp empty{L""};        empty.keepOnMic = true;
+    list.setUserApps({mic, keep, none, vlcOff, empty});
+    CHECK(list.userApps().size() == 3);
+    CHECK(list.resolve(L"dots.exe").takeOnMic && list.resolve(L"dots.exe").keepOnMic && !list.resolve(L"dots.exe").takeOnPlay);
+    CHECK(list.resolve(L"idle.exe").saved && !list.resolve(L"idle.exe").takeOnPlay);
+    CHECK(list.resolve(L"vlc.exe").changed && triggerFor(list.resolve(L"vlc.exe"), false) == TriggerEvent::None);
+    CHECK(list.listed().size() == Propods::builtInTriggerApps().size() + 2);  // + dots, idle
+}
+
 int main() {
     identityTests();
     jsonTests();
@@ -273,6 +365,7 @@ int main() {
     arbitrationTests();
     dialPolicyTests();
     proximityTests();
+    triggerAppTests();
     std::printf("%d passed, %d failed\n", g_passed, g_failed);
     return g_failed == 0 ? 0 : 1;
 }

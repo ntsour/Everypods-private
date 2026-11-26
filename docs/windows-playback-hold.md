@@ -71,19 +71,22 @@ The media stays paused. The panel shows **Retry**, **Play on PC** (calls: **Use 
 
 ### When there is no hold
 
-- Setting off: no media hold and no media panel (calls still show progress).
+The panel shows progress for **every** takeover to this PC, whatever triggered it:
+media, a call app, a lid-open connect, or AirPods that were already connected at the
+Bluetooth level (a short "Connected"). Only holding the audio has conditions:
+
+- Setting off: no media hold (progress only).
 - Auto-route off: no media hold (the release condition might never come).
 - Apps outside the media controls (VLC 3, games): no session to pause; progress only
   (VLC is not pre-muted either).
-- The AirPods are not in use on a peer: no hold, no pre-mute, no panel, for media and
-  calls. Both are required: a linked peer's v2 snapshot says `held`
+- The AirPods are not in use on a peer: no hold and no pre-mute (progress only).
+  "In use" needs both: a linked peer's v2 snapshot says `held`
   (`PeerV2Mesh::anyPeerHoldsAirPods`), **and** a BLE beacon in the last 20 s says a bud
   is in an ear (`BleProximityWatcher::budLikelyWorn`, Android's `airPodsLikelyWorn`).
   A phone reports `held` while its Bluetooth profile is up, which stays true with the
   AirPods in their case; the BLE in-case check fails open once a closed case goes quiet;
   and `kAirPodsDisconnected` is only sent around a handover. Unknown counts as not worn
-  (only a PC whose BLE scan can't start skips the worn check). The takeover still runs
-  quietly.
+  (only a PC whose BLE scan can't start skips the worn check).
 
 ## Mute safety
 

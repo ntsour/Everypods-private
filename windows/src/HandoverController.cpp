@@ -245,11 +245,14 @@ void HandoverController::onLidOpened() {
         std::this_thread::sleep_for(std::chrono::milliseconds(400));
         if (m_state.load() != OwnershipState::LocalPc && !m_airpods.isClassicallyConnectedWinRT()) {
             log::handover("LID     case opened and this PC used the AirPods last: connecting them");
+            if (m_hold) m_hold->start(HoldKind::Media, /*peerAsked=*/false, std::wstring{}, /*holdAudio=*/false);
             if (m_airpods.connect()) {
                 // The BT rising-edge watcher claims ownership and tells the peers.
                 if (m_autoRoute.load()) m_airpods.setAsDefaultAudioDevice();
+                if (m_hold) m_hold->onConnected();
             } else {
                 log::handover("LID     lid-open connect failed");
+                if (m_hold) m_hold->onConnectFailed();
             }
         }
         m_lidConnectInFlight.store(false);
@@ -323,8 +326,10 @@ void HandoverController::requestTakeover(HoldKind kind, bool userRetry, const st
             log::handover("OUT     kAirPodsConnected -> all peers");
             m_peers.sendPacket(crossdevice::kAirPodsConnected);
         }
+        // Show the switch on the panel too (a Retry's panel is already up).
+        if (m_hold && !userRetry) m_hold->start(kind, /*peerAsked=*/false, std::wstring{}, /*holdAudio=*/false);
         if (m_autoRoute.load()) m_airpods.setAsDefaultAudioDevice();
-        if (m_hold) m_hold->onConnected();  // a Retry that found them already here
+        if (m_hold) m_hold->onConnected();
         return;
     }
 
@@ -395,16 +400,14 @@ void HandoverController::requestTakeover(HoldKind kind, bool userRetry, const st
     // Then connect right away in parallel (don't wait for ack/grace). The phone releases
     // while we're already connecting; the AirPods switch their A2DP to Windows once free.
     const bool peerConnected = m_peers.isAnyConnected();
-    // Start the hold before anything is sent, so the speakers stay quiet for the
-    // whole handover. Media holds need Auto-route: without it the AirPods may
-    // never become the default output and the hold could not end on its own.
-    // Hold and show progress only when a peer holds the AirPods and a bud is worn;
-    // otherwise they may be in their case and the panel would only report a failure.
-    if (m_hold && !userRetry && (kind == HoldKind::Call || m_autoRoute.load())) {
-        if (!m_holdProbe || m_holdProbe())
-            m_hold->start(kind, peerConnected, kind == HoldKind::Media ? holdAppId : std::wstring{});
-        else if (!m_hold->isActive())
-            log::handover("HOLD    skipped: AirPods not in use on a peer (none holds them, or no bud worn)");
+    // Start the panel before anything is sent, so the speakers stay quiet for the
+    // whole handover. Every takeover shows progress. Media audio is held only with
+    // Auto-route (without it the AirPods may never become the default output and
+    // the hold could not end on its own) and when a peer holds the AirPods and a
+    // bud is worn (otherwise nothing is playing on them to wait for).
+    if (m_hold && !userRetry) {
+        const bool holdAudio = kind == HoldKind::Media && m_autoRoute.load() && (!m_holdProbe || m_holdProbe());
+        m_hold->start(kind, peerConnected, kind == HoldKind::Media ? holdAppId : std::wstring{}, holdAudio);
     }
     if (peerConnected) {
         log::handover("OUT     kRequestDisconnect -> all peers");
@@ -534,7 +537,9 @@ void HandoverController::onIncomingPacket(std::span<const std::uint8_t> data) {
             // user is actually answering on. Music-only requests are unaffected (the
             // hasActiveCallSessions() check returns false for music-only audio). The
             // "requester always wins" rule still applies for non-call scenarios.
-            if (m_airpods.hasActiveCallSessions()) {
+            // A keep app's open mic (Teams, a meeting app, or one set in the tray)
+            // counts too; the session scan only knows a fixed list of apps.
+            if (m_callMicOpen.load() || m_airpods.hasActiveCallSessions()) {
                 log::handover("IN      kRequestDisconnect — REJECTED (call-hold veto: active call/meeting session)");
                 if (m_peers.isAnyConnected())
                     m_peers.sendPacket(crossdevice::kAirPodsConnected);   // re-assert to caller
@@ -591,7 +596,9 @@ void HandoverController::onIncomingPacket(std::span<const std::uint8_t> data) {
             // Call-hold veto, same as Android: a holder that is in a call (Teams / Zoom /
             // etc.) never lets go, even for a call-priority handover request. Re-assert
             // ownership so the requester stops waiting.
-            if (m_airpods.hasActiveCallSessions()) {
+            // A keep app's open mic (Teams, a meeting app, or one set in the tray)
+            // counts too; the session scan only knows a fixed list of apps.
+            if (m_callMicOpen.load() || m_airpods.hasActiveCallSessions()) {
                 log::handover("IN      kRequestHandover — REJECTED (call-hold veto: active call/meeting session)");
                 if (m_peers.isAnyConnected())
                     m_peers.sendPacket(crossdevice::kAirPodsConnected);   // re-assert to caller
@@ -785,7 +792,7 @@ void HandoverController::onCallMicChanged(bool open) {
     const std::uint64_t gen = ++m_callMicGen;
     if (open) {
         if (!m_callMicOpen.exchange(true) && m_onCallMicSettled) m_onCallMicSettled();
-        publishCallAudio("Teams mic open");
+        publishCallAudio("keep app mic open");
         return;
     }
     // The watcher re-subscribes on every default-device change, which reads as
@@ -797,7 +804,7 @@ void HandoverController::onCallMicChanged(bool open) {
         }
         if (m_callMicGen.load() != gen) return;
         if (m_callMicOpen.exchange(false) && m_onCallMicSettled) m_onCallMicSettled();
-        publishCallAudio("Teams mic closed");
+        publishCallAudio("keep app mic closed");
     }).detach();
 }
 

@@ -107,8 +107,8 @@ public:
     // Called on the worker thread whenever the status changes (nullopt = no hold / hide).
     void setOnStatusChange(StatusCallback cb);
 
-    // "Hold audio while connecting" setting. Off: no media hold and no media
-    // progress (calls still show progress).
+    // "Hold audio while connecting" setting. Off: media is not held, but the
+    // panel still shows progress.
     void setEnabled(bool enabled) { m_enabled.store(enabled); }
     bool enabled() const { return m_enabled.load(); }
 
@@ -119,9 +119,12 @@ public:
     // A GSMTC session's own playing state changed (from MediaPlaybackWatcher).
     void onSessionPlaybackChanged(const std::wstring& appId, bool playing);
 
-    // The takeover passed all gates and is starting. appId: the GSMTC session
-    // that started playing (empty for calls / apps outside the media controls).
-    void start(HoldKind kind, bool peerAsked, const std::wstring& appId);
+    // The takeover passed all gates and is starting: the panel shows progress
+    // for every takeover. appId: the GSMTC session that started playing (empty
+    // for calls / apps outside the media controls). holdAudio: also mute and
+    // pause that media while connecting (needs the setting on); false shows
+    // progress only.
+    void start(HoldKind kind, bool peerAsked, const std::wstring& appId, bool holdAudio = true);
     // A peer confirmed it let go (kAirPodsDisconnected) -> Connecting.
     void onPeerReleased();
     // The Bluetooth link to the AirPods is up -> Routing.

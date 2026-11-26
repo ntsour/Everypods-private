@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <future>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -68,23 +69,6 @@ std::wstring processBasename(DWORD pid) {
     return name;
 }
 
-// Comms apps: trigger on audio-session activation (call ringing / meeting join).
-bool isCommsApp(const std::wstring& exe) {
-    return _wcsicmp(exe.c_str(), L"ms-teams.exe") == 0
-        || _wcsicmp(exe.c_str(), L"Teams.exe") == 0;
-}
-
-// Media apps: trigger on audio-session activation (playback started).
-// VLC creates new WASAPI sessions on seek/track-change, so the PID dedupe
-// (5 s window) prevents repeated popups during normal use.
-bool isMediaApp(const std::wstring& exe) {
-    return _wcsicmp(exe.c_str(), L"vlc.exe") == 0;
-}
-
-bool isWatchedApp(const std::wstring& exe) {
-    return isCommsApp(exe) || isMediaApp(exe);
-}
-
 std::string narrow(const std::wstring& w) {
     std::string s; s.reserve(w.size());
     for (wchar_t c : w) s.push_back(static_cast<char>(c));
@@ -96,17 +80,19 @@ std::string narrow(const std::wstring& w) {
 
 // ---------------------------------------------------------------------------
 // SessionEvents — IAudioSessionEvents for one audio session
-// Watched apps (Teams, VLC): fires onTeamsSessionActive / onTeamsSessionEnded.
-// Any app on a render endpoint: fires onRenderSessionActive on an Active transition.
+// Trigger apps (TriggerApps.hpp, looked up at each event so tray changes apply
+// at once): fires onTeamsSessionActive / onTeamsSessionEnded and tracks open
+// call mics. Any app on a render endpoint: fires onRenderSessionActive on an
+// Active transition.
 // ---------------------------------------------------------------------------
 
 class TeamsCallWatcher::SessionEvents : public IAudioSessionEvents {
 public:
     SessionEvents(TeamsCallWatcher* owner, std::wstring exe, DWORD pid,
-                  EDataFlow flow, ERole role, bool watched,
+                  EDataFlow flow, ERole role,
                   std::wstring endpointId, std::wstring instanceId)
         : m_owner(owner), m_exe(std::move(exe)), m_pid(pid),
-          m_flow(flow), m_role(role), m_watched(watched),
+          m_flow(flow), m_role(role),
           m_endpointId(std::move(endpointId)), m_instanceId(std::move(instanceId)) {}
 
     void clearOwner() {
@@ -114,8 +100,6 @@ public:
         m_owner = nullptr;
     }
     const std::wstring& instanceId() const { return m_instanceId; }
-    // A Teams capture session: Active means its mic is open (a call or meeting).
-    bool isCallMic() const { return m_watched && m_flow == eCapture && isCommsApp(m_exe); }
 
     ULONG STDMETHODCALLTYPE AddRef() override { return ++m_refs; }
     ULONG STDMETHODCALLTYPE Release() override {
@@ -132,10 +116,18 @@ public:
     HRESULT STDMETHODCALLTYPE OnStateChanged(AudioSessionState state) override {
         TeamsCallWatcher* owner = m_owner;
         if (!owner) return S_OK;
-        if (isCallMic()) owner->setCallMicActive(this, state == AudioSessionStateActive);
+        const bool capture = m_flow == eCapture;
+        // Seen first: an app first seen in a call gets its settings right here.
+        if (state == AudioSessionStateActive && m_pid != GetCurrentProcessId())
+            owner->noteSeen(m_exe, capture, /*active=*/true);
+        const TriggerApp app = owner->triggerApps().resolve(m_exe);
+        // Always report a non-active state: an app whose keep setting was
+        // turned off while its mic was open must not count as a call forever.
+        owner->setCallMicActive(this, isCallMic(app, capture) && state == AudioSessionStateActive, m_exe);
         if (state == AudioSessionStateActive) {
-            if (m_watched)
-                owner->onTeamsSessionActive(m_pid, m_exe, m_flow, m_role);
+            const TriggerEvent ev = triggerFor(app, capture);
+            if (ev != TriggerEvent::None)
+                owner->onTeamsSessionActive(m_pid, m_exe, m_flow, m_role, ev == TriggerEvent::Call);
             if (m_flow == eRender && m_pid != GetCurrentProcessId()) {
                 AudioSessionRef ref;
                 ref.endpointId = m_endpointId;
@@ -144,7 +136,8 @@ public:
                 ref.exe = m_exe;
                 owner->onRenderSessionActive(ref);
             }
-        } else if (state == AudioSessionStateExpired && m_watched) {
+        } else if (state == AudioSessionStateExpired &&
+                   (app.takeOnMic || app.keepOnMic || app.playWithoutMediaControls)) {
             owner->onTeamsSessionEnded(m_pid, m_exe);
         }
         return S_OK;
@@ -165,7 +158,6 @@ private:
     DWORD m_pid;
     EDataFlow m_flow;
     ERole m_role;
-    bool m_watched;
     std::wstring m_endpointId;
     std::wstring m_instanceId;
 };
@@ -271,13 +263,12 @@ private:
 // ---------------------------------------------------------------------------
 
 void TeamsCallWatcher::onTeamsSessionActive(DWORD pid, const std::wstring& exe,
-                                             EDataFlow flow, ERole role) {
+                                             EDataFlow flow, ERole role, bool comms) {
     if (!shouldReport(pid)) {
         log::debug("Watched app active (dedupe suppressed): {} pid {} on {}/{}",
                    narrow(exe), (unsigned)pid, flowLabel(flow), roleLabel(role));
         return;
     }
-    const bool comms = isCommsApp(exe);
     log::info("Watched app {} active: {} (pid {}) on {}/{}",
               comms ? "call/meeting" : "media playback",
               narrow(exe), (unsigned)pid, flowLabel(flow), roleLabel(role));
@@ -295,7 +286,7 @@ void TeamsCallWatcher::onRenderSessionActive(const AudioSessionRef& session) {
     if (cb) cb(session);
 }
 
-void TeamsCallWatcher::setCallMicActive(const void* session, bool active) {
+void TeamsCallWatcher::setCallMicActive(const void* session, bool active, const std::wstring& exe) {
     bool edge = false, open = false;
     {
         std::scoped_lock lk{m_callMicMutex};
@@ -307,9 +298,83 @@ void TeamsCallWatcher::setCallMicActive(const void* session, bool active) {
         edge = open != wasOpen;
     }
     if (!edge) return;
-    log::info("TeamsCallWatcher: Teams mic {}", open ? "open (call or meeting)" : "closed");
+    log::info("TeamsCallWatcher: keep app mic {} ({})", open ? "open (call or meeting)" : "closed",
+              exe.empty() ? std::string{"session gone"} : narrow(exe));
     CallMicCallback cb = m_onCallMicChanged;
     if (cb) cb(open);
+}
+
+void TeamsCallWatcher::noteSeen(const std::wstring& exe, bool capture, bool active) {
+    const std::wstring n = normalizeExeName(exe);
+    if (n.empty()) return;
+    // An app first seen using the mic and sound within this window is a call app.
+    constexpr std::int64_t kFirstSeenWindowMs = 15'000;
+    const std::int64_t now = static_cast<std::int64_t>(GetTickCount64());
+    bool adopt = false;
+    {
+        std::scoped_lock lk{m_seenMutex};
+        auto it = std::find_if(m_seen.begin(), m_seen.end(), [&](const SeenAudioApp& a) { return a.exe == n; });
+        if (it == m_seen.end()) {
+            SeenAudioApp fresh;
+            fresh.exe = n;
+            fresh.firstSeenMs = now;
+            if (m_seen.size() >= 64) {
+                // Bounded: the app idle the longest makes room.
+                it = std::min_element(m_seen.begin(), m_seen.end(), [](const SeenAudioApp& a, const SeenAudioApp& b) {
+                    return a.lastActiveMs < b.lastActiveMs;
+                });
+                *it = std::move(fresh);
+            } else {
+                m_seen.push_back(std::move(fresh));
+                it = m_seen.end() - 1;
+            }
+        }
+        if (capture) it->usedMic = true;
+        if (active) {
+            it->lastActiveMs = now;
+            (capture ? it->lastMicMs : it->lastSoundMs) = now;
+        }
+        if (!it->decided) {
+            if (now - it->firstSeenMs > kFirstSeenWindowMs) {
+                it->decided = true;
+            } else if (it->lastMicMs && it->lastSoundMs) {
+                it->decided = true;
+                adopt = true;
+            }
+        }
+    }
+    if (adopt && m_apps.adoptCallApp(n)) {
+        log::info("TeamsCallWatcher: {} first seen using the mic and sound together: "
+                  "takes the AirPods on mic and play, keeps them while it uses the mic", narrow(n));
+        CallAppAdoptedCallback cb = m_onCallAppAdopted;
+        if (cb) cb(n);
+    }
+}
+
+void TeamsCallWatcher::seedSeenApps(const std::vector<std::wstring>& exes) {
+    std::scoped_lock lk{m_seenMutex};
+    for (const auto& raw : exes) {
+        const std::wstring n = normalizeExeName(raw);
+        if (n.empty() || m_seen.size() >= 64) continue;
+        if (std::none_of(m_seen.begin(), m_seen.end(), [&](const SeenAudioApp& a) { return a.exe == n; })) {
+            SeenAudioApp a;
+            a.exe = n;
+            a.decided = true;  // seen in an earlier run: not first seen
+            m_seen.push_back(std::move(a));
+        }
+    }
+}
+
+std::vector<TeamsCallWatcher::SeenAudioApp> TeamsCallWatcher::seenAudioApps() const {
+    std::vector<SeenAudioApp> out;
+    {
+        std::scoped_lock lk{m_seenMutex};
+        out = m_seen;
+    }
+    std::stable_sort(out.begin(), out.end(), [](const SeenAudioApp& a, const SeenAudioApp& b) {
+        return a.lastActiveMs > b.lastActiveMs;
+    });
+    return out;
 }
 
 void TeamsCallWatcher::onTeamsSessionEnded(DWORD pid, const std::wstring& exe) {
@@ -364,10 +429,12 @@ void TeamsCallWatcher::watchSession(IAudioSessionControl* ctrl,
     log::debug("TeamsCallWatcher: existing session {} (pid {}) on {}/{} state={}",
                narrow(exe), (unsigned)pid, flowLabel(flow), roleLabel(role), (int)state);
 
-    // Watched apps are tracked on every endpoint; any other app only on render
-    // endpoints (for the "something started playing" callback).
-    const bool watched = isWatchedApp(exe);
-    if (!watched && flow != eRender) return;
+    // Every app is watched on every endpoint: whether it is a trigger app is
+    // decided at each event, so an app added from the tray works at once.
+    // Event driven only: no audio stream is opened and nothing is polled.
+    const bool capture = flow == eCapture;
+    if (pid != GetCurrentProcessId()) noteSeen(exe, capture, state == AudioSessionStateActive);
+    const TriggerApp app = triggerApps().resolve(exe);
 
     // The EndpointSub this session belongs to: match by device id, not just
     // flow/role, so cleanup always unregisters what we registered.
@@ -377,11 +444,12 @@ void TeamsCallWatcher::watchSession(IAudioSessionControl* ctrl,
     }
     if (!sub) return;
 
-    // If a watched app is already active right now (Teams was in a call before
+    // If a trigger app is already active right now (Teams was in a call before
     // we started), report. Other apps already playing at registration time are
     // deliberately not reported: only real transitions are.
-    if (watched && state == AudioSessionStateActive)
-        onTeamsSessionActive(pid, exe, flow, role);
+    const TriggerEvent trigger = triggerFor(app, capture);
+    if (trigger != TriggerEvent::None && state == AudioSessionStateActive)
+        onTeamsSessionActive(pid, exe, flow, role, trigger == TriggerEvent::Call);
 
     std::wstring instanceId;
     LPWSTR rawInstance = nullptr;
@@ -392,10 +460,11 @@ void TeamsCallWatcher::watchSession(IAudioSessionControl* ctrl,
 
     // Register for future state changes.
     ComPtr<SessionEvents> ev;
-    ev.Attach(new SessionEvents(this, exe, pid, flow, role, watched, deviceId, std::move(instanceId)));
+    ev.Attach(new SessionEvents(this, exe, pid, flow, role, deviceId, std::move(instanceId)));
     const bool registered = SUCCEEDED(ctrl->RegisterAudioSessionNotification(ev.Get()));
     // A call already in progress when we (re)subscribed.
-    if (registered && ev->isCallMic() && state == AudioSessionStateActive) setCallMicActive(ev.Get(), true);
+    if (registered && isCallMic(app, capture) && state == AudioSessionStateActive)
+        setCallMicActive(ev.Get(), true, exe);
     // A brand-new session can be Active before we got to register for its
     // events (it reached us via the STA queue): report that start now.
     if (isNew && state == AudioSessionStateActive && flow == eRender && pid != GetCurrentProcessId()) {

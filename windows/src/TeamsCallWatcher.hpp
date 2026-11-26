@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <functional>
 #include <future>
 #include <mutex>
@@ -15,6 +16,7 @@
 #include <wrl/client.h>
 
 #include "SessionMute.hpp"
+#include "TriggerApps.hpp"
 
 namespace Propods {
 
@@ -38,8 +40,9 @@ public:
     TeamsCallWatcher(const TeamsCallWatcher&) = delete;
     TeamsCallWatcher& operator=(const TeamsCallWatcher&) = delete;
 
-    // Called when a watched app (Teams, VLC, …) audio session becomes active.
-    // `comms` is true for a call/meeting app (Teams), false for media (VLC).
+    // Called when a trigger app's audio session becomes active (see
+    // TriggerApps.hpp: Teams, VLC and the apps the user added). `comms` is true
+    // when it opened the mic (or any Teams session), false when it started playing.
     // Wire this to HandoverController::onCallActive() so the WASAPI-based
     // trigger feeds into the handover state machine with voluntary-release gating.
     using TriggerCallback = std::function<void(bool comms)>;
@@ -59,8 +62,9 @@ public:
     using SessionEndedCallback = std::function<void()>;
     void setOnSessionEnded(SessionEndedCallback cb) { m_onSessionEnded = std::move(cb); }
 
-    // Called when Teams opens its mic (any Teams capture session Active: a
-    // call or meeting) or closes it (none Active). Raw edges: subscriptions
+    // Called when a keep app (Teams, a meeting app, or one set in the tray) opens its mic (any
+    // of its capture sessions Active: a call or meeting) or closes it (none
+    // Active). Raw edges: subscriptions
     // are dropped and re-made on every default-device change, so the receiver
     // should debounce the close. Called on a WASAPI or the watcher's STA
     // thread; return quickly. Set before start().
@@ -70,13 +74,40 @@ public:
     bool start();
     void stop();
 
+    // The apps that raise a takeover. Change it at any time (thread-safe);
+    // the next session state change uses the new list.
+    TriggerAppList& triggerApps() { return m_apps; }
+
+    // An app with an audio session on a watched endpoint (not this process),
+    // most recently active first: what the tray lists.
+    struct SeenAudioApp {
+        std::wstring exe;      // normalized (lower case, ".exe")
+        bool usedMic{false};   // had a capture (microphone) session
+        std::int64_t lastActiveMs{0};  // GetTickCount64 of its last Active, 0 if never
+        // First-seen call detection (rule 3 in TriggerApps.hpp).
+        std::int64_t firstSeenMs{0};
+        std::int64_t lastMicMs{0};
+        std::int64_t lastSoundMs{0};
+        bool decided{false};           // seen before, or the first-seen window passed
+    };
+    // An app first seen using the mic and sound together was given all three
+    // settings (saved in the list): persist it. Called on a WASAPI or the STA
+    // thread; set before start().
+    using CallAppAdoptedCallback = std::function<void(const std::wstring& exe)>;
+    void setOnCallAppAdopted(CallAppAdoptedCallback cb) { m_onCallAppAdopted = std::move(cb); }
+    std::vector<SeenAudioApp> seenAudioApps() const;
+    // Apps seen in earlier runs (from config.txt), most recent first; they
+    // sort after anything seen in this run. Call before start().
+    void seedSeenApps(const std::vector<std::wstring>& exes);
+
     // Called by nested COM objects — not part of the user API.
-    void onTeamsSessionActive(DWORD pid, const std::wstring& exe, EDataFlow flow, ERole role);
+    void onTeamsSessionActive(DWORD pid, const std::wstring& exe, EDataFlow flow, ERole role, bool comms);
     void onTeamsSessionEnded(DWORD pid, const std::wstring& exe);
     void onNewSession(IAudioSessionControl* ctrl, EDataFlow flow, ERole role,
                       const std::wstring& deviceId);
     void onRenderSessionActive(const AudioSessionRef& session);
-    void setCallMicActive(const void* session, bool active);
+    void setCallMicActive(const void* session, bool active, const std::wstring& exe = {});
+    void noteSeen(const std::wstring& exe, bool capture, bool active);
 
 private:
     class Notification;          // IAudioSessionNotification — watches for new sessions
@@ -125,9 +156,15 @@ private:
     SessionEndedCallback  m_onSessionEnded;
     RenderSessionActiveCallback m_onRenderSessionActive;
     CallMicCallback       m_onCallMicChanged;
+    CallAppAdoptedCallback m_onCallAppAdopted;
+
+    TriggerAppList m_apps;
 
     std::mutex m_callMicMutex;
-    std::vector<const void*> m_callMicSessions;  // Teams capture sessions now Active
+    std::vector<const void*> m_callMicSessions;  // keep-app capture sessions now Active
+
+    mutable std::mutex m_seenMutex;
+    std::vector<SeenAudioApp> m_seen;
 
     std::mutex m_dedupeMutex;
     DWORD m_lastReportedPid{0};

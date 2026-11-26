@@ -25,6 +25,9 @@ jobs:
       - name: Build
         run: cmake --build windows/build --config Release --parallel
 
+      - name: Unit tests
+        run: windows/build/Release/peer_v2_tests.exe
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:

@@ -3,6 +3,8 @@
 #include "AirPodsIcon.hpp"
 #include "Logger.hpp"
 
+#include <algorithm>
+
 #include <strsafe.h>
 #include <winreg.h>
 
@@ -176,14 +178,93 @@ LRESULT TrayIcon::handleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
 }
 
+namespace {
+
+// "chrome.exe (built in): takes the AirPods when it starts playing; keeps ..."
+std::wstring appLineText(const TrayIcon::TriggerAppStatus& app) {
+    std::wstring s;
+    auto add = [&s](const wchar_t* t) { if (!s.empty()) s += L"; "; s += t; };
+    if (app.takeOnMic)  add(L"takes the AirPods when it opens the mic");
+    if (app.takeOnPlay) add(L"takes the AirPods when it starts playing");
+    if (app.keepOnMic)  add(L"keeps the AirPods while it uses the mic");
+    if (s.empty()) s = L"never takes or keeps the AirPods";
+    std::wstring name = app.exe;
+    if (app.builtIn) name += app.changed ? L" (built in, changed)" : L" (built in)";
+    return name + L": " + s;
+}
+
+}  // namespace
+
+// The three settings; built-ins add a separator and "Reset to built-in"
+// (greyed until changed).
+HMENU TrayIcon::buildAppSubmenu(const TriggerAppStatus& app, int index) {
+    HMENU sub = CreatePopupMenu();
+    const int base = kCmdAppRule + index * kAppChoices;
+    auto item = [&](int choice, bool checked, bool enabled, const wchar_t* text) {
+        UINT flags = MF_BYPOSITION | MF_STRING;
+        if (checked) flags |= MF_CHECKED;
+        if (!enabled) flags |= MF_DISABLED | MF_GRAYED;
+        InsertMenuW(sub, static_cast<UINT>(-1), flags, static_cast<UINT_PTR>(base + choice), text);
+    };
+    item(0, app.takeOnMic,  true, L"Take the AirPods when it opens the mic");
+    item(1, app.takeOnPlay, true, L"Take the AirPods when it starts playing");
+    item(2, app.keepOnMic,  true, L"Keep the AirPods while it uses the mic");
+    if (app.builtIn) {
+        InsertMenuW(sub, static_cast<UINT>(-1), MF_BYPOSITION | MF_SEPARATOR, 0u, nullptr);
+        item(3, false, app.changed, L"Reset to built-in");
+    }
+    return sub;
+}
+
+bool TrayIcon::keepsMenuOpen(int cmd) {
+    switch (cmd) {
+        case kCmdToggleAutoRoute: case kCmdTogglePause: case kCmdToggleTakeOnMedia:
+        case kCmdToggleTakeOnCall: case kCmdToggleHold: case kCmdToggleLidOpen:
+        case kCmdAutoStart:
+            return true;
+        default:
+            return isAppChoice(cmd);
+    }
+}
+
 void TrayIcon::showContextMenu(HWND hwnd) {
     POINT pt;
     GetCursorPos(&pt);
+    // After a setting toggle the menu opens again at the same spot; after an
+    // app choice, that app's submenu opens on its own so the next tick is one
+    // click away. Escape or a click outside ends it.
+    std::wstring reopenApp;
+    for (int round = 0; round < 100; ++round) {
+        // Fetch live status just before the menu opens.
+        StatusInfo status;
+        if (m_statusProvider) status = m_statusProvider();
 
-    // Fetch live status just before the menu opens.
-    StatusInfo status;
-    if (m_statusProvider) status = m_statusProvider();
+        HMENU menu = nullptr;
+        if (!reopenApp.empty()) {
+            const int n = (std::min)((int)status.apps.size(), kMaxMenuApps);
+            for (int i = 0; i < n && !menu; ++i)
+                if (status.apps[i].exe == reopenApp) menu = buildAppSubmenu(status.apps[i], i);
+        }
+        if (!menu) menu = buildMenu(status);
 
+        SetForegroundWindow(hwnd);
+        const int cmd = static_cast<int>(TrackPopupMenu(menu,
+            TPM_BOTTOMALIGN | TPM_LEFTALIGN | TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, 0, hwnd, nullptr));
+        PostMessageW(hwnd, WM_NULL, 0, 0);  // lets the next menu open and close normally
+        DestroyMenu(menu);
+        if (cmd == 0) return;
+
+        reopenApp.clear();
+        if (isAppChoice(cmd)) {
+            const int idx = (cmd - kCmdAppRule) / kAppChoices;
+            if (idx < (int)status.apps.size()) reopenApp = status.apps[idx].exe;
+        }
+        if (m_menuHandler) m_menuHandler(cmd);
+        if (!keepsMenuOpen(cmd)) return;
+    }
+}
+
+HMENU TrayIcon::buildMenu(const StatusInfo& status) {
     HMENU menu = CreatePopupMenu();
 
     // ── AirPods ──────────────────────────────────────────────────────────────
@@ -258,6 +339,25 @@ void TrayIcon::showContextMenu(HWND hwnd) {
     if (status.lidOpenConnect) lidFlags |= MF_CHECKED;
     InsertMenuW(menu, static_cast<UINT>(-1), lidFlags,
         static_cast<UINT_PTR>(kCmdToggleLidOpen), L"Connect AirPods when the case opens (if this PC used them last)");
+    // ── Apps that take or keep the AirPods ──────────────────────────────────
+    // Every app that used sound or the mic (remembered), every app the user
+    // set, and the built-ins, sorted by name; each line shows its mode.
+    HMENU appsMenu = CreatePopupMenu();
+    {
+        const int n = (std::min)((int)status.apps.size(), kMaxMenuApps);
+        for (int i = 0; i < n; ++i) {
+            const auto& app = status.apps[i];
+            const std::wstring label = appLineText(app);
+            InsertMenuW(appsMenu, static_cast<UINT>(-1), MF_BYPOSITION | MF_POPUP,
+                reinterpret_cast<UINT_PTR>(buildAppSubmenu(app, i)), label.c_str());
+        }
+        InsertMenuW(appsMenu, static_cast<UINT>(-1), MF_BYPOSITION | MF_SEPARATOR, 0u, nullptr);
+        InsertMenuW(appsMenu, static_cast<UINT>(-1), MF_BYPOSITION | MF_STRING | MF_DISABLED | MF_GRAYED, 0u,
+            L"Other apps show up here once they have used sound or the mic");
+    }
+    InsertMenuW(menu, static_cast<UINT>(-1), MF_BYPOSITION | MF_POPUP,
+        reinterpret_cast<UINT_PTR>(appsMenu), L"Apps that take or keep the AirPods");
+
     UINT unmuteFlags = MF_BYPOSITION | MF_STRING;
     if (!status.hasMutedApps) unmuteFlags |= MF_GRAYED | MF_DISABLED;
     InsertMenuW(menu, static_cast<UINT>(-1), unmuteFlags,
@@ -277,9 +377,7 @@ void TrayIcon::showContextMenu(HWND hwnd) {
     InsertMenuW(menu, static_cast<UINT>(-1), MF_BYPOSITION | MF_STRING,
         static_cast<UINT_PTR>(kCmdQuit), L"Quit");
 
-    SetForegroundWindow(hwnd);
-    TrackPopupMenu(menu, TPM_BOTTOMALIGN | TPM_LEFTALIGN, pt.x, pt.y, 0, hwnd, nullptr);
-    DestroyMenu(menu);
+    return menu;
 }
 
 void TrayIcon::runMessageLoop() {
