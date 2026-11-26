@@ -557,7 +557,7 @@ void PlaybackHold::onSessionPlaybackChanged(const std::wstring& appId, bool play
     m_impl->m_worker.post([this, appId, playing] { m_impl->onSessionPlaybackChanged(appId, playing); });
 }
 
-void PlaybackHold::start(HoldKind kind, bool peerAsked, const std::wstring& appId) {
+void PlaybackHold::start(HoldKind kind, bool peerAsked, const std::wstring& appId, bool holdAudio) {
     // Mark active at once so a racing trigger sees the hold before the worker runs.
     m_active.store(true);
     m_impl->m_worker.post([this, kind, peerAsked, appId, holdAudio] { m_impl->start(kind, peerAsked, appId, holdAudio); });
