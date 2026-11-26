@@ -173,54 +173,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         StayOpenItemView.item(title, isOn: isOn, onClick: onClick)
     }
 
-    /// "Apps that take or keep the AirPods" (mirrors the Windows tray menu): every app that ever used sound, plus
-    /// any the user set, each a submenu with an explicit choice: Default, the three settings, or Never.
-    /// Built-in meeting apps show their settings greyed.
+    /// "Apps that take or keep the AirPods" (same settings as the Windows tray menu): the built-in apps, every app
+    /// that used sound, and any the user set, sorted by name. Every app has the same three settings; built-in
+    /// apps start pre-configured and offer "Reset to built-in" once changed. Clicks keep the menu open.
     private func triggerAppsMenu() -> NSMenuItem {
         let parent = NSMenuItem(title: "Apps that take or keep the AirPods", action: nil, keyEquivalent: "")
         let submenu = NSMenu()
         let rules = Settings.triggerApps
-        var bundles: [String] = []
+        var keys: [String] = []
         func add(_ bundle: String) {
-            let n = TriggerAppList.normalized(bundle)
-            if !bundles.contains(n) { bundles.append(n) }
+            let k = rules.key(bundle)
+            if !k.isEmpty, k != "?", !keys.contains(k) { keys.append(k) }
         }
-        controller.media.seenApps.reversed().forEach(add)   // most recent first
-        rules.user.map(\.bundle).forEach(add)
-        if bundles.isEmpty {
-            submenu.addItem(disabled("No apps yet: play a sound or use the mic in an app, then open this menu again"))
-        }
-        let sorted = bundles.prefix(40).map { (bundle: $0, name: UserIntentWatcher.displayName($0)) }
+        TriggerAppList.builtIn.map(\.bundle).forEach(add)
+        rules.user.keys.forEach(add)
+        controller.media.seenApps.reversed().prefix(40).forEach(add)
+        let apps = keys.map { k in (key: k, name: TriggerAppList.builtIn(k)?.name ?? UserIntentWatcher.displayName(k)) }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-        for (bundle, name) in sorted {
-            let rule = rules.find(bundle)
-            let builtIn = rule?.builtIn == true
-            let summary = builtIn ? "built in" : rule.map { $0.settings.text } ?? "default"
-            let item = NSMenuItem(title: "\(name): \(summary)", action: nil, keyEquivalent: "")
+        for (key, name) in apps {
+            let label: () -> String = {
+                let now = Settings.triggerApps
+                let tag = TriggerAppList.builtIn(key) == nil ? "" : now.isChangedBuiltIn(key) ? " (built in, changed)" : " (built in)"
+                return "\(name)\(tag): \(now.settings(key).text)"
+            }
+            let item = NSMenuItem(title: label(), action: nil, keyEquivalent: "")
             let choices = NSMenu()
             choices.autoenablesItems = false
-            // Clicks keep the menu open; the app's line in the parent menu follows the new settings.
-            let relabel: () -> Void = { [weak item] in
-                let now = Settings.triggerApps.find(bundle)
-                item?.title = "\(name): \(now?.builtIn == true ? "built in" : now.map { $0.settings.text } ?? "default")"
-            }
-            let current = { Settings.triggerApps.find(bundle) }
-            if !builtIn {
-                choices.addItem(StayOpenItemView.item("Default: take them when I start it, or after 1 s of sound",
-                                                      isOn: { current() == nil },
-                                                      onClick: { [weak self] in self?.setDefault(bundle) }, afterClick: relabel))
-                choices.addItem(.separator())
-            }
+            let relabel: () -> Void = { [weak item] in item?.title = label() }
             for setting in TriggerSetting.allCases {
-                choices.addItem(StayOpenItemView.item(setting.title, enabled: !builtIn,
-                                                      isOn: { current().map { setting.get($0.settings) } == true },
-                                                      onClick: { [weak self] in self?.toggleSetting(bundle, setting) },
+                choices.addItem(StayOpenItemView.item(setting.title,
+                                                      isOn: { setting.get(Settings.triggerApps.settings(key)) },
+                                                      onClick: { [weak self] in self?.toggleSetting(key, setting) },
                                                       afterClick: relabel))
             }
-            if !builtIn {
+            if TriggerAppList.builtIn(key) != nil {
                 choices.addItem(.separator())
-                choices.addItem(StayOpenItemView.item("Never take the AirPods", isOn: { current()?.settings.isNever == true },
-                                                      onClick: { [weak self] in self?.setNever(bundle) }, afterClick: relabel))
+                // Greyed (nothing to reset) until the app is changed.
+                choices.addItem(StayOpenItemView.item("Reset to built-in", enabled: { Settings.triggerApps.isChangedBuiltIn(key) },
+                                                      isOn: { false },
+                                                      onClick: { [weak self] in self?.resetTrigger(key) },
+                                                      afterClick: relabel))
             }
             item.submenu = choices
             submenu.addItem(item)
@@ -229,27 +221,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return parent
     }
 
-    private func setDefault(_ bundle: String) {
+    private func toggleSetting(_ key: String, _ setting: TriggerSetting) {
         var rules = Settings.triggerApps
-        guard rules.remove(bundle) else { return }
+        guard rules.toggle(key, setting) else { return }
         Settings.triggerApps = rules
-        Log.write("Trigger apps: \(bundle): back to the default")
+        Log.write("Trigger apps: \(key): \(rules.settings(key).text)")
     }
 
-    private func toggleSetting(_ bundle: String, _ setting: TriggerSetting) {
+    private func resetTrigger(_ key: String) {
         var rules = Settings.triggerApps
-        guard rules.toggle(bundle, setting) else { return }
+        guard rules.reset(key) else { return }
         Settings.triggerApps = rules
-        Log.write("Trigger apps: \(bundle): \(rules.find(bundle)?.settings.text ?? "back to the default")")
-    }
-
-    private func setNever(_ bundle: String) {
-        var rules = Settings.triggerApps
-        // A second click on a ticked "Never" puts the app back to the default.
-        let changed = rules.find(bundle)?.settings.isNever == true ? rules.remove(bundle) : rules.set(bundle, .never)
-        guard changed else { return }
-        Settings.triggerApps = rules
-        Log.write("Trigger apps: \(bundle): \(rules.find(bundle)?.settings.text ?? "back to the default")")
+        Log.write("Trigger apps: \(key) reset to built-in (\(rules.settings(key).text))")
     }
 
     private func selectAirPodsMenu() -> NSMenuItem {

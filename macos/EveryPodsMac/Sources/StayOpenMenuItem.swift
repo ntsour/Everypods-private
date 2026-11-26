@@ -9,7 +9,8 @@ import AppKit
 final class StayOpenItemView: NSView {
     private let title: String
     private let isOn: () -> Bool
-    private let enabled: Bool
+    private let isEnabled: () -> Bool
+    private var enabled: Bool { isEnabled() }
     private let onClick: () -> Void
     /// Called after a click so sibling items (and the parent's title) can show the new state.
     var afterClick: (() -> Void)?
@@ -17,10 +18,10 @@ final class StayOpenItemView: NSView {
     private let font = NSFont.menuFont(ofSize: 0)
     private static let leftInset: CGFloat = 22, rightInset: CGFloat = 16, height: CGFloat = 22
 
-    init(title: String, enabled: Bool = true, isOn: @escaping () -> Bool, onClick: @escaping () -> Void) {
+    init(title: String, enabled: @escaping () -> Bool = { true }, isOn: @escaping () -> Bool, onClick: @escaping () -> Void) {
         self.title = title
         self.isOn = isOn
-        self.enabled = enabled
+        self.isEnabled = enabled
         self.onClick = onClick
         let width = ceil((title as NSString).size(withAttributes: [.font: font]).width) + Self.leftInset + Self.rightInset
         super.init(frame: NSRect(x: 0, y: 0, width: width, height: Self.height))
@@ -66,7 +67,7 @@ final class StayOpenItemView: NSView {
     }
 
     /// Makes a menu item backed by this view. After a click, every stay-open item in the same menu redraws.
-    static func item(_ title: String, enabled: Bool = true, isOn: @escaping () -> Bool,
+    static func item(_ title: String, enabled: @escaping () -> Bool = { true }, isOn: @escaping () -> Bool,
                      onClick: @escaping () -> Void, afterClick: (() -> Void)? = nil) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
         let view = StayOpenItemView(title: title, enabled: enabled, isOn: isOn, onClick: onClick)

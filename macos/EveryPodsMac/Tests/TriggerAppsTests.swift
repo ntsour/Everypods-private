@@ -1,81 +1,76 @@
-// TriggerApps: three independent per-app settings (take on mic, take on play, keep on mic), mirroring Windows.
+// TriggerApps: every app has the same three settings; built-ins are pre-configured, new apps start with
+// "take when it starts playing", apps seen in a call start with all three.
 import Foundation
 
 var failures = 0
 func check(_ ok: Bool, _ name: String) {
     if ok { print("PASS \(name)") } else { print("FAIL \(name)"); failures += 1 }
 }
-let micOnly = (output: false, input: true), playOnly = (output: true, input: false), both = (output: true, input: true)
-func d(_ list: TriggerAppList, _ app: String, _ io: (output: Bool, input: Bool), recorder: Bool = false) -> AudioUseDecision {
-    list.decide(app: app, output: io.output, input: io.input, recorder: recorder)
+func d(_ l: TriggerAppList, _ app: String, out: Bool = false, mic: Bool = false, recorder: Bool = false,
+       tab: Bool = false) -> AudioUseDecision {
+    l.decide(app: app, output: out, input: mic, recorder: recorder, meetingTab: tab)
 }
 
 do {
-    let list = TriggerAppList()
-    let ding = d(list, "com.google.Chrome", playOnly)
-    check(ding.playing && ding.triggers && !ding.trusted && !ding.call, "unlisted output: playback that must pass the checks")
-    let meet = d(list, "com.google.Chrome", both)
-    check(meet.call && meet.callTrigger && meet.triggers, "unlisted mic + output: a call")
-    let memo = d(list, "com.apple.VoiceMemos", both, recorder: true)
-    check(!memo.call && !memo.playing, "a recorder recording is neither a call nor playback")
-    let zoom = d(list, "us.zoom.xos", playOnly)
-    check(zoom.call && zoom.triggers, "built-in meeting app: output alone is a call")
-    check(list.find("com.microsoft.teams2")?.builtIn == true, "built-ins match by prefix")
+    var l = TriggerAppList()
+    check(l.settings("com.example.chat") == .play, "a new app starts with take on play")
+    let ding = d(l, "com.example.chat", out: true)
+    check(ding.playing && ding.triggers && !ding.trusted && !ding.call, "take on play: playback triggers, filtered")
+    check(!d(l, "com.example.chat", out: true, mic: true).call, "a play-only app's mic is not a call")
+    check(l.noteCall("com.example.chat") && l.settings("com.example.chat") == .all, "seen in a call: all three")
+    let call = d(l, "com.example.chat", out: true, mic: true)
+    check(call.call && call.trusted && call.triggers, "then its mic is a call that takes at once")
+    check(!l.noteCall("com.example.chat"), "noted once")
 }
 do {
-    var list = TriggerAppList()
-    list.set("com.google.Chrome", TriggerSettings(keepOnMic: true))
-    let meet = d(list, "com.google.chrome", both)
-    check(meet.call && !meet.triggers, "keep only: mic is a call but never takes")
-    let ding = d(list, "com.google.Chrome", playOnly)
-    check(ding.playing && !ding.triggers && !ding.call, "keep only: playback never takes")
+    let l = TriggerAppList()
+    check(l.settings("us.zoom.xos") == .all && l.settings("com.google.Chrome.helper") == .all
+          && l.settings("com.apple.Music") == .play && l.settings("com.spotify.client") == .play, "built-in defaults")
+    check(l.key("com.microsoft.teams2") == "com.microsoft.teams", "Teams 2 maps to the Teams entry")
+    check(l.key("com.cisco.webexmeetingsapp") == "com.cisco.webex", "meeting apps match by prefix")
+    check(l.key("com.apple.musicrecognition") != "com.apple.music", "other apps don't match by bare prefix")
+    let zoom = d(l, "us.zoom.xos", out: true)
+    check(zoom.call && zoom.trusted, "a meeting app's sound alone counts as using the mic")
+    let tab = d(l, "com.google.Chrome", out: true, tab: true)
+    check(tab.call && tab.trusted, "a browser meeting tab counts as using the mic")
+    let yt = d(l, "com.google.Chrome", out: true)
+    check(yt.triggers && !yt.trusted && !yt.call, "browser playback is filtered, not a call")
 }
 do {
-    var list = TriggerAppList()
-    list.set("ai.dots", TriggerSettings(takeOnMic: true))
-    let mic = d(list, "ai.dots", micOnly)
-    check(mic.triggers && mic.callTrigger && mic.trusted && !mic.call, "take on mic only: takes, but is not reported as a call")
-    check(!d(list, "ai.dots", playOnly).triggers, "take on mic only: playback never takes")
-    list.set("ai.dots", TriggerSettings(takeOnMic: true, keepOnMic: true))
-    let call = d(list, "ai.dots", micOnly)
-    check(call.triggers && call.call, "take on mic + keep: a call that takes and keeps")
+    var l = TriggerAppList()
+    l.toggle("com.google.Chrome", .takeOnMic)
+    l.toggle("com.google.Chrome", .takeOnPlay)
+    check(l.settings("com.google.chrome.helper") == TriggerSettings(keepOnMic: true), "built-ins can be changed (keep only)")
+    check(l.isChangedBuiltIn("com.google.Chrome"), "changed built-in is flagged")
+    let meet = d(l, "com.google.Chrome", out: true, mic: true)
+    check(meet.call && !meet.triggers, "keep only: a call that never takes")
+    check(!d(l, "com.google.Chrome", out: true).triggers, "keep only: playback never takes")
+    check(l.reset("com.google.Chrome") && l.settings("com.google.Chrome") == .all && !l.isChangedBuiltIn("com.google.Chrome"),
+          "reset to built-in")
 }
 do {
-    var list = TriggerAppList()
-    list.set("com.spotify.client", TriggerSettings(takeOnPlay: true))
-    let play = d(list, "com.spotify.client", playOnly)
-    check(play.triggers && play.trusted && !play.callTrigger, "take on play: playback takes without checks")
-    check(list.find("com.spotify.client.helper")?.settings.takeOnPlay == true, "a sub-bundle follows its app")
-    check(!d(list, "com.spotify.client", micOnly).triggers, "take on play: the mic does nothing")
+    var l = TriggerAppList()
+    l.toggle("com.tinyspeck.slackmacgap", .takeOnPlay)
+    check(l.settings("com.tinyspeck.slackmacgap") == .none, "unticking the only setting leaves nothing ticked")
+    let ding = d(l, "com.tinyspeck.slackmacgap", out: true, mic: true)
+    check(ding.playing && !ding.triggers && !ding.call, "nothing ticked: never takes or keeps")
+    check(!l.noteCall("com.tinyspeck.slackmacgap"), "a call doesn't override what the user set")
+    check(l.settings("com.tinyspeck.slackmacgap.helper") == .none, "a helper follows its app")
 }
 do {
-    var list = TriggerAppList()
-    list.set("com.tinyspeck.slackmacgap", .never)
-    let ding = d(list, "com.tinyspeck.slackmacgap", playOnly)
-    check(ding.playing && !ding.triggers, "never: still counts as playing, never takes")
-    let huddle = d(list, "com.tinyspeck.slackmacgap", both)
-    check(!huddle.call && !huddle.triggers, "never: its mic is not a call either")
+    let memo = d(TriggerAppList(), "com.apple.VoiceMemos", out: true, mic: true, recorder: true)
+    check(!memo.call && !memo.playing && !memo.triggers, "a recorder recording is neither a call nor playback")
 }
 do {
-    var list = TriggerAppList()
-    check(list.toggle("com.foo.app", .takeOnPlay) && list.user.count == 1, "ticking a setting adds the app")
-    check(list.toggle("com.foo.app", .keepOnMic) && list.find("com.foo.app")?.settings == TriggerSettings(takeOnPlay: true, keepOnMic: true),
-          "settings combine")
-    list.toggle("com.foo.app", .takeOnPlay)
-    check(list.toggle("com.foo.app", .keepOnMic) && list.user.isEmpty, "unticking all three removes the app")
-    check(!list.toggle("us.zoom.xos", .takeOnPlay), "built-ins can't be changed")
-}
-do {
-    let old = TriggerAppList(user: ["a.call": "call", "a.keep": "keep", "a.media": "media", "a.ignore": "ignore"])
-    check(old.find("a.call")?.settings == TriggerSettings(takeOnMic: true, keepOnMic: true), "old call → take on mic + keep")
-    check(old.find("a.keep")?.settings == TriggerSettings(keepOnMic: true), "old keep → keep")
-    check(old.find("a.media")?.settings == TriggerSettings(takeOnPlay: true), "old media → take on play")
-    check(old.find("a.ignore")?.settings.isNever == true, "old ignore → never")
-    var list = TriggerAppList()
-    list.set("Com.Foo.App", TriggerSettings(takeOnMic: true, takeOnPlay: true))
-    list.set("com.bar", .never)
-    check(TriggerAppList(user: list.saved).user.sorted { $0.bundle < $1.bundle } == list.user.sorted { $0.bundle < $1.bundle },
-          "saved form round-trips (names normalized, never kept)")
-    check(!list.set("  ", .never), "empty names are refused")
+    let old = TriggerAppList(user: ["a.call": "call", "a.keep": "keep", "a.media": "media", "a.ignore": "ignore", "a.new": "takeonmic,keeponmic"])
+    check(old.settings("a.call") == TriggerSettings(takeOnMic: true, keepOnMic: true), "old call → take on mic + keep")
+    check(old.settings("a.keep") == TriggerSettings(keepOnMic: true), "old keep → keep")
+    check(old.settings("a.media") == .play, "old media → take on play")
+    check(old.settings("a.ignore") == .none, "old ignore → nothing ticked")
+    check(old.settings("a.new") == TriggerSettings(takeOnMic: true, keepOnMic: true), "flag form loads")
+    var l = TriggerAppList(callSeen: ["com.x"])
+    l.toggle("com.y", .keepOnMic)
+    let back = TriggerAppList(user: l.savedUser, callSeen: Array(l.callSeen))
+    check(back.settings("com.y") == l.settings("com.y") && back.settings("com.x") == .all, "saved forms round-trip")
 }
 exit(failures == 0 ? 0 : 1)

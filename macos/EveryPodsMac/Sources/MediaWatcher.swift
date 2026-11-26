@@ -7,16 +7,15 @@
 // (browsers keep the stream open), so "started" is a reliable trigger but "stopped" is slow.
 //
 // An open output stream is not proof of playback: a browser opens one for a notification ding and keeps it
-// running 10-15 s, long past the sustain. So a start that could move the AirPods here (`levelGate`) must be
-// one of:
-//   * a call (microphone plus output, a meeting app, a "call" app; TriggerApps),
-//   * an app the user marked "takes the AirPods as soon as it starts playing",
-//   * audio the user asked for (UserIntent: a click or tap in the playing app just before, or a player's
-//     "Playing" broadcast),
-//   * or sustained sound: about 1 s of real audio, measured by a process tap on the playing processes
-//     (PlaybackLevelProbe, macOS 14.2+). Without the tap (older macOS, tap failure, or the capture permission
-//     never seen working) the start fires on the open stream as before.
-// Apps marked "never takes" or "keeps" never start a takeover.
+// running 10-15 s, long past the sustain. Each app's settings (TriggerApps) decide what it may do:
+//   * "Take the AirPods when it opens the mic": an open mic (or a meeting) takes them at once.
+//   * "Take the AirPods when it starts playing": playback takes them only when it is real. When the start
+//     could move the AirPods here (`levelGate`) it must be audio the user asked for (UserIntent: a click or tap
+//     in the playing app just before, or a player's "Playing" broadcast), or sustained sound: about 1 s of real
+//     audio, measured by a process tap on the playing processes (PlaybackLevelProbe, macOS 14.2+). Without the
+//     tap (older macOS, tap failure, or the capture permission never seen working) the start fires on the open
+//     stream as before.
+// An app with neither setting never starts a takeover.
 
 import CoreAudio
 import Foundation
@@ -32,10 +31,8 @@ final class MediaWatcher {
         /// Apps (as the user knows them, e.g. Chrome) whose audio may start a takeover, and their processes.
         var triggerOwners: [String] = []
         var triggerProcesses: [AudioObjectID] = []
-        /// A call whose app may start a takeover (not a "keep" app).
+        /// An open mic (or a meeting) whose app has "Take the AirPods when it opens the mic": takes them at once.
         var callTriggers = false
-        /// A "takes the AirPods as soon as it starts playing" app is playing.
-        var trustedPlaying = false
         var playing: Bool { !playingApps.isEmpty }
         var inCall: Bool { !callApps.isEmpty }
         var micInUse: Bool { !micApps.isEmpty }
@@ -54,8 +51,9 @@ final class MediaWatcher {
     var fastStart: () -> Bool = { false }
     /// True when a start would take the AirPods from another device: the start then needs real sound too.
     var levelGate: () -> Bool = { false }
-    /// The user's app rules (Settings.triggerApps).
+    /// Every app's settings (Settings.triggerApps), and where to save an app newly seen in a call.
     var apps: () -> TriggerAppList = { TriggerAppList() }
+    var saveApps: (TriggerAppList) -> Void = { _ in }
     let intent = UserIntentWatcher()
     /// Apps that ever used audio (owner bundles), newest last, for the apps menu. Remembered across launches so
     /// the menu lists them before they play again.
@@ -155,7 +153,7 @@ final class MediaWatcher {
                                                         frontmost: intent.frontmost, owners: next.triggerOwners)
                     if clickIntent { Log.write("Media: \(next.triggerOwners.joined(separator: ", ")) started right after a click in it") }
                     onPlaybackSeen?()
-                    if levelGate() && !next.callTriggers && !next.trustedPlaying && !clickIntent && !playerIntent(next) {
+                    if levelGate() && !next.callTriggers && !clickIntent && !playerIntent(next) {
                         startGate(next.triggerProcesses)
                     }
                 }
@@ -202,7 +200,6 @@ final class MediaWatcher {
     /// Whether an open stream past its sustain counts as a start.
     private func startAllowed(_ next: Snapshot, elapsed: TimeInterval) -> Bool {
         if next.callTriggers { return true }   // calls and meeting apps: as before
-        if next.trustedPlaying { return true }
         if clickIntent { return true }
         if playerIntent(next) {
             if gateState == .listening { Log.write("Media: \(next.triggerOwners.joined(separator: ", ")) announced playback") }
@@ -258,7 +255,7 @@ final class MediaWatcher {
 
     private func readSnapshot() -> Snapshot {
         var result = Snapshot()
-        let rules = apps()
+        var rules = apps()
         let processes = Self.objects(AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyProcessObjectList)
         if owners.count > processes.count + 32 { owners = owners.filter { processes.contains($0.key) } }
         for process in processes {
@@ -270,6 +267,10 @@ final class MediaWatcher {
             let recorder = recorderPrefixes.contains(where: { bundle.hasPrefix($0) })
             let owner = ownerBundle(process, bundle)
             noteSeen(owner)
+            if output && input && !recorder && rules.noteCall(owner) {
+                saveApps(rules)
+                Log.write("Trigger apps: \(owner) used the mic and sound together; it starts with all three settings")
+            }
             let decision = rules.decide(app: owner, output: output, input: input, recorder: recorder)
             if input { result.micApps.append(bundle) }
             if decision.playing {
@@ -280,8 +281,7 @@ final class MediaWatcher {
             if decision.triggers {
                 if !result.triggerOwners.contains(owner) { result.triggerOwners.append(owner) }
                 if decision.playing { result.triggerProcesses.append(process) }
-                if decision.callTrigger { result.callTriggers = true }
-                if decision.trusted { result.trustedPlaying = true }
+                if decision.trusted { result.callTriggers = true }
             }
         }
         if result.callApps.isEmpty { addBrowserMeetings(to: &result, rules: rules) }
@@ -316,16 +316,17 @@ final class MediaWatcher {
     }
 
     /// A browser that is playing audio while a meeting tab is open counts as a call (joined muted: no mic).
-    /// A muted meeting tab (no mic) in a listed browser follows its mic settings: "keep" reports the call,
-    /// "take on mic" takes the AirPods; a browser with none set is left out.
+    /// A browser with a meeting tab open (joined muted: no mic) counts as using the mic, so its mic settings
+    /// apply: "keep" reports the call, "take on mic" takes the AirPods.
     private func addBrowserMeetings(to result: inout Snapshot, rules: TriggerAppList) {
         for browser in browsers where result.playingApps.contains(where: { $0.hasPrefix(browser.bundlePrefix) }) {
-            let settings = rules.find(browser.bundlePrefix)?.settings
-            if settings?.isNever == true { continue }
+            let settings = rules.settings(browser.bundlePrefix)
+            guard settings.keepOnMic || settings.takeOnMic else { continue }
             refreshMeetingTabs(browser)
             guard meetingTabs[browser.appName] == true else { continue }
-            if settings?.keepOnMic ?? true { result.callApps.append(browser.bundlePrefix + " (meeting tab)") }
-            if settings?.takeOnMic ?? true {
+            let d = rules.decide(app: browser.bundlePrefix, output: true, input: false, recorder: false, meetingTab: true)
+            if d.call { result.callApps.append(browser.bundlePrefix + " (meeting tab)") }
+            if d.trusted {
                 result.callTriggers = true
                 if !result.triggerOwners.contains(browser.bundlePrefix) { result.triggerOwners.append(browser.bundlePrefix) }
             }

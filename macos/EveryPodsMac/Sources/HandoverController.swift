@@ -127,7 +127,10 @@ final class HandoverController {
         hold.playingApps = { [weak self] in self?.media.snapshot.playingApps ?? [] }
         media.fastStart = { Settings.holdPlayback }
         media.apps = { Settings.triggerApps }
-        for app in Settings.triggerApps.user { Log.write("Trigger app: \(app.bundle) \(app.settings.text)") }
+        media.saveApps = { Settings.triggerApps = $0 }
+        for (app, settings) in Settings.triggerApps.user.sorted(by: { $0.key < $1.key }) {
+            Log.write("Trigger app: \(app) \(settings.text)")
+        }
         // Only a start that could move the AirPods here needs real sound; with the AirPods already on this Mac
         // the trigger only claims ownership, and no tap is put next to the Bluetooth output.
         media.levelGate = { [weak self] in
