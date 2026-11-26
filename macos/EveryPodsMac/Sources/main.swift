@@ -15,10 +15,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var gattAuthorizer: GattSetupAuthorizer?
     private var menuCandidates: [PeerRegistry.Candidate] = []
 
+    func applicationWillTerminate(_ notification: Notification) {
+        Log.writeNow("Exit: EveryPods quit")
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        Log.installExitLogging()
         // Single instance: if another copy is already running, quit silently.
         if let id = Bundle.main.bundleIdentifier,
            NSRunningApplication.runningApplications(withBundleIdentifier: id).contains(where: { $0 != .current }) {
+            Log.writeNow("Exit: another copy of EveryPods is already running")
             NSApp.terminate(nil)
             return
         }
