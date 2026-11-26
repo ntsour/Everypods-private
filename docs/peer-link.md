@@ -115,7 +115,7 @@ link drops.
 
 Windows sends `kPeerAudioActive` while a keep app has its mic open (any capture
 session Active of an app set to "Keep the AirPods while it uses the mic": Teams,
-Zoom, Webex, Slack, Discord, or one the user set in the tray,
+Zoom, Webex, Slack, Discord and the browsers by default, or as set in the tray,
 reported by `TeamsCallWatcher`) and the AirPods are on the PC,
 and `kPeerAudioIdle` when the mic stays closed for 3 s or the AirPods leave. A
 peer that connects mid-call gets `kPeerAudioActive` again. This stops a phone

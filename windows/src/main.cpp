@@ -296,8 +296,8 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
         hold.onSessionPlaybackChanged(appId, playing);
     });
     teamsWatcher.setOnRenderSessionActive([&hold, &teamsWatcher](const AudioSessionRef& session) {
-        // No pre-mute for an app that never takes the AirPods: no takeover follows.
-        if (const auto app = teamsWatcher.triggerApps().find(session.exe); app && app->neverTake) return;
+        // No pre-mute for an app that doesn't take the AirPods on play: no takeover follows.
+        if (!teamsWatcher.triggerApps().resolve(session.exe).takeOnPlay) return;
         hold.onRenderSessionActive(session);
     });
 
@@ -350,6 +350,12 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     });
 
     std::mutex settingsMutex;
+    // An app first seen in a call got all three settings: save them.
+    teamsWatcher.setOnCallAppAdopted([&](const std::wstring&) {
+        std::scoped_lock lk{settingsMutex};
+        settings.triggerApps = teamsWatcher.triggerApps().userApps();
+        store.save(settings);
+    });
     // Remember the apps that used sound or the mic (the 40 most recent), so the
     // tray lists them after a restart. Saved when the menu opens and on quit.
     auto persistSeenApps = [&]() {
@@ -381,13 +387,15 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
         for (auto& p : peers.peerInfos())
             info.peers.push_back({p.address, p.name, p.connected});
         persistSeenApps();
-        // One list: built-ins, the user's apps and every remembered app, by name.
+        // One list: built-ins, the apps with saved settings and every remembered app, by name.
         std::vector<TrayIcon::TriggerAppStatus> apps;
-        for (const auto& app : teamsWatcher.triggerApps().all())
-            apps.push_back({app.exe, app.takeOnMic, app.takeOnPlay, app.keepOnMic, app.neverTake, app.builtIn});
+        auto& triggerList = teamsWatcher.triggerApps();
+        for (const auto& app : triggerList.listed())
+            apps.push_back({app.exe, app.takeOnMic, app.takeOnPlay, app.keepOnMic, app.builtIn, app.changed});
         for (const auto& seen : teamsWatcher.seenAudioApps()) {
             if (std::any_of(apps.begin(), apps.end(), [&](const auto& a) { return a.exe == seen.exe; })) continue;
-            apps.push_back({seen.exe, false, false, false, false, false});
+            const TriggerApp app = triggerList.resolve(seen.exe);
+            apps.push_back({app.exe, app.takeOnMic, app.takeOnPlay, app.keepOnMic, app.builtIn, app.changed});
         }
         std::sort(apps.begin(), apps.end(), [](const auto& a, const auto& b) { return a.exe < b.exe; });
         if ((int)apps.size() > TrayIcon::kMaxMenuApps) apps.resize(TrayIcon::kMaxMenuApps);
@@ -467,12 +475,13 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     media.setCallback([&controller, &mediaPlaying, &takeOnMediaStart, &peerV2, &media, &teamsWatcher, restoreAsync](bool playing) {
         mediaPlaying.store(playing);
         if (playing) restoreAsync("media started on this PC");
-        // An app set to "Never take the AirPods" still counts as playing, but
-        // its start raises no takeover.
+        // An app without "Take the AirPods when it starts playing" still counts
+        // as playing, but its start raises no takeover.
         if (playing) {
             const std::wstring appId = media.lastStartedAppId();
-            if (teamsWatcher.triggerApps().neverTakesMedia(appId)) {
-                log::handover("SKIP    media start by '{}': set to never take the AirPods", log::toUtf8(appId));
+            if (!teamsWatcher.triggerApps().takesOnMediaStart(appId)) {
+                log::handover("SKIP    media start by '{}': its app doesn't take the AirPods when it starts playing",
+                              log::toUtf8(appId));
                 peerV2.refreshLocalState();
                 return;
             }
@@ -711,17 +720,14 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
                     const std::wstring exe = menuApps[idx];
                     auto& list = teamsWatcher.triggerApps();
                     bool changed = false;
-                    if (choice == 0) {
-                        changed = list.remove(exe);  // Default: no settings, no config lines
+                    if (choice == 3) {
+                        changed = list.resetToBuiltIn(exe);
                     } else {
-                        const auto rule = static_cast<TriggerRule>(choice - 1);
-                        const auto current = list.find(exe);
-                        changed = list.setRule(exe, rule, !(current && current->get(rule)));
+                        const auto rule = static_cast<TriggerRule>(choice);
+                        changed = list.setRule(exe, rule, !list.resolve(exe).get(rule));
                     }
                     if (!changed) break;
-                    const auto now = list.find(exe);
-                    log::info("Trigger apps: {} now {}", log::toUtf8(exe),
-                              now ? triggerRulesText(*now) : std::string{"default"});
+                    log::info("Trigger apps: {} now {}", log::toUtf8(exe), triggerRulesText(list.resolve(exe)));
                     std::scoped_lock lk{settingsMutex};
                     settings.triggerApps = list.userApps();
                     store.save(settings);

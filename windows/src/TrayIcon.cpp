@@ -180,43 +180,38 @@ LRESULT TrayIcon::handleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
 namespace {
 
-// "takes the AirPods when it opens the mic; keeps the AirPods while it uses the mic"
-std::wstring appModeText(const TrayIcon::TriggerAppStatus& app) {
-    if (app.builtIn) return L"built in";
-    if (app.neverTake) return L"never takes the AirPods";
+// "chrome.exe (built in): takes the AirPods when it starts playing; keeps ..."
+std::wstring appLineText(const TrayIcon::TriggerAppStatus& app) {
     std::wstring s;
     auto add = [&s](const wchar_t* t) { if (!s.empty()) s += L"; "; s += t; };
     if (app.takeOnMic)  add(L"takes the AirPods when it opens the mic");
     if (app.takeOnPlay) add(L"takes the AirPods when it starts playing");
     if (app.keepOnMic)  add(L"keeps the AirPods while it uses the mic");
-    return s.empty() ? L"default" : s;
+    if (s.empty()) s = L"never takes or keeps the AirPods";
+    std::wstring name = app.exe;
+    if (app.builtIn) name += app.changed ? L" (built in, changed)" : L" (built in)";
+    return name + L": " + s;
 }
 
 }  // namespace
 
-// Default, separator, the three settings, separator, Never. Built-ins show
-// their three settings greyed, with no Default or Never.
+// The three settings; built-ins add a separator and "Reset to built-in"
+// (greyed until changed).
 HMENU TrayIcon::buildAppSubmenu(const TriggerAppStatus& app, int index) {
     HMENU sub = CreatePopupMenu();
     const int base = kCmdAppRule + index * kAppChoices;
-    const bool isDefault = !app.takeOnMic && !app.takeOnPlay && !app.keepOnMic && !app.neverTake;
-    auto item = [&](int choice, bool checked, const wchar_t* text) {
+    auto item = [&](int choice, bool checked, bool enabled, const wchar_t* text) {
         UINT flags = MF_BYPOSITION | MF_STRING;
         if (checked) flags |= MF_CHECKED;
-        if (app.builtIn) flags |= MF_DISABLED | MF_GRAYED;
+        if (!enabled) flags |= MF_DISABLED | MF_GRAYED;
         InsertMenuW(sub, static_cast<UINT>(-1), flags, static_cast<UINT_PTR>(base + choice), text);
     };
-    auto separator = [&] { InsertMenuW(sub, static_cast<UINT>(-1), MF_BYPOSITION | MF_SEPARATOR, 0u, nullptr); };
-    if (!app.builtIn) {
-        item(0, isDefault, L"Default: take them when it plays in the Windows media controls");
-        separator();
-    }
-    item(1, app.takeOnMic,  L"Take the AirPods when it opens the mic");
-    item(2, app.takeOnPlay, L"Take the AirPods when it starts playing");
-    item(3, app.keepOnMic,  L"Keep the AirPods while it uses the mic");
-    if (!app.builtIn) {
-        separator();
-        item(4, app.neverTake, L"Never take the AirPods");
+    item(0, app.takeOnMic,  true, L"Take the AirPods when it opens the mic");
+    item(1, app.takeOnPlay, true, L"Take the AirPods when it starts playing");
+    item(2, app.keepOnMic,  true, L"Keep the AirPods while it uses the mic");
+    if (app.builtIn) {
+        InsertMenuW(sub, static_cast<UINT>(-1), MF_BYPOSITION | MF_SEPARATOR, 0u, nullptr);
+        item(3, false, app.changed, L"Reset to built-in");
     }
     return sub;
 }
@@ -352,13 +347,13 @@ HMENU TrayIcon::buildMenu(const StatusInfo& status) {
         const int n = (std::min)((int)status.apps.size(), kMaxMenuApps);
         for (int i = 0; i < n; ++i) {
             const auto& app = status.apps[i];
-            const std::wstring label = app.exe + L": " + appModeText(app);
+            const std::wstring label = appLineText(app);
             InsertMenuW(appsMenu, static_cast<UINT>(-1), MF_BYPOSITION | MF_POPUP,
                 reinterpret_cast<UINT_PTR>(buildAppSubmenu(app, i)), label.c_str());
         }
         InsertMenuW(appsMenu, static_cast<UINT>(-1), MF_BYPOSITION | MF_SEPARATOR, 0u, nullptr);
         InsertMenuW(appsMenu, static_cast<UINT>(-1), MF_BYPOSITION | MF_STRING | MF_DISABLED | MF_GRAYED, 0u,
-            L"An app shows up here once it has used sound or the mic");
+            L"Other apps show up here once they have used sound or the mic");
     }
     InsertMenuW(menu, static_cast<UINT>(-1), MF_BYPOSITION | MF_POPUP,
         reinterpret_cast<UINT_PTR>(appsMenu), L"Apps that take or keep the AirPods");

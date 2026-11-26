@@ -22,7 +22,9 @@ struct Settings {
     bool                         holdPlayback{false};     // hold PC audio while the AirPods connect (PlaybackHold)
     bool                         lidOpenConnect{true};    // connect when the case opens, if this PC used them last
     bool                         lidLease{false};         // this PC used the AirPods last (lid-open connect)
-    // Apps the user added ("takeonmic=" / "takeonplay=" / "keeponmic=" / "nevertake=" lines, one per setting).
+    // Apps with saved settings: an "appset=" line per app (nothing ticked =
+    // never takes or keeps the AirPods), plus "takeonmic=" / "takeonplay=" /
+    // "keeponmic=" lines, one per ticked setting.
     std::vector<TriggerApp>      triggerApps;
     // Apps that used sound or the mic, most recent first, at most 40
     // ("seenapp=" lines): the tray lists them across restarts.

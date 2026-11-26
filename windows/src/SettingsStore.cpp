@@ -132,10 +132,11 @@ Settings SettingsStore::load() const {
             const std::wstring exe = normalizeExeName(fromUtf8(val));
             if (!exe.empty() && std::find(s.seenApps.begin(), s.seenApps.end(), exe) == s.seenApps.end())
                 s.seenApps.push_back(exe);
-        } else if (key == "takeonmic" || key == "takeonplay" || key == "keeponmic" || key == "nevertake" ||
+        } else if (key == "appset" || key == "takeonmic" || key == "takeonplay" || key == "keeponmic" || key == "nevertake" ||
                    key == "callapp" || key == "mediaapp" || key == "protectapp") {
             // One line per setting; lines for the same app are merged by
-            // TriggerAppList. callapp/protectapp/mediaapp come from the first
+            // TriggerAppList. appset (and the older nevertake) alone means
+            // nothing ticked. callapp/protectapp/mediaapp come from the first
             // test builds (one choice per app): call = mic + keep.
             // Cleaned (normalized, de-duplicated) when handed to TriggerAppList.
             const std::wstring exe = normalizeExeName(fromUtf8(val));
@@ -147,7 +148,6 @@ Settings SettingsStore::load() const {
                 app.takeOnMic = key == "takeonmic" || key == "callapp";
                 app.takeOnPlay = key == "takeonplay" || key == "mediaapp";
                 app.keepOnMic = key == "keeponmic" || key == "callapp" || key == "protectapp";
-                app.neverTake = key == "nevertake";
                 s.triggerApps.push_back(std::move(app));
                 log::debug("  {} = {}", key, toUtf8(exe));
             }
@@ -176,10 +176,10 @@ void SettingsStore::save(const Settings& s) const {
     f << "lidlease=" << (s.lidLease ? "1" : "0") << '\n';
     for (const auto& app : s.triggerApps)
     {
+        f << "appset=" << toUtf8(app.exe) << '\n';
         if (app.takeOnMic)  f << "takeonmic=" << toUtf8(app.exe) << '\n';
         if (app.takeOnPlay) f << "takeonplay=" << toUtf8(app.exe) << '\n';
         if (app.keepOnMic)  f << "keeponmic=" << toUtf8(app.exe) << '\n';
-        if (app.neverTake)  f << "nevertake=" << toUtf8(app.exe) << '\n';
     }
     for (const auto& exe : s.seenApps)
         f << "seenapp=" << toUtf8(exe) << '\n';

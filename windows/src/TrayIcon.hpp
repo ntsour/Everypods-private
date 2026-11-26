@@ -35,10 +35,10 @@ public:
     static constexpr int kCmdRemovePeer      = 2000;
     // "Apps that take or keep the AirPods" submenu. App i of StatusInfo::apps
     // (in the order the menu was built from): kCmdAppRule + i*kAppChoices + c
-    // picks choice c (0 default, 1 take on mic, 2 take on play, 3 keep on mic,
-    // 4 never take).
+    // picks choice c (0 take on mic, 1 take on play, 2 keep on mic, 3 reset to
+    // built-in).
     static constexpr int kMaxMenuApps         = 64;
-    static constexpr int kAppChoices          = 5;
+    static constexpr int kAppChoices          = 4;
     static constexpr int kCmdAppRule          = 4000;  // .. 4000 + kMaxMenuApps*kAppChoices
     static bool isAppChoice(int cmd) { return cmd >= kCmdAppRule && cmd < kCmdAppRule + kMaxMenuApps * kAppChoices; }
 
@@ -50,14 +50,15 @@ public:
     };
 
     // An app in the "take or keep" submenu: built in, set by the user, or
-    // one that used sound or the mic (remembered across restarts).
+    // one that used sound or the mic (remembered across restarts), with the
+    // settings in force.
     struct TriggerAppStatus {
         std::wstring exe;
         bool takeOnMic{false};
         bool takeOnPlay{false};
         bool keepOnMic{false};
-        bool neverTake{false};
         bool builtIn{false};
+        bool changed{false};   // a built-in with saved changes
     };
 
     // Snapshot of app status, fetched just before the menu opens.

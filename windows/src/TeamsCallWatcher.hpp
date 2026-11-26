@@ -84,7 +84,17 @@ public:
         std::wstring exe;      // normalized (lower case, ".exe")
         bool usedMic{false};   // had a capture (microphone) session
         std::int64_t lastActiveMs{0};  // GetTickCount64 of its last Active, 0 if never
+        // First-seen call detection (rule 3 in TriggerApps.hpp).
+        std::int64_t firstSeenMs{0};
+        std::int64_t lastMicMs{0};
+        std::int64_t lastSoundMs{0};
+        bool decided{false};           // seen before, or the first-seen window passed
     };
+    // An app first seen using the mic and sound together was given all three
+    // settings (saved in the list): persist it. Called on a WASAPI or the STA
+    // thread; set before start().
+    using CallAppAdoptedCallback = std::function<void(const std::wstring& exe)>;
+    void setOnCallAppAdopted(CallAppAdoptedCallback cb) { m_onCallAppAdopted = std::move(cb); }
     std::vector<SeenAudioApp> seenAudioApps() const;
     // Apps seen in earlier runs (from config.txt), most recent first; they
     // sort after anything seen in this run. Call before start().
@@ -146,6 +156,7 @@ private:
     SessionEndedCallback  m_onSessionEnded;
     RenderSessionActiveCallback m_onRenderSessionActive;
     CallMicCallback       m_onCallMicChanged;
+    CallAppAdoptedCallback m_onCallAppAdopted;
 
     TriggerAppList m_apps;
 
