@@ -280,7 +280,7 @@ public:
 
     // ---- hold lifecycle ----
 
-    void start(HoldKind kind, bool peerAsked, const std::wstring& appId) {
+    void start(HoldKind kind, bool peerAsked, const std::wstring& appId, bool holdAudio) {
         cancel("preMuteCap");
         if (active()) {
             if (m_status->kind == kind) {
@@ -294,11 +294,6 @@ public:
         cancel("resume");
         cancel("safetyReplay");
 
-        if (kind == HoldKind::Media && !m_owner.enabled()) {
-            m_mute.restoreAll("hold disabled");
-            return;
-        }
-
         m_wePaused = false;
         m_sawPaused = false;
         m_heldAppId.clear();
@@ -306,6 +301,11 @@ public:
         if (kind == HoldKind::Call) {
             // Calls are never held; undo a pre-mute that may have caught a web call.
             m_mute.restoreAll("call: nothing is held");
+        } else if (!holdAudio || !m_owner.enabled()) {
+            // Progress only: the hold is off, or no peer is using the AirPods.
+            m_mute.restoreAll("media: progress only");
+            log::handover("HOLD    media progress only ({})",
+                          m_owner.enabled() ? "AirPods not in use on a peer" : "hold setting off");
         } else {
             m_heldAppId = appId;
             if (!appId.empty()) {
@@ -559,8 +559,8 @@ void PlaybackHold::onSessionPlaybackChanged(const std::wstring& appId, bool play
 
 void PlaybackHold::start(HoldKind kind, bool peerAsked, const std::wstring& appId) {
     // Mark active at once so a racing trigger sees the hold before the worker runs.
-    if (kind == HoldKind::Call || enabled()) m_active.store(true);
-    m_impl->m_worker.post([this, kind, peerAsked, appId] { m_impl->start(kind, peerAsked, appId); });
+    m_active.store(true);
+    m_impl->m_worker.post([this, kind, peerAsked, appId, holdAudio] { m_impl->start(kind, peerAsked, appId, holdAudio); });
 }
 
 void PlaybackHold::onPeerReleased()  { m_impl->m_worker.post([this] { m_impl->onPeerReleased(); }); }
