@@ -89,7 +89,7 @@ final class HandoverController {
     private func reservationEnded() {
         guard triggerDeferredByReservation, !v2.reservationLive else { return }
         triggerDeferredByReservation = false
-        guard media.snapshot.playing || media.snapshot.inCall else {
+        guard media.snapshot.triggering else {
             return Log.write("V2: reservation ended; the audio that triggered a takeover has stopped")
         }
         Log.write("V2: reservation ended; running the deferred takeover trigger")
@@ -126,6 +126,8 @@ final class HandoverController {
         hold.isPlaying = { [weak self] in self?.media.snapshot.playing ?? false }
         hold.playingApps = { [weak self] in self?.media.snapshot.playingApps ?? [] }
         media.fastStart = { Settings.holdPlayback }
+        media.apps = { Settings.triggerApps }
+        for app in Settings.triggerApps.user { Log.write("Trigger app: \(app.bundle) \(app.kind.text)") }
         // Only a start that could move the AirPods here needs real sound; with the AirPods already on this Mac
         // the trigger only claims ownership, and no tap is put next to the Bluetooth output.
         media.levelGate = { [weak self] in
@@ -371,7 +373,7 @@ final class HandoverController {
     private func recheckWhenQuiet(after delay: TimeInterval) {
         recheck?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            guard let self, self.media.snapshot.playing, self.ownership != .thisMac else { return }
+            guard let self, self.media.snapshot.triggering, self.ownership != .thisMac else { return }
             Log.write("Recheck: audio still playing after the anti-ping-pong window")
             self.lastAction = Date.distantPast
             self.onMediaPlayingChanged(true)

@@ -143,6 +143,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(toggle("Auto-set AirPods as audio device", #selector(toggleAutoRoute), Settings.autoRoute))
         menu.addItem(toggle("Pause playback when handing over", #selector(togglePause), Settings.pauseOnHandover))
         menu.addItem(toggle("Hold audio until AirPods connect", #selector(toggleHold), Settings.holdPlayback))
+        menu.addItem(triggerAppsMenu())
         menu.addItem(toggle("Connect AirPods when the case opens (if this Mac used them last)", #selector(toggleLidOpen),
                             Settings.lidOpenConnect))
         if !MediaControl.hasPermission {
@@ -171,6 +172,65 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let item = action(title, selector)
         item.state = on ? .on : .off
         return item
+    }
+
+    /// "Apps that take or keep the AirPods" (mirrors the Windows tray menu): built-in meeting apps, then every app
+    /// the user listed or that used sound since launch, each with its rule.
+    private func triggerAppsMenu() -> NSMenuItem {
+        let parent = NSMenuItem(title: "Apps that take or keep the AirPods", action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
+        let rules = Settings.triggerApps
+        submenu.addItem(disabled("Built in: Zoom, Teams, FaceTime, Webex, Skype take them for calls"))
+        submenu.addItem(.separator())
+        var bundles = rules.user.map(\.bundle)
+        var usedMic = Set<String>()
+        for seen in controller.media.seenApps.reversed() where !TriggerAppList.isBuiltIn(seen.bundle) {
+            if seen.usedMic { usedMic.insert(TriggerAppList.normalized(seen.bundle)) }
+            if !bundles.contains(TriggerAppList.normalized(seen.bundle)) { bundles.append(TriggerAppList.normalized(seen.bundle)) }
+        }
+        if bundles.isEmpty {
+            submenu.addItem(disabled("No apps yet: play a sound or use the mic in an app, then open this menu again"))
+        }
+        for bundle in bundles.prefix(25) {
+            let current = rules.user.first { $0.bundle == bundle }?.kind
+            let name = UserIntentWatcher.displayName(bundle)
+            let item = NSMenuItem(title: current.map { "\(name): \($0.text)" } ?? name, action: nil, keyEquivalent: "")
+            let choices = NSMenu()
+            let byDefault = NSMenuItem(title: "Default: takes them when you start it, or after 1 s of sound",
+                                       action: #selector(setTriggerApp(_:)), keyEquivalent: "")
+            byDefault.target = self
+            byDefault.representedObject = [bundle, ""]
+            byDefault.state = current == nil ? .on : .off
+            choices.addItem(byDefault)
+            for kind in TriggerKind.allCases {
+                // Mic rules only make sense for an app seen using the mic (or already set that way).
+                if kind == .call || kind == .keep, !usedMic.contains(bundle), current != kind { continue }
+                let choice = NSMenuItem(title: kind.text.prefix(1).uppercased() + kind.text.dropFirst(),
+                                        action: #selector(setTriggerApp(_:)), keyEquivalent: "")
+                choice.target = self
+                choice.representedObject = [bundle, kind.rawValue]
+                choice.state = current == kind ? .on : .off
+                choices.addItem(choice)
+            }
+            item.submenu = choices
+            submenu.addItem(item)
+        }
+        parent.submenu = submenu
+        return parent
+    }
+
+    @objc private func setTriggerApp(_ sender: NSMenuItem) {
+        guard let pair = sender.representedObject as? [String], pair.count == 2 else { return }
+        var rules = Settings.triggerApps
+        let changed: Bool
+        if let kind = TriggerKind(rawValue: pair[1]) {
+            changed = rules.add(pair[0], kind)
+            if changed { Log.write("Trigger apps: \(pair[0]) \(kind.text)") }
+        } else {
+            changed = rules.remove(pair[0])
+            if changed { Log.write("Trigger apps: \(pair[0]) back to the default") }
+        }
+        if changed { Settings.triggerApps = rules }
     }
 
     private func selectAirPodsMenu() -> NSMenuItem {

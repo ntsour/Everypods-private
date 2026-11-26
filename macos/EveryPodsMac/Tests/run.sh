@@ -27,3 +27,11 @@ swiftc -target arm64-apple-macos13.0 Sources/PlaybackLevelProbe.swift Sources/Lo
 cp Tests/SustainedSoundDetectorTests.swift "$OUT/main.swift"
 swiftc -target arm64-apple-macos13.0 Sources/PlaybackLevelProbe.swift Sources/Log.swift "$OUT/main.swift" -o "$OUT/sustained-tests"
 "$OUT/sustained-tests"
+# Per-app rules (take, keep, take on play, never take).
+cp Tests/TriggerAppsTests.swift "$OUT/main.swift"
+swiftc -target arm64-apple-macos13.0 Sources/TriggerApps.swift "$OUT/main.swift" -o "$OUT/trigger-tests"
+"$OUT/trigger-tests"
+# User intent (click in the playing app, player broadcasts).
+cp Tests/UserIntentTests.swift "$OUT/main.swift"
+swiftc -target arm64-apple-macos13.0 Sources/UserIntent.swift "$OUT/main.swift" -o "$OUT/intent-tests"
+"$OUT/intent-tests"
