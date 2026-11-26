@@ -197,6 +197,11 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     hold.setEnabled(settings.holdPlayback);
     HandoverController controller{peers, airpods, media};
     TeamsCallWatcher teamsWatcher;
+    // Apps that take the AirPods, beyond the built-in Teams and VLC (tray menu).
+    teamsWatcher.triggerApps().setUserApps(settings.triggerApps);
+    for (const auto& app : teamsWatcher.triggerApps().userApps())
+        log::info("Trigger app: {} ({})", log::toUtf8(app.exe),
+                  app.kind == TriggerKind::Call ? "takes the AirPods when it opens the mic" : "takes the AirPods when it starts playing");
     BleProximityWatcher bleWatcher;
     TrayIcon tray;
 
@@ -225,7 +230,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
         st.headsetId = v2::headsetIdFromAddress(addr);
         const bool held = airpods.isClassicallyConnectedWinRT();
         st.ownership = held ? v2::Ownership::Held : v2::Ownership::Released;
-        // Only an open Teams mic is a call. An audio session starting (VLC,
+        // Only an open call-app mic (Teams or one the user added) is a call. An audio session starting (VLC,
         // a Teams chat ping) is not, and its "ended" event can be hours late:
         // counting it reported a call for as long as the PC held the AirPods,
         // and phones then refused to take them back (25 Nov).
@@ -343,6 +348,10 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     });
 
     // Provide live status to the tray menu (queried each time the menu opens).
+    // Trigger apps as the menu last showed them: the add/remove commands carry
+    // an index into these lists. Both run on the tray thread.
+    std::vector<std::wstring> menuAudioApps;
+    std::vector<std::wstring> menuUserTriggerApps;
     tray.setStatusProvider([&]() -> TrayIcon::StatusInfo {
         TrayIcon::StatusInfo info;
         info.airpodsConnected = airpods.isClassicallyConnected();
@@ -355,6 +364,18 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
         info.hasMutedApps = silencer.hasMuted();
         for (auto& p : peers.peerInfos())
             info.peers.push_back({p.address, p.name, p.connected});
+        menuUserTriggerApps.clear();
+        for (const auto& app : teamsWatcher.triggerApps().all()) {
+            info.triggerApps.push_back({app.exe, app.kind == TriggerKind::Call, app.builtIn});
+            if (!app.builtIn) menuUserTriggerApps.push_back(app.exe);
+        }
+        menuAudioApps.clear();
+        for (const auto& seen : teamsWatcher.seenAudioApps()) {
+            if ((int)info.audioApps.size() >= TrayIcon::kMaxMenuApps) break;
+            if (teamsWatcher.triggerApps().find(seen.exe)) continue;  // already listed
+            info.audioApps.push_back({seen.exe, seen.usedMic});
+            menuAudioApps.push_back(seen.exe);
+        }
         return info;
     });
 
@@ -435,12 +456,12 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
         peerV2.refreshLocalState();
     });
 
-    // WASAPI-based trigger (Teams calls, VLC, …) feeds the handover path via
+    // WASAPI-based trigger (Teams calls, VLC, the user's trigger apps) feeds the handover path via
     // onCallActive(), which applies the voluntary-release gate in addition to
     // the standard debounce and anti-pingpong guards. This prevents an ongoing
     // Teams call from re-triggering a claim after Windows voluntarily released
     // AirPods to a peer.
-    teamsWatcher.setOnTriggered([&controller, &takeOnCall, &peerV2, &silencer, &lostOwnershipAtMs](bool comms) {
+    teamsWatcher.setOnTriggered([&controller, &takeOnCall, &takeOnMediaStart, &peerV2, &silencer, &lostOwnershipAtMs](bool comms) {
         const std::int64_t sinceLost = static_cast<std::int64_t>(GetTickCount64()) - lostOwnershipAtMs.load();
         if (lostOwnershipAtMs.load() != 0 && sinceLost < 15'000) {
             log::handover("SKIP    audio-session trigger {} ms after the AirPods left (output moved to speakers)", sinceLost);
@@ -453,11 +474,14 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
             log::handover("SKIP    audio-session trigger: apps are muted for the phone");
             return;
         }
-        if (takeOnCall.load()) controller.onCallActive(/*isCall=*/comms);
+        // Call apps follow "take on call", media apps (VLC, user media apps)
+        // "take on media start".
+        if (comms ? takeOnCall.load() : takeOnMediaStart.load()) controller.onCallActive(/*isCall=*/comms);
         peerV2.refreshLocalState();
     });
 
-    // Teams mic open = in a call or meeting: protects the AirPods from a phone
+    // A call app's mic open (Teams or one the user added) = in a call or
+    // meeting: protects the AirPods from a phone
     // call takeover while they are on this PC (kPeerAudioActive to peers).
     controller.setOnCallMicSettled([&peerV2]() { peerV2.refreshLocalState(); });
     teamsWatcher.setOnCallMicChanged([&controller](bool open) { controller.onCallMicChanged(open); });
@@ -653,6 +677,34 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
                 tray.toggleAutoStart();
                 break;
             default:
+                if (cmd >= TrayIcon::kCmdAddCallApp && cmd < TrayIcon::kCmdRemoveTriggerApp + TrayIcon::kMaxMenuApps) {
+                    std::wstring exe;
+                    bool changed = false;
+                    if (cmd >= TrayIcon::kCmdRemoveTriggerApp) {
+                        const int idx = cmd - TrayIcon::kCmdRemoveTriggerApp;
+                        if (idx < (int)menuUserTriggerApps.size()) {
+                            exe = menuUserTriggerApps[idx];
+                            changed = teamsWatcher.triggerApps().remove(exe);
+                            if (changed) log::info("Trigger apps: removed {}", log::toUtf8(exe));
+                        }
+                    } else {
+                        const bool call = cmd < TrayIcon::kCmdAddMediaApp;
+                        const int idx = cmd - (call ? TrayIcon::kCmdAddCallApp : TrayIcon::kCmdAddMediaApp);
+                        if (idx >= 0 && idx < (int)menuAudioApps.size()) {
+                            exe = menuAudioApps[idx];
+                            changed = teamsWatcher.triggerApps().add(exe, call ? TriggerKind::Call : TriggerKind::Media);
+                            if (changed)
+                                log::info("Trigger apps: added {} ({})", log::toUtf8(exe),
+                                          call ? "takes the AirPods when it opens the mic" : "takes the AirPods when it starts playing");
+                        }
+                    }
+                    if (changed) {
+                        std::scoped_lock lk{settingsMutex};
+                        settings.triggerApps = teamsWatcher.triggerApps().userApps();
+                        store.save(settings);
+                    }
+                    break;
+                }
                 if (cmd >= TrayIcon::kCmdRemovePeer) {
                     // The index is into the peer list the menu was built from.
                     const int idx = cmd - TrayIcon::kCmdRemovePeer;

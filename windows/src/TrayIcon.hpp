@@ -33,12 +33,31 @@ public:
     static constexpr int kCmdUseAirPodsAudio   = 1015;  // default output + input (and Teams)
     // kCmdRemovePeer+i removes the peer at index i in the StatusInfo::peers list.
     static constexpr int kCmdRemovePeer      = 2000;
+    // Trigger apps ("Apps that take the AirPods" submenu). The index is into
+    // StatusInfo::audioApps (add) or the user entries of StatusInfo::triggerApps
+    // (remove), in the order the menu was built from.
+    static constexpr int kMaxMenuApps         = 20;
+    static constexpr int kCmdAddCallApp       = 3000;
+    static constexpr int kCmdAddMediaApp      = 3100;
+    static constexpr int kCmdRemoveTriggerApp = 3200;
 
     // Per-peer info shown in the menu.
     struct PeerStatus {
         std::uint64_t address{};
         std::wstring  name;
         bool          connected{false};
+    };
+
+    // An app that takes the AirPods (built in or added by the user).
+    struct TriggerAppStatus {
+        std::wstring exe;
+        bool         call{false};     // call app (mic) vs media app (playback)
+        bool         builtIn{false};
+    };
+    // An app that used audio since Propods started and can be added.
+    struct AudioAppStatus {
+        std::wstring exe;
+        bool         usedMic{false};
     };
 
     // Snapshot of app status, fetched just before the menu opens.
@@ -52,6 +71,8 @@ public:
         bool                    lidOpenConnect{true};
         bool                    hasMutedApps{false};
         std::vector<PeerStatus> peers;
+        std::vector<TriggerAppStatus> triggerApps;  // built-ins first
+        std::vector<AudioAppStatus>   audioApps;    // at most kMaxMenuApps, not yet listed
     };
 
     using StatusProvider  = std::function<StatusInfo()>;

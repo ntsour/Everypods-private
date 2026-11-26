@@ -68,6 +68,7 @@ set(HDR
     src/TrayIcon.hpp
     src/SettingsStore.hpp
     src/TeamsCallWatcher.hpp
+    src/TriggerApps.hpp
     src/PeerRegistry.hpp
     src/PeerServer.hpp
     src/BleProximityWatcher.hpp

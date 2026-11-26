@@ -4,6 +4,7 @@
 
 #include "PeerDialPolicy.hpp"
 #include "ProximityRules.hpp"
+#include "TriggerApps.hpp"
 #include "v2/PeerV2Arbitration.hpp"
 #include "v2/PeerV2Frame.hpp"
 #include "v2/PeerV2Identity.hpp"
@@ -265,6 +266,50 @@ static void proximityTests() {
     CHECK(!airpodsAvailableFor(t, t - 1000, t - kOutOfCaseWindowMs));     // out beacon just expired
 }
 
+static void triggerAppTests() {
+    using Propods::TriggerApp;
+    using Propods::TriggerAppList;
+    using Propods::TriggerKind;
+    using Propods::normalizeExeName;
+    CHECK(normalizeExeName(L"Dots.EXE") == L"dots.exe");
+    CHECK(normalizeExeName(L"  dots ") == L"dots.exe");
+    CHECK(normalizeExeName(L"C:\\Program Files\\OpenAI\\Dots.exe") == L"dots.exe");
+    CHECK(normalizeExeName(L"dots.exe\r") == L"dots.exe");  // CRLF config line
+    CHECK(normalizeExeName(L"").empty());
+    CHECK(normalizeExeName(L".exe").empty());
+    CHECK(normalizeExeName(L"bad|name").empty());
+
+    TriggerAppList list;
+    CHECK(list.find(L"MS-Teams.exe") && list.find(L"ms-teams.exe")->kind == TriggerKind::Call);
+    CHECK(list.find(L"vlc.exe") && list.find(L"vlc.exe")->builtIn);
+    CHECK(!list.find(L"dots.exe"));
+    CHECK(list.add(L"Dots.exe", TriggerKind::Call));
+    CHECK(!list.add(L"dots", TriggerKind::Call));            // already there
+    CHECK(list.add(L"dots", TriggerKind::Media));            // kind changed
+    CHECK(list.find(L"DOTS.EXE")->kind == TriggerKind::Media);
+    CHECK(!list.add(L"teams.exe", TriggerKind::Media));      // built-ins stay as they are
+    CHECK(list.userApps().size() == 1);
+    CHECK(list.all().size() == Propods::builtInTriggerApps().size() + 1);
+    CHECK(list.remove(L"dots.exe") && !list.find(L"dots.exe"));
+    CHECK(!list.remove(L"dots.exe"));
+
+    list.setUserApps({{L"Discord", TriggerKind::Call, false}, {L"discord.exe", TriggerKind::Media, false},
+                      {L"vlc.exe", TriggerKind::Call, false}, {L"", TriggerKind::Call, false}});
+    CHECK(list.userApps().size() == 1 && list.userApps()[0].exe == L"discord.exe");
+    CHECK(list.find(L"vlc.exe")->kind == TriggerKind::Media);  // config can't override a built-in
+
+    // User call apps trigger on the mic only, media apps on playback only;
+    // built-ins on any session, as before.
+    const TriggerApp call{L"dots.exe", TriggerKind::Call, false};
+    const TriggerApp media{L"spotify.exe", TriggerKind::Media, false};
+    const TriggerApp teams{L"ms-teams.exe", TriggerKind::Call, true};
+    CHECK(Propods::triggersOn(call, true) && !Propods::triggersOn(call, false));
+    CHECK(!Propods::triggersOn(media, true) && Propods::triggersOn(media, false));
+    CHECK(Propods::triggersOn(teams, true) && Propods::triggersOn(teams, false));
+    CHECK(Propods::isCallMic(call, true) && !Propods::isCallMic(call, false));
+    CHECK(Propods::isCallMic(teams, true) && !Propods::isCallMic(media, true));
+}
+
 int main() {
     identityTests();
     jsonTests();
@@ -273,6 +318,7 @@ int main() {
     arbitrationTests();
     dialPolicyTests();
     proximityTests();
+    triggerAppTests();
     std::printf("%d passed, %d failed\n", g_passed, g_failed);
     return g_failed == 0 ? 0 : 1;
 }

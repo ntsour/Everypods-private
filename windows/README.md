@@ -75,9 +75,31 @@ allowlist is in `AirPodsConnector.cpp::isCommsAppExe()` and currently covers:
 | Slack | `slack.exe` |
 | Cisco WebEx | `webex.exe`, `webexd.exe` |
 
+An open microphone in a **call app you added** (see below) also rejects it.
+
 Passive media (YouTube, Spotify, browser audio, system sounds) does **not**
 trigger the reject. If you're listening to music on the PC and pick up your
 phone to take a call, the AirPods migrate to the phone instantly.
+
+### Apps that take the AirPods
+Windows takes the AirPods when media starts in the Windows media controls, when
+Teams (`ms-teams.exe`, `Teams.exe`) starts a call or meeting, and when VLC starts
+playing. There is no reliable "a call started" signal for every app (voice
+typing, recorders and browser tabs open the mic too), so other apps are added by
+hand: tray menu → **Apps that take the AirPods**. The menu lists apps that used
+sound since Propods started; use the app once, then open the menu. Each app is
+added one of two ways:
+
+- **when it opens the mic (calls)**: takes the AirPods when the app opens the
+  default microphone, and holds them while the mic stays open, like a Teams call
+  (phones are told a call is running and do not take them for their own call).
+  Follows "Take AirPods when a call starts on this PC".
+- **when it starts playing**: takes the AirPods when the app starts playing
+  sound. Follows "Take AirPods when this PC starts playing media".
+
+The list is saved in `%APPDATA%\Propods\config.txt` as `callapp=name.exe` and
+`mediaapp=name.exe` lines, which can also be edited by hand while Propods is
+closed.
 
 ### Multi-window pause
 On a Windows → phone handover, all three GSMTC pause methods (current

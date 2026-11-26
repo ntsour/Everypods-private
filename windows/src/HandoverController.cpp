@@ -534,7 +534,9 @@ void HandoverController::onIncomingPacket(std::span<const std::uint8_t> data) {
             // user is actually answering on. Music-only requests are unaffected (the
             // hasActiveCallSessions() check returns false for music-only audio). The
             // "requester always wins" rule still applies for non-call scenarios.
-            if (m_airpods.hasActiveCallSessions()) {
+            // A call app's open mic (Teams or one the user added in the tray)
+            // counts too; the session scan only knows a fixed list of apps.
+            if (m_callMicOpen.load() || m_airpods.hasActiveCallSessions()) {
                 log::handover("IN      kRequestDisconnect — REJECTED (call-hold veto: active call/meeting session)");
                 if (m_peers.isAnyConnected())
                     m_peers.sendPacket(crossdevice::kAirPodsConnected);   // re-assert to caller
@@ -591,7 +593,9 @@ void HandoverController::onIncomingPacket(std::span<const std::uint8_t> data) {
             // Call-hold veto, same as Android: a holder that is in a call (Teams / Zoom /
             // etc.) never lets go, even for a call-priority handover request. Re-assert
             // ownership so the requester stops waiting.
-            if (m_airpods.hasActiveCallSessions()) {
+            // A call app's open mic (Teams or one the user added in the tray)
+            // counts too; the session scan only knows a fixed list of apps.
+            if (m_callMicOpen.load() || m_airpods.hasActiveCallSessions()) {
                 log::handover("IN      kRequestHandover — REJECTED (call-hold veto: active call/meeting session)");
                 if (m_peers.isAnyConnected())
                     m_peers.sendPacket(crossdevice::kAirPodsConnected);   // re-assert to caller
@@ -785,7 +789,7 @@ void HandoverController::onCallMicChanged(bool open) {
     const std::uint64_t gen = ++m_callMicGen;
     if (open) {
         if (!m_callMicOpen.exchange(true) && m_onCallMicSettled) m_onCallMicSettled();
-        publishCallAudio("Teams mic open");
+        publishCallAudio("call app mic open");
         return;
     }
     // The watcher re-subscribes on every default-device change, which reads as
@@ -797,7 +801,7 @@ void HandoverController::onCallMicChanged(bool open) {
         }
         if (m_callMicGen.load() != gen) return;
         if (m_callMicOpen.exchange(false) && m_onCallMicSettled) m_onCallMicSettled();
-        publishCallAudio("Teams mic closed");
+        publishCallAudio("call app mic closed");
     }).detach();
 }
 

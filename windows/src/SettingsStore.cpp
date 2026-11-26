@@ -28,6 +28,22 @@ std::filesystem::path resolveConfigPath() {
     return std::filesystem::current_path() / L"config.txt";
 }
 
+std::wstring fromUtf8(const std::string& s) {
+    if (s.empty()) return {};
+    const int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(), nullptr, 0);
+    std::wstring w(n > 0 ? n : 0, L'\0');
+    if (n > 0) MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(), w.data(), n);
+    return w;
+}
+
+std::string toUtf8(const std::wstring& w) {
+    if (w.empty()) return {};
+    const int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), nullptr, 0, nullptr, nullptr);
+    std::string s(n > 0 ? n : 0, '\0');
+    if (n > 0) WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), s.data(), n, nullptr, nullptr);
+    return s;
+}
+
 }
 
 SettingsStore::SettingsStore() : m_path(resolveConfigPath()) {}
@@ -112,6 +128,15 @@ Settings SettingsStore::load() const {
         } else if (key == "lidlease") {
             s.lidLease = (val != "0");
             log::debug("  lidlease = {}", s.lidLease);
+        } else if (key == "callapp" || key == "mediaapp") {
+            // Cleaned (normalized, de-duplicated) when handed to TriggerAppList.
+            const std::wstring exe = normalizeExeName(fromUtf8(val));
+            if (exe.empty()) {
+                log::warn("  {} = {} -> (not a program name)", key, val);
+            } else {
+                s.triggerApps.push_back({exe, key == "callapp" ? TriggerKind::Call : TriggerKind::Media, false});
+                log::debug("  {} = {}", key, toUtf8(exe));
+            }
         }
     }
     return s;
@@ -135,6 +160,8 @@ void SettingsStore::save(const Settings& s) const {
     f << "holdplayback=" << (s.holdPlayback ? "1" : "0") << '\n';
     f << "lidopenconnect=" << (s.lidOpenConnect ? "1" : "0") << '\n';
     f << "lidlease=" << (s.lidLease ? "1" : "0") << '\n';
+    for (const auto& app : s.triggerApps)
+        f << (app.kind == TriggerKind::Call ? "callapp=" : "mediaapp=") << toUtf8(app.exe) << '\n';
 }
 
 }

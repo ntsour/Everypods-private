@@ -258,6 +258,46 @@ void TrayIcon::showContextMenu(HWND hwnd) {
     if (status.lidOpenConnect) lidFlags |= MF_CHECKED;
     InsertMenuW(menu, static_cast<UINT>(-1), lidFlags,
         static_cast<UINT_PTR>(kCmdToggleLidOpen), L"Connect AirPods when the case opens (if this PC used them last)");
+    // ── Apps that take the AirPods ───────────────────────────────────────────
+    HMENU appsMenu = CreatePopupMenu();
+    {
+        const UINT info = MF_BYPOSITION | MF_STRING | MF_DISABLED | MF_GRAYED;
+        int userIdx = 0;
+        for (const auto& app : status.triggerApps) {
+            const wchar_t* when = app.call ? L"when it opens the mic" : L"when it starts playing";
+            if (app.builtIn) {
+                const std::wstring label = app.exe + L": " + (app.call ? L"calls" : L"playback") + L" (built in)";
+                InsertMenuW(appsMenu, static_cast<UINT>(-1), info, 0u, label.c_str());
+            } else if (userIdx < kMaxMenuApps) {
+                const std::wstring label = L"Remove " + app.exe + L" (" + when + L")";
+                InsertMenuW(appsMenu, static_cast<UINT>(-1), MF_BYPOSITION | MF_STRING,
+                    static_cast<UINT_PTR>(kCmdRemoveTriggerApp + userIdx), label.c_str());
+                ++userIdx;
+            }
+        }
+        InsertMenuW(appsMenu, static_cast<UINT>(-1), MF_BYPOSITION | MF_SEPARATOR, 0u, nullptr);
+        InsertMenuW(appsMenu, static_cast<UINT>(-1), info, 0u, L"Add an app that used sound since Propods started:");
+        if (status.audioApps.empty()) {
+            InsertMenuW(appsMenu, static_cast<UINT>(-1), info, 0u,
+                L"    (none yet: use the app's sound or mic, then open this menu again)");
+        }
+        for (int i = 0; i < (int)status.audioApps.size() && i < kMaxMenuApps; ++i) {
+            const auto& app = status.audioApps[i];
+            // Offered as a call app only once it has opened the mic: that is
+            // the event a call app triggers on.
+            if (app.usedMic) {
+                const std::wstring label = app.exe + L": take the AirPods when it opens the mic (calls)";
+                InsertMenuW(appsMenu, static_cast<UINT>(-1), MF_BYPOSITION | MF_STRING,
+                    static_cast<UINT_PTR>(kCmdAddCallApp + i), label.c_str());
+            }
+            const std::wstring label = app.exe + L": take the AirPods when it starts playing";
+            InsertMenuW(appsMenu, static_cast<UINT>(-1), MF_BYPOSITION | MF_STRING,
+                static_cast<UINT_PTR>(kCmdAddMediaApp + i), label.c_str());
+        }
+    }
+    InsertMenuW(menu, static_cast<UINT>(-1), MF_BYPOSITION | MF_POPUP,
+        reinterpret_cast<UINT_PTR>(appsMenu), L"Apps that take the AirPods");
+
     UINT unmuteFlags = MF_BYPOSITION | MF_STRING;
     if (!status.hasMutedApps) unmuteFlags |= MF_GRAYED | MF_DISABLED;
     InsertMenuW(menu, static_cast<UINT>(-1), unmuteFlags,
