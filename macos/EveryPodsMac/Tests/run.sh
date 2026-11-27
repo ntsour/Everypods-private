@@ -35,3 +35,7 @@ swiftc -target arm64-apple-macos13.0 Sources/TriggerApps.swift "$OUT/main.swift"
 cp Tests/UserIntentTests.swift "$OUT/main.swift"
 swiftc -target arm64-apple-macos13.0 Sources/UserIntent.swift "$OUT/main.swift" -o "$OUT/intent-tests"
 "$OUT/intent-tests"
+# Hourly link stats lines.
+cp Tests/LinkStatsTests.swift "$OUT/main.swift"
+swiftc -target arm64-apple-macos13.0 Sources/LinkStats.swift "$OUT/main.swift" -o "$OUT/linkstats-tests"
+"$OUT/linkstats-tests"

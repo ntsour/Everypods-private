@@ -57,8 +57,12 @@ final class PeerGattCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
         var pings: [UInt32: Date] = [:]
         var rediscoverDeadline: Date?
         var startedAt = Date()
+        var readyAt: Date?
 
         init(_ peripheral: CBPeripheral) { self.peripheral = peripheral }
+
+        /// LinkStats key: stable across reconnects and known before HELLO.
+        var statsKey: String { String(peripheral.identifier.uuidString.prefix(8)) }
 
         var peer: Peer? { hello.map { Peer(installationId: $0.installationId, name: $0.name) } }
         var label: String { hello?.name ?? String(peripheral.identifier.uuidString.prefix(8)) }
@@ -100,6 +104,7 @@ final class PeerGattCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
     func stop() {
         timer?.invalidate()
         timer = nil
+        defer { logStats() }  // the partial window, after the links are down
         if let manager, manager.state == .poweredOn {
             manager.stopScan()
             sessions.values.forEach { manager.cancelPeripheralConnection($0.peripheral) }
@@ -150,6 +155,7 @@ final class PeerGattCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
         sessions[peripheral.identifier] = session
         peripheral.delegate = self
         Log.write("PeerGatt: connecting to \(session.label) (\(via))")
+        LinkStats.shared.dial(session.statsKey, .le)
         manager.connect(peripheral, options: nil)
     }
 
@@ -162,7 +168,10 @@ final class PeerGattCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
             return end(session, reason: "duplicate", reconnect: false)
         }
         session.ready = true
+        session.readyAt = Date()
         session.rediscoverDeadline = nil
+        LinkStats.shared.named(session.statsKey, hello.name)
+        LinkStats.shared.linkUp(session.statsKey, .le)
         Log.write(String(format: "PeerGatt[%@]: ready (%.1fs)", hello.name, Date().timeIntervalSince(session.startedAt)))
         onReady?(peer)
     }
@@ -170,6 +179,8 @@ final class PeerGattCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
     private func unready(_ session: Session, reason: String) {
         guard session.ready, let peer = session.peer else { return }
         session.ready = false
+        LinkStats.shared.linkDown(session.statsKey, .le, lifetime: Date().timeIntervalSince(session.readyAt ?? Date()))
+        session.readyAt = nil
         Log.write("PeerGatt[\(peer.name)]: link down (\(reason))")
         onEnded?(peer)
     }
@@ -196,6 +207,7 @@ final class PeerGattCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
         guard let manager, manager.state == .poweredOn else { return }
         if reconnect {
             session.startedAt = Date()
+            LinkStats.shared.dial(session.statsKey, .le)
             manager.connect(session.peripheral, options: nil)
         } else {
             manager.cancelPeripheralConnection(session.peripheral)
@@ -209,6 +221,7 @@ final class PeerGattCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
     }
 
     private func tick() {
+        if LinkStats.shared.due() { logStats() }
         guard let manager, manager.state == .poweredOn else { return }
         attachToConnected()
         let now = Date()
@@ -229,6 +242,7 @@ final class PeerGattCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
             session.pings[session.sequence] = now
             if let record = PeerGattRecords.encode(PeerGattRecords.ping, Data(bytes: &value, count: 4)) {
                 write(record, to: session)
+                LinkStats.shared.ping(session.statsKey, .le)
             }
         }
     }
@@ -243,6 +257,7 @@ final class PeerGattCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
             rediscover(session, reason: "write queue full")
             return false
         }
+        countRecord(record, session: session, outgoing: true)
         let size = max(20, session.peripheral.maximumWriteValueLength(for: .withoutResponse))
         for chunk in PeerGattRecords.chunk(record, size: size) {
             session.writes.append(chunk)
@@ -259,6 +274,27 @@ final class PeerGattCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
             session.queuedBytes -= chunk.count
             session.peripheral.writeValue(chunk, for: rx, type: .withoutResponse)
         }
+    }
+
+    // MARK: Link stats
+
+    private func countRecord(_ record: Data, session: Session, outgoing: Bool) {
+        guard let type = record.first else { return }
+        countRecord(type, bytes: record.count, session: session, outgoing: outgoing)
+    }
+
+    /// Every record counts on the LE link; LEGACY and V2 records also count on their own channel.
+    private func countRecord(_ type: UInt8, bytes: Int, session: Session, outgoing: Bool) {
+        let stats = LinkStats.shared
+        let kinds: [LinkStats.Channel] = type == PeerGattRecords.legacy ? [.le, .legacy]
+            : type == PeerGattRecords.v2 ? [.le, .v2] : [.le]
+        for kind in kinds {
+            if outgoing { stats.frameOut(session.statsKey, kind, bytes: bytes) } else { stats.frameIn(session.statsKey, kind, bytes: bytes) }
+        }
+    }
+
+    private func logStats() {
+        for line in LinkStats.shared.take() { Log.write(line) }
     }
 
     // MARK: CBCentralManagerDelegate
@@ -289,6 +325,7 @@ final class PeerGattCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
 
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
         guard let session = sessions[peripheral.identifier] else { return }
+        LinkStats.shared.dialFailed(session.statsKey, .le)
         Log.write("PeerGatt[\(session.label)]: connect failed (\(error?.localizedDescription ?? "unknown")); retrying")
         end(session, reason: "connect failed", reconnect: true)
         scan()
@@ -369,6 +406,7 @@ final class PeerGattCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
             return rediscover(session, reason: "bad stream (\(error))")
         }
         for record in records {
+            countRecord(record.type, bytes: record.payload.count + 3, session: session, outgoing: false)
             switch record.type {
             case PeerGattRecords.hello:
                 guard let hello = try? PeerGattRecords.parseHello(record.payload) else {

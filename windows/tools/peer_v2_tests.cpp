@@ -2,6 +2,7 @@
 // run in CI after the build. Vectors cross-checked against Android's
 // PeerIdentityStore.headsetIdFromAddress and membership digest in Python.
 
+#include "LinkStats.hpp"
 #include "PeerDialPolicy.hpp"
 #include "ProximityRules.hpp"
 #include "TriggerApps.hpp"
@@ -357,7 +358,47 @@ static void triggerAppTests() {
     CHECK(list.listed().size() == Propods::builtInTriggerApps().size() + 2);  // + dots, idle
 }
 
+static void linkStatsTests() {
+    using namespace Propods::stats;
+    using namespace std::chrono_literals;
+    PeerCounters c;
+    CHECK(formatPeerLine(0x30E04486612Cull, 3600, c) ==
+          "STATS peer=30E04486612C window_s=3600"
+          " legacy_in=0 legacy_in_bytes=0 legacy_out=0 legacy_out_bytes=0 legacy_dials=0"
+          " legacy_dial_failures=0 legacy_up=0 legacy_down=0 legacy_pings=0"
+          " v2_in=0 v2_in_bytes=0 v2_out=0 v2_out_bytes=0 v2_dials=0"
+          " v2_dial_failures=0 v2_up=0 v2_down=0 v2_pings=0");
+
+    LinkStats s;  // not the singleton: a fresh window
+    const auto t0 = LinkStats::Clock::now();
+    CHECK(!s.due(t0));
+    s.frameIn(0xA, Channel::Legacy, 4);
+    s.frameIn(0xA, Channel::Legacy, 4);
+    s.frameOut(0xA, Channel::V2, 120);
+    s.dial(0xA, Channel::V2, false);
+    s.dial(0xA, Channel::V2, true);
+    s.linkUp(0xA, Channel::V2);
+    s.linkDown(0xA, Channel::V2, 45'000ms);
+    s.linkDown(0xA, Channel::V2, 15'000ms);
+    s.ping(0xA, Channel::V2);
+    s.airpodsStateLookup();
+    CHECK(s.due(t0 + 2h));
+    const auto lines = s.take(t0 + 2h);
+    CHECK(lines.size() == 2);  // peer 0xA, then the local line
+    const std::string& peer = lines[0];
+    CHECK(peer.find("peer=00000000000A") != std::string::npos);
+    CHECK(peer.find(" legacy_in=2 legacy_in_bytes=8 ") != std::string::npos);
+    CHECK(peer.find(" v2_out=1 v2_out_bytes=120 v2_dials=2 v2_dial_failures=1 v2_up=1 v2_down=2 v2_pings=1") != std::string::npos);
+    CHECK(peer.find(" v2_life_min_s=15 v2_life_avg_s=30 v2_life_max_s=45") != std::string::npos);
+    CHECK(peer.find("legacy_life") == std::string::npos);  // no legacy link ended
+    CHECK(lines[1].find("airpods_state_lookups=1") != std::string::npos);
+    // A fresh window: idle peers are left out, the local line stays.
+    const auto next = s.take(t0 + 3h);
+    CHECK(next.size() == 1 && next[0].find("window_s=3600 airpods_state_lookups=0") != std::string::npos);
+}
+
 int main() {
+    linkStatsTests();
     identityTests();
     jsonTests();
     frameTests();

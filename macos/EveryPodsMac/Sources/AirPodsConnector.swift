@@ -18,6 +18,7 @@ final class AirPodsConnector: NSObject {
     /// existed, so the Mac claimed AirPods that a phone held and ignored every play press. A link that has had no
     /// AirPods audio device for `bareLinkLimit` is treated as gone (the device appears within ~0.2 s of a connect).
     var isConnected: Bool {
+        LinkStats.shared.airPodsStateLookup()  // polled every second today; phase 2 moves to notifications
         guard let device, device.isConnected() else { bareLinkSince = nil; return false }
         if let address = Settings.airPodsAddress, AudioRouter.hasOutputDevice(forAddress: address) {
             if staleLogged { Log.write("AirPods: audio device is back; trusting the Bluetooth link again") }

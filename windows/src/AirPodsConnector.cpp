@@ -1,5 +1,6 @@
 ﻿#include "AirPodsConnector.hpp"
 
+#include "LinkStats.hpp"
 #include "Logger.hpp"
 
 #include <windows.h>
@@ -1176,6 +1177,7 @@ bool AirPodsConnector::isClassicallyConnected() {
 
 bool AirPodsConnector::isClassicallyConnectedWinRT() {
     if (m_address == 0) return false;
+    stats::LinkStats::instance().airpodsStateLookup();  // phase 2 replaces this poll with an event
     try {
         using namespace winrt::Windows::Devices::Bluetooth;
         auto device = BluetoothDevice::FromBluetoothAddressAsync(m_address).get();

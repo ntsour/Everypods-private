@@ -1,5 +1,6 @@
 ﻿#include "BluetoothRfcommClient.hpp"
 
+#include "LinkStats.hpp"
 #include "Logger.hpp"
 #include "PeerDialPolicy.hpp"
 #include "crossdevice_protocol.hpp"
@@ -178,6 +179,7 @@ void BluetoothRfcommClient::sendPacket(std::span<const std::uint8_t> bytes) {
         log::debug("RFCOMM {:012X} send {} bytes: {}", m_peerAddress.load(), bytes.size(), hex);
         m_writer.WriteBytes(winrt::array_view<const std::uint8_t>(bytes.data(), bytes.data() + bytes.size()));
         m_writer.StoreAsync().get();
+        stats::LinkStats::instance().frameOut(m_peerAddress.load(), stats::Channel::Legacy, bytes.size());
     } catch (const winrt::hresult_error& e) {
         log::warn("RFCOMM {:012X} send failed: 0x{:08X} {}", m_peerAddress.load(), (std::uint32_t)e.code().value, winrt::to_string(e.message()));
     }
@@ -255,8 +257,15 @@ StreamSocket dialRfcomm(std::uint64_t peerAddress, const winrt::guid& serviceUui
 }
 
 StreamSocket BluetoothRfcommClient::dial(std::uint64_t peerAddress) {
-    return dialRfcomm(peerAddress, uuidFromString(m_serviceUuid), "RFCOMM",
-        [this](const std::string& name) { if (m_onName) m_onName(name); });
+    try {
+        StreamSocket socket = dialRfcomm(peerAddress, uuidFromString(m_serviceUuid), "RFCOMM",
+            [this](const std::string& name) { if (m_onName) m_onName(name); });
+        stats::LinkStats::instance().dial(peerAddress, stats::Channel::Legacy, true);
+        return socket;
+    } catch (...) {
+        stats::LinkStats::instance().dial(peerAddress, stats::Channel::Legacy, false);
+        throw;
+    }
 }
 
 void BluetoothRfcommClient::runConnection(std::uint64_t peerAddress, StreamSocket socket, bool inbound) {
@@ -299,6 +308,7 @@ void BluetoothRfcommClient::runConnection(std::uint64_t peerAddress, StreamSocke
             log::debug("RFCOMM {:012X} recv {} bytes", peerAddress, read);
         }
         for (const auto& packet : decoder.feed(std::span<const std::uint8_t>(buf.data(), read))) {
+            stats::LinkStats::instance().frameIn(peerAddress, stats::Channel::Legacy, packet.size());
             if (m_onPacket) m_onPacket(std::span<const std::uint8_t>(packet.data(), packet.size()));
         }
     }
@@ -352,10 +362,12 @@ void BluetoothRfcommClient::runLoop(std::uint64_t peerAddress) {
                 m_retryRequested = false;
             }
             const auto linkUp = std::chrono::steady_clock::now();
+            stats::LinkStats::instance().linkUp(peerAddress, stats::Channel::Legacy);
             const auto lasted = [&] {
                 return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - linkUp);
             };
             const auto settle = [&] {
+                stats::LinkStats::instance().linkDown(peerAddress, stats::Channel::Legacy, lasted());
                 if (peerLinkTooShort(lasted())) {
                     ++misses;
                     shortLink = true;

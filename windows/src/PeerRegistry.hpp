@@ -23,14 +23,16 @@ namespace Propods {
 // section 1.2, v2/PeerV2Arbitration.hpp).
 // Presents the same logical interface as a single BluetoothRfcommClient:
 //   - sendPacket()     → broadcast to every currently-connected peer
+//   - sendPacketTo()   → one peer (replies, state for a peer that just connected)
 //   - isAnyConnected() → true if at least one peer is connected
-//   - callbacks        → fired for each packet/state-change from any peer
+//   - callbacks        → fired for each packet/state-change from any peer, with
+//                        that peer's Bluetooth address
 //
 // Thread-safe: addPeer / start / stop / sendPacket may be called from any thread.
 class PeerRegistry {
 public:
-    using PacketCallback = std::function<void(std::span<const std::uint8_t>)>;
-    using StateCallback  = std::function<void(bool connected)>;
+    using PacketCallback = std::function<void(std::uint64_t from, std::span<const std::uint8_t>)>;
+    using StateCallback  = std::function<void(std::uint64_t address, bool connected)>;
 
     // A peer we did not know dialled us; it is now a peer (save it).
     using PeerAddedCallback = std::function<void(std::uint64_t address)>;
@@ -84,6 +86,9 @@ public:
 
     // Send a packet to every currently-connected peer.
     void sendPacket(std::span<const std::uint8_t> bytes);
+
+    // Send a packet to one peer. Returns false if that peer is unknown or not connected.
+    bool sendPacketTo(std::uint64_t address, std::span<const std::uint8_t> bytes);
 
     // Returns a snapshot of registered peer addresses.
     std::vector<std::uint64_t> addresses() const;
