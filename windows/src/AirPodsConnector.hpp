@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -110,6 +111,10 @@ private:
     std::uint64_t m_address;
     std::mutex    m_mutex;          // serialize connect/disconnect to avoid parallel races
     std::mutex    m_nameMutex;      // guards m_name / m_nameForAddress
+    // setAsDefaultAudioDevice(): the BT edge and the connect thread both route on the same connect, ~50 ms apart;
+    // one pass is enough (27 Nov traces: every role set twice, Teams config and the broadcast sent twice).
+    std::mutex    m_routeMutex;
+    std::chrono::steady_clock::time_point m_lastRoutePass{};
     std::wstring  m_name;
     std::uint64_t m_nameForAddress{0};
 };

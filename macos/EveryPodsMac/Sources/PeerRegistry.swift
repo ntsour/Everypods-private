@@ -102,6 +102,12 @@ final class PeerRegistry {
         start()
     }
 
+    /// Connects to devices this Mac has not linked with before too, for two minutes (the user is adding a peer).
+    func discover() { gatt.discover() }
+
+    /// The latest sign that a paired phone's Bluetooth LE keys don't match this Mac's, if recent.
+    var recentKeyProblem: String? { gatt.recentKeyProblem }
+
     /// A phone just authorized this Mac: retry the phones that refused it, without dropping the other links.
     func retryRefused() {
         rematch()
@@ -173,6 +179,9 @@ final class PeerRegistry {
         for (id, linked) in gattLinks where sameAddress(linked, address) {
             gattLinks[id] = nil
             onV2LinkChange?(id, false)
+            // Its LE link is still up: offer it under "Add peer" again. It used to stay filed as configured, so
+            // removing a phone to add it again showed "No phone found" (27 Nov, the Xiaomi).
+            if let peer = gatt.readyPeers.first(where: { $0.installationId == id }) { unmatched[id] = peer }
         }
         Settings.gattPeerAddresses = Settings.gattPeerAddresses.filter { !sameAddress($0.value, address) }
         Log.write("Peers: removed \(Self.name(of: address))")

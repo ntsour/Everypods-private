@@ -9,7 +9,15 @@
 //
 // Reliability rules (each was hit in the spike or is handled the same way in bitchat's Apple client):
 // - The phone app restarting under a live link: macOS keeps the LE link, so there is no disconnect. Handle
-//   didModifyServices, and rediscover when a PING goes unanswered for 3 s.
+//   didModifyServices, and rediscover when a PING goes unanswered for 10 s. The PING goes out only after 15 s with
+//   nothing received: a 2 s PING with a 3 s limit cut slow phones (a Xiaomi tablet) off mid-setup.
+// - Subscribing to an encrypted characteristic on a device macOS has no LE keys for makes macOS start an LE pairing.
+//   Doing that on every advertising address (a phone's unresolved rotating address shows up as a new device) started
+//   failing pairings every minute that collided with the user's own pairing (27 Nov: "PIN errors"). So only devices
+//   that completed a session before, or that macOS already has a link to, are connected automatically; others only
+//   during a discovery window (the menu was opened, first run, after authorizing).
+// - A failed connect is retried with a growing delay, never at once: turning Bluetooth off made it spin ~800
+//   times a second until macOS reported the power state.
 // - Bluetooth off/resetting invalidates every CBPeripheral: drop all state without issuing commands.
 // - A scan does not report a phone macOS is already connected to: poll retrieveConnectedPeripherals.
 // - After a disconnect, reconnect to the same peripheral and keep scanning (its LE address may rotate).
@@ -38,8 +46,11 @@ final class PeerGattCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
                               capabilities: ["legacy1"])
     }
 
-    private let pingInterval: TimeInterval = 2
-    private let staleAfter: TimeInterval = 3
+    private let pingInterval: TimeInterval = 2  // the tick; the PING itself waits for silence
+    private let probeAfterSilence: TimeInterval = 15
+    private let staleAfter: TimeInterval = 10
+    private let discoveryWindow: TimeInterval = 120
+    private let maxConnectBackoff: TimeInterval = 60
     private let rediscoverWindow: TimeInterval = 5
     private let refusedRetry: TimeInterval = 60
     /// A device whose LE bond is gone ("Peer removed pairing information") cannot connect until it is paired again.
@@ -61,6 +72,7 @@ final class PeerGattCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
         var rediscoverDeadline: Date?
         var startedAt = Date()
         var readyAt: Date?
+        var lastReceived = Date()
 
         init(_ peripheral: CBPeripheral) { self.peripheral = peripheral }
 
@@ -85,7 +97,32 @@ final class PeerGattCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
     private var sessions: [UUID: Session] = [:]
     private var refused: [UUID: Date] = [:]
     private var unpaired: [UUID: Date] = [:]
+    private var backoff: [UUID: (failures: Int, until: Date)] = [:]
+    private var skippedUnknown: Set<UUID> = []
+    private var discoverUntil: Date?
+    /// Recent signs that a paired device's LE keys don't match this Mac's (for "Add peer").
+    private var keyProblems: [UUID: (reason: String, at: Date)] = [:]
     private var timer: Timer?
+
+    private var discovering: Bool { discoverUntil.map { Date() < $0 } ?? false }
+
+    /// For "Add peer": the latest LE key problem in the last 10 minutes, if any.
+    var recentKeyProblem: String? {
+        let cutoff = Date().addingTimeInterval(-600)
+        return keyProblems.values.filter { $0.at > cutoff }.max { $0.at < $1.at }?.reason
+    }
+
+    /// Also connects to devices this Mac hasn't linked with before, for the next two minutes (the user is adding a
+    /// peer). Devices that refused earlier are tried once more.
+    func discover() {
+        let starting = !discovering
+        discoverUntil = Date().addingTimeInterval(discoveryWindow)
+        guard starting else { return }
+        Log.write("PeerGatt: looking for new devices for \(Int(discoveryWindow)) s")
+        refused.removeAll()
+        skippedUnknown.removeAll()
+        scan()
+    }
 
     /// Every phone with a live session and an exchanged HELLO, configured or not.
     var readyPeers: [Peer] { sessions.values.filter(\.ready).compactMap(\.peer) }
@@ -103,6 +140,8 @@ final class PeerGattCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
         guard manager == nil else { return }
         manager = CBCentralManager(delegate: self, queue: .main)
         timer = Timer.scheduledTimer(withTimeInterval: pingInterval, repeats: true) { [weak self] _ in self?.tick() }
+        // Builds from before 27 Nov kept no list of known devices: learn the linked phones once.
+        if Settings.knownLePeripherals.isEmpty { discover() }
     }
 
     func stop() {
@@ -122,6 +161,7 @@ final class PeerGattCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
     func retryRefused() {
         refused.removeAll()
         unpaired.removeAll()
+        backoff.removeAll()
         attachToConnected()
         scan()  // restarting the scan reports advertising phones again
     }
@@ -155,8 +195,18 @@ final class PeerGattCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
             // Connected or connecting already, or a pending reconnect is armed.
             if session.peripheral.state != .disconnected { return }
         }
-        if let since = refused[peripheral.identifier], Date().timeIntervalSince(since) < refusedRetry { return }
-        if let since = unpaired[peripheral.identifier], Date().timeIntervalSince(since) < unpairedRetry { return }
+        let id = peripheral.identifier
+        if let since = refused[id], Date().timeIntervalSince(since) < refusedRetry { return }
+        if let since = unpaired[id], Date().timeIntervalSince(since) < unpairedRetry { return }
+        if let wait = backoff[id], Date() < wait.until { return }
+        // A device we never linked with may be a phone's unresolved address (or a link macOS holds while pairing),
+        // and subscribing would start an LE pairing with it: only during a discovery window.
+        if !discovering, !Settings.knownLePeripherals.contains(id.uuidString) {
+            if skippedUnknown.insert(id).inserted {
+                Log.write("PeerGatt: not connecting to unknown device \(id.uuidString.prefix(8)) (open the menu to look for new devices)")
+            }
+            return
+        }
         let session = Session(peripheral)
         sessions[peripheral.identifier] = session
         peripheral.delegate = self
@@ -174,7 +224,10 @@ final class PeerGattCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
             return end(session, reason: "duplicate", reconnect: false)
         }
         session.ready = true
-        unpaired[session.peripheral.identifier] = nil  // paired again: a later removal is logged again
+        unpaired[session.peripheral.identifier] = nil
+        backoff[session.peripheral.identifier] = nil
+        keyProblems[session.peripheral.identifier] = nil
+        Settings.knownLePeripherals.insert(session.peripheral.identifier.uuidString)  // paired again: a later removal is logged again
         session.readyAt = Date()
         session.rediscoverDeadline = nil
         LinkStats.shared.named(session.statsKey, hello.name)
@@ -244,6 +297,8 @@ final class PeerGattCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
                 rediscover(session, reason: "PING unanswered for \(Int(staleAfter)) s")
                 continue
             }
+            // Probe only a quiet link, one PING at a time.
+            guard session.pings.isEmpty, now.timeIntervalSince(session.lastReceived) >= probeAfterSilence else { continue }
             session.sequence &+= 1
             var value = session.sequence.bigEndian
             session.pings[session.sequence] = now
@@ -333,6 +388,7 @@ final class PeerGattCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
         guard let session = sessions[peripheral.identifier] else { return }
         LinkStats.shared.dialFailed(session.statsKey, .le)
+        noteKeyProblem(peripheral.identifier, error)
         if (error as? CBError)?.code == .peerRemovedPairingInformation {
             // Logged once per device until it connects again; retried by consider() after unpairedRetry.
             if unpaired[peripheral.identifier] == nil {
@@ -342,9 +398,34 @@ final class PeerGattCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
             unpaired[peripheral.identifier] = Date()
             return end(session, reason: "pairing removed", reconnect: false)
         }
-        Log.write("PeerGatt[\(session.label)]: connect failed (\(error?.localizedDescription ?? "unknown")); retrying")
-        end(session, reason: "connect failed", reconnect: true)
+        // Never reconnect at once: after 1, 2, 4 ... up to 60 s, picked up by consider() from the scan.
+        let failures = (backoff[peripheral.identifier]?.failures ?? 0) + 1
+        let delay = min(pow(2, Double(failures - 1)), maxConnectBackoff)
+        backoff[peripheral.identifier] = (failures, Date().addingTimeInterval(delay))
+        if failures <= 3 || failures % 10 == 0 {
+            Log.write("PeerGatt[\(session.label)]: connect failed (\(error?.localizedDescription ?? "unknown")); " +
+                      "retry in \(Int(delay)) s (failure \(failures))")
+        }
+        end(session, reason: "connect failed", reconnect: false)
         scan()
+    }
+
+    /// Errors that mean the LE keys of a paired device don't match this Mac's (or it has none).
+    private func noteKeyProblem(_ id: UUID, _ error: Error?) {
+        guard let error else { return }
+        let ns = error as NSError
+        let text = error.localizedDescription
+        let keyError: Bool
+        if ns.domain == CBErrorDomain {
+            keyError = [CBError.peerRemovedPairingInformation.rawValue, CBError.encryptionTimedOut.rawValue].contains(ns.code)
+                || text.localizedCaseInsensitiveContains("MIC")
+        } else if ns.domain == CBATTErrorDomain {
+            keyError = [CBATTError.insufficientEncryption.rawValue, CBATTError.insufficientAuthentication.rawValue,
+                        CBATTError.insufficientEncryptionKeySize.rawValue].contains(ns.code)
+        } else {
+            keyError = text.localizedCaseInsensitiveContains("MIC failure")
+        }
+        if keyError { keyProblems[id] = (text, Date()) }
     }
 
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
@@ -352,7 +433,8 @@ final class PeerGattCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
         if session.ready || error != nil {
             Log.write("PeerGatt[\(session.label)]: disconnected (\(error?.localizedDescription ?? "no error"))")
         }
-        end(session, reason: "disconnected", reconnect: true)
+        // Bluetooth going off disconnects first and reports the power state just after: don't reconnect into that.
+        end(session, reason: "disconnected", reconnect: central.state == .poweredOn)
         // Restart the scan for fresh discovery events (the phone's LE address may have rotated).
         central.stopScan()
         scan()
@@ -399,9 +481,11 @@ final class PeerGattCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
     func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
         guard characteristic.uuid == Self.txUUID, let session = sessions[peripheral.identifier] else { return }
         if let error {
-            // Not bonded, or the phone does not have this Mac configured: leave it alone for a while.
+            // Not bonded, or the phone does not have this Mac configured: leave it alone for a while (a device never
+            // linked before only during the next discovery window, see consider()).
             Log.write("PeerGatt[\(session.label)]: subscription refused (\(error.localizedDescription)); retry in \(Int(refusedRetry)) s")
             refused[peripheral.identifier] = Date()
+            noteKeyProblem(peripheral.identifier, error)
             return end(session, reason: "refused", reconnect: false)
         }
         guard characteristic.isNotifying else { return }
@@ -417,6 +501,7 @@ final class PeerGattCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
         guard characteristic.uuid == Self.txUUID, let session = sessions[peripheral.identifier],
               let data = characteristic.value else { return }
+        session.lastReceived = Date()
         let records: [PeerGattRecords.Record]
         do { records = try session.decoder.feed(data) } catch {
             return rediscover(session, reason: "bad stream (\(error))")
