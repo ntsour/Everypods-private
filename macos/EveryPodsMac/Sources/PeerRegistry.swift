@@ -179,6 +179,9 @@ final class PeerRegistry {
         for (id, linked) in gattLinks where sameAddress(linked, address) {
             gattLinks[id] = nil
             onV2LinkChange?(id, false)
+            // Its LE link is still up: offer it under "Add peer" again. It used to stay filed as configured, so
+            // removing a phone to add it again showed "No phone found" (27 Nov, the Xiaomi).
+            if let peer = gatt.readyPeers.first(where: { $0.installationId == id }) { unmatched[id] = peer }
         }
         Settings.gattPeerAddresses = Settings.gattPeerAddresses.filter { !sameAddress($0.value, address) }
         Log.write("Peers: removed \(Self.name(of: address))")
