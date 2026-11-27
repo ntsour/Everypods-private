@@ -42,6 +42,9 @@ final class PeerGattCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
     private let staleAfter: TimeInterval = 3
     private let rediscoverWindow: TimeInterval = 5
     private let refusedRetry: TimeInterval = 60
+    /// A device whose LE bond is gone ("Peer removed pairing information") cannot connect until it is paired again.
+    /// Retrying at once looped every 1-2 s for days (429 failures in the log); try every 5 minutes instead.
+    private let unpairedRetry: TimeInterval = 300
     private let maxQueuedBytes = 64 * 1024
 
     private final class Session {
@@ -81,6 +84,7 @@ final class PeerGattCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
     private var manager: CBCentralManager?
     private var sessions: [UUID: Session] = [:]
     private var refused: [UUID: Date] = [:]
+    private var unpaired: [UUID: Date] = [:]
     private var timer: Timer?
 
     /// Every phone with a live session and an exchanged HELLO, configured or not.
@@ -117,6 +121,7 @@ final class PeerGattCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
     /// Forgets which phones refused this Mac and tries them again now (after this Mac was authorized with one).
     func retryRefused() {
         refused.removeAll()
+        unpaired.removeAll()
         attachToConnected()
         scan()  // restarting the scan reports advertising phones again
     }
@@ -151,6 +156,7 @@ final class PeerGattCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
             if session.peripheral.state != .disconnected { return }
         }
         if let since = refused[peripheral.identifier], Date().timeIntervalSince(since) < refusedRetry { return }
+        if let since = unpaired[peripheral.identifier], Date().timeIntervalSince(since) < unpairedRetry { return }
         let session = Session(peripheral)
         sessions[peripheral.identifier] = session
         peripheral.delegate = self
@@ -168,6 +174,7 @@ final class PeerGattCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
             return end(session, reason: "duplicate", reconnect: false)
         }
         session.ready = true
+        unpaired[session.peripheral.identifier] = nil  // paired again: a later removal is logged again
         session.readyAt = Date()
         session.rediscoverDeadline = nil
         LinkStats.shared.named(session.statsKey, hello.name)
@@ -326,6 +333,15 @@ final class PeerGattCentral: NSObject, CBCentralManagerDelegate, CBPeripheralDel
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
         guard let session = sessions[peripheral.identifier] else { return }
         LinkStats.shared.dialFailed(session.statsKey, .le)
+        if (error as? CBError)?.code == .peerRemovedPairingInformation {
+            // Logged once per device until it connects again; retried by consider() after unpairedRetry.
+            if unpaired[peripheral.identifier] == nil {
+                Log.write("PeerGatt[\(session.label)]: the device has removed its pairing with this Mac; " +
+                          "retrying every \(Int(unpairedRetry / 60)) min (pair it again to link now)")
+            }
+            unpaired[peripheral.identifier] = Date()
+            return end(session, reason: "pairing removed", reconnect: false)
+        }
         Log.write("PeerGatt[\(session.label)]: connect failed (\(error?.localizedDescription ?? "unknown")); retrying")
         end(session, reason: "connect failed", reconnect: true)
         scan()
