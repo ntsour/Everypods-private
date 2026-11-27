@@ -401,8 +401,9 @@ if failures == 0 { print("PeerV2: all tests passed") } else { print("PeerV2: \(f
     clock.now += 1_000; session.tick()
     check(link.sent.last?.kind == .ping && link.sent.count == afterReady + 1, "quiet peer: probe after 60 s")
     let probe = link.sent.last!.fields["nonce"]!
+    session.onRecord(record(.ping, ["nonce": .string(id1)]))  // the peer probes at the same time
     session.onRecord(record(.pong, ["nonce": probe, "snapshot": .object(remoteSnapshot)]))
-    check(link.snapshots.count == 3, "the probe's PONG delivers the snapshot")
+    check(link.snapshots.count == 3, "the probe's PONG delivers the snapshot, even after the peer's own PING")
     clock.now += 30_000; session.tick()
     check(link.sent.count == afterReady + 1, "an answered probe restarts the minute")
     clock.now += 30_000; session.tick()

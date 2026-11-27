@@ -37,12 +37,6 @@ struct PeerHeartbeat {
     /// The PING still waiting for its PONG, if any.
     var outstanding: String? { outstandingNonce }
 
-    /// Any frame from the peer proves it alive (quiet-v1): drop the pending probe.
-    mutating func clear() {
-        outstandingNonce = nil
-        missedIntervals = 0
-    }
-
     mutating func acknowledge(_ nonce: String) -> Bool {
         guard nonce == outstandingNonce else { return false }
         outstandingNonce = nil
@@ -129,9 +123,9 @@ final class PeerV2Session {
             guard frames.count == 1 else { throw V2Error("v2_record_not_one_frame") }
             try handle(frames[0])
         }
-        // Any frame proves a quiet-v1 peer alive (after handling, so a PONG still delivers its snapshot).
+        // Any frame proves a quiet-v1 peer alive. The probe's nonce stays until its PONG arrives, so a PONG that comes
+        // after another frame (both sides probing at once) still delivers its snapshot.
         if isReady && remoteQuiet {
-            heartbeat.clear()
             probeSentMs = nil
             probesUnanswered = 0
         }

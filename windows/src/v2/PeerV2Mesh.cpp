@@ -601,10 +601,12 @@ void PeerV2Mesh::handleFrame(PeerSession& s, Link& l, const Frame& frame) {
     log::debug("V2 {:012X} recv {} {}", s.address, frameTypeName(m.type), frame.payload);
     std::scoped_lock lk{m_mutex};
     l.lastReceived = Clock::now();
-    if (l.ready && l.remoteQuiet) {  // any frame proves a quiet-v1 peer alive
+    if (l.ready && l.remoteQuiet) {
+        // Any frame proves a quiet-v1 peer alive. The probe's nonce stays until
+        // its PONG arrives, so a PONG after another frame (both sides probing at
+        // once) still delivers its snapshot.
         l.probing = false;
         l.probesUnanswered = 0;
-        if (m.type != FrameType::Pong) l.outstandingNonce.clear();  // a PONG still clears it by nonce below
     }
     if (!l.helloSeen) {
         if (m.type != FrameType::Hello) throw std::invalid_argument("hello_required");
