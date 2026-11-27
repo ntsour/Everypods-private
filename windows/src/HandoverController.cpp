@@ -500,7 +500,7 @@ bool HandoverController::mediaTakeoverLikely() {
     return !m_airpods.isClassicallyConnectedWinRT();
 }
 
-void HandoverController::onIncomingPacket(std::span<const std::uint8_t> data) {
+void HandoverController::onIncomingPacket(std::uint64_t from, std::span<const std::uint8_t> data) {
     using namespace crossdevice;
     auto kind = classify(data);
     switch (kind) {
@@ -676,11 +676,13 @@ void HandoverController::onIncomingPacket(std::span<const std::uint8_t> data) {
             break;
 
         case Incoming::RequestConnectionStatus: {
-            log::debug("Peer requested connection status");
+            log::debug("Peer {:012X} requested connection status", from);
             const auto& reply = (m_state.load() == OwnershipState::LocalPc)
                                 ? kAirPodsConnected
                                 : kAirPodsDisconnected;
-            m_peers.sendPacket(reply);
+            // Answer the asker only. Broadcasting sent every phone's keep-alive
+            // reply to the other phones too (docs/peer-link-quiet-redesign.md, B3).
+            m_peers.sendPacketTo(from, reply);
             break;
         }
 
@@ -711,9 +713,9 @@ void HandoverController::onIncomingPacket(std::span<const std::uint8_t> data) {
     }
 }
 
-void HandoverController::onPeerConnectionChanged(bool connected) {
+void HandoverController::onPeerConnectionChanged(std::uint64_t address, bool connected) {
     if (connected) {
-        log::handover("PEER    peer connected");
+        log::handover("PEER    peer {:012X} connected", address);
         // Re-sync cached state with reality before announcing.
         const bool airpodsHere = m_airpods.isClassicallyConnectedWinRT();
         const bool wasLocalPc  = (m_state.load() == OwnershipState::LocalPc);
@@ -732,10 +734,15 @@ void HandoverController::onPeerConnectionChanged(bool connected) {
                 ? crossdevice::kAirPodsConnected
                 : crossdevice::kAirPodsDisconnected);
         } else {
-            // Newly-connected peer will learn our state from the next
-            // RequestConnectionStatus keep-alive it sends within 20 s.
-            log::handover("SKIP    State unchanged on peer connect ({}) — no broadcast",
-                airpodsHere ? "LocalPc" : "RemoteAndroid");
+            // The other peers already know; tell only the one that connected.
+            // Waiting for its next keep-alive left it without our state, and a
+            // phone that slept through that keep-alive closed the link as stale
+            // (docs/peer-link-quiet-redesign.md, B2).
+            log::handover("OUT     {} -> peer {:012X} (state unchanged on connect)",
+                airpodsHere ? "kAirPodsConnected" : "kAirPodsDisconnected", address);
+            m_peers.sendPacketTo(address, airpodsHere
+                ? crossdevice::kAirPodsConnected
+                : crossdevice::kAirPodsDisconnected);
         }
 
         // Tell a peer that just (re)connected that we are mid-call.
@@ -760,7 +767,7 @@ void HandoverController::onPeerConnectionChanged(bool connected) {
             m_peers.sendPacket(crossdevice::kRequestDisconnect);
         }
     } else {
-        log::handover("PEER    peer disconnected");
+        log::handover("PEER    peer {:012X} disconnected", address);
         // The flag is only meaningful while a peer link is up (Android clears it on stop).
         if (!m_peers.isAnyConnected()) m_peerAudioActive.store(false);
     }

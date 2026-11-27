@@ -465,11 +465,11 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
         peers.acceptInbound(address, socket);
     });
 
-    peers.setOnPacket([&controller](std::span<const std::uint8_t> data) {
-        controller.onIncomingPacket(data);
+    peers.setOnPacket([&controller](std::uint64_t from, std::span<const std::uint8_t> data) {
+        controller.onIncomingPacket(from, data);
     });
-    peers.setOnState([&controller](bool connected) {
-        controller.onPeerConnectionChanged(connected);
+    peers.setOnState([&controller](std::uint64_t address, bool connected) {
+        controller.onPeerConnectionChanged(address, connected);
     });
 
     media.setCallback([&controller, &mediaPlaying, &takeOnMediaStart, &peerV2, &media, &teamsWatcher, restoreAsync](bool playing) {

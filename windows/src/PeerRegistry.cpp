@@ -125,15 +125,15 @@ void PeerRegistry::startClient(BluetoothRfcommClient& client, std::uint64_t addr
 void PeerRegistry::wireCallbacks(Entry& e) {
     std::uint64_t addr = e.address;  // capture address by value; Entry may be moved later
 
-    e.client->setOnPacket([this](std::span<const std::uint8_t> data) {
+    e.client->setOnPacket([this, addr](std::span<const std::uint8_t> data) {
         PacketCallback cb;
         { std::scoped_lock lk{m_mutex}; cb = m_onPacket; }
-        if (cb) cb(data);
+        if (cb) cb(addr, data);
     });
-    e.client->setOnState([this](bool connected) {
+    e.client->setOnState([this, addr](bool connected) {
         StateCallback cb;
         { std::scoped_lock lk{m_mutex}; cb = m_onState; }
-        if (cb) cb(connected);
+        if (cb) cb(addr, connected);
     });
     e.client->setOnRejected([slot = m_rejected, addr] {
         PeerRejectedCallback cb;
@@ -308,6 +308,17 @@ void PeerRegistry::sendPacket(std::span<const std::uint8_t> bytes) {
     for (auto& e : m_entries)
         if (e.client->isConnected())
             e.client->sendPacket(bytes);
+}
+
+bool PeerRegistry::sendPacketTo(std::uint64_t address, std::span<const std::uint8_t> bytes) {
+    std::scoped_lock lk{m_mutex};
+    for (auto& e : m_entries) {
+        if (e.address != address) continue;
+        if (!e.client->isConnected()) return false;
+        e.client->sendPacket(bytes);
+        return true;
+    }
+    return false;
 }
 
 std::vector<std::uint64_t> PeerRegistry::addresses() const {

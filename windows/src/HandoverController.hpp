@@ -96,8 +96,10 @@ public:
     bool callMicOpen() const { return m_callMicOpen.load(); }
     // Called after callMicOpen() changes (set before the watcher starts).
     void setOnCallMicSettled(std::function<void()> cb) { m_onCallMicSettled = std::move(cb); }
-    void onIncomingPacket(std::span<const std::uint8_t> data);
-    void onPeerConnectionChanged(bool connected);
+    // `from` / `address`: the peer's Bluetooth address, so replies and the
+    // state for a newly connected peer go to that peer only.
+    void onIncomingPacket(std::uint64_t from, std::span<const std::uint8_t> data);
+    void onPeerConnectionChanged(std::uint64_t address, bool connected);
 
     OwnershipState state() const { return m_state.load(); }
 

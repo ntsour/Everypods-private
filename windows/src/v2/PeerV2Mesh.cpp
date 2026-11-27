@@ -1,6 +1,7 @@
 #include "PeerV2Mesh.hpp"
 
 #include "BluetoothRfcommClient.hpp"
+#include "LinkStats.hpp"
 #include "Logger.hpp"
 #include "PeerDialPolicy.hpp"
 #include "PeerV2Arbitration.hpp"
@@ -67,6 +68,7 @@ JsonArray toArray(const std::vector<std::string>& v) {
 
 struct PeerV2Mesh::Link {
     bool dialled = false;  // we opened it (otherwise the peer dialled our v2 service)
+    std::uint64_t address = 0;  // the peer's Bluetooth address (link stats)
 
     // Connection (guarded by writeMutex for writes).
     std::mutex writeMutex;
@@ -126,6 +128,12 @@ bool sleepWhile(const std::function<bool()>& keepGoing, std::chrono::millisecond
     return keepGoing();
 }
 
+// Logs the hourly STATS lines (LinkStats.hpp). They ride on the monitor loop,
+// the one loop that runs for the whole session.
+void logLinkStats() {
+    for (const auto& line : stats::LinkStats::instance().take(Clock::now())) log::info("{}", line);
+}
+
 }  // namespace
 
 PeerV2Mesh::PeerV2Mesh(StateProvider provider) : m_provider(std::move(provider)) {}
@@ -155,6 +163,7 @@ void PeerV2Mesh::stop() {
     { std::scoped_lock lk{m_monitorMutex}; }
     m_monitorCv.notify_all();
     if (m_monitor.joinable()) m_monitor.join();
+    logLinkStats();  // the partial window before exit
     std::vector<std::shared_ptr<PeerSession>> sessions;
     {
         std::scoped_lock lk{m_mutex};
@@ -275,6 +284,7 @@ void PeerV2Mesh::onInboundSocket(StreamSocket socket) {
     if (address == 0) return reject("cannot read the caller's address");
     auto link = std::make_shared<Link>();
     link->dialled = false;
+    link->address = address;
     link->socket = socket;
     link->writer = DataWriter{socket.OutputStream()};
     std::scoped_lock lk{m_mutex};
@@ -364,6 +374,7 @@ bool PeerV2Mesh::send(Link& l, FrameType type, const JsonObject& fields) {
         if (!l.writer) return false;
         l.writer.WriteBytes(winrt::array_view<const std::uint8_t>(bytes.data(), bytes.data() + bytes.size()));
         l.writer.StoreAsync().get();
+        stats::LinkStats::instance().frameOut(l.address, stats::Channel::V2, bytes.size());
         log::debug("V2 send {} {}", frameTypeName(type), writeJson(Json(fields)));
         return true;
     } catch (const std::exception& e) {
@@ -409,9 +420,17 @@ void PeerV2Mesh::runPeer(std::shared_ptr<PeerSession> session) {
         try {
             // Same dial as the legacy link: uncached resolve, 8 s timeout, one
             // dial at a time across all peers and both services.
-            StreamSocket socket = dialRfcomm(s.address, kV2Service, "V2");
+            StreamSocket socket{nullptr};
+            try {
+                socket = dialRfcomm(s.address, kV2Service, "V2");
+                stats::LinkStats::instance().dial(s.address, stats::Channel::V2, true);
+            } catch (...) {
+                stats::LinkStats::instance().dial(s.address, stats::Channel::V2, false);
+                throw;
+            }
             auto link = std::make_shared<Link>();
             link->dialled = true;
+            link->address = s.address;
             link->socket = socket;
             link->writer = DataWriter{socket.OutputStream()};
             {
@@ -467,7 +486,11 @@ void PeerV2Mesh::runLink(std::shared_ptr<PeerSession> session, std::shared_ptr<L
     }
     {
         std::scoped_lock lk{m_mutex};
-        if (l.connected) log::handover("V2      peer {:012X} {} link closed", s.address, l.dialled ? "dialled" : "accepted");
+        if (l.connected) {
+            log::handover("V2      peer {:012X} {} link closed", s.address, l.dialled ? "dialled" : "accepted");
+            stats::LinkStats::instance().linkDown(s.address, stats::Channel::V2,
+                std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - l.connectedAt));
+        }
         l.connected = l.helloSeen = l.ready = false;
         l.remoteSessionId.clear();
         l.outstandingNonce.clear();
@@ -489,6 +512,7 @@ void PeerV2Mesh::sessionLoop(PeerSession& s, Link& l) {
         std::scoped_lock lk{m_mutex};
         l.connected = true;
         l.connectedAt = Clock::now();
+        stats::LinkStats::instance().linkUp(s.address, stats::Channel::V2);
         if (l.dialled) {
             // The accepting side waits for the dialler's HELLO and answers it.
             l.connectionId = randomUuid();
@@ -536,6 +560,7 @@ void PeerV2Mesh::arbitrateLocked(PeerSession& s, Link& l) {
 // ── Protocol ────────────────────────────────────────────────────────────────
 
 void PeerV2Mesh::handleFrame(PeerSession& s, Link& l, const Frame& frame) {
+    stats::LinkStats::instance().frameIn(s.address, stats::Channel::V2, frame.payload.size());
     const Message m = decode(frame);  // throws on any violation -> link closes
     const JsonObject& f = m.fields;
     log::debug("V2 {:012X} recv {} {}", s.address, frameTypeName(m.type), frame.payload);
@@ -624,8 +649,12 @@ void PeerV2Mesh::handleFrame(PeerSession& s, Link& l, const Frame& frame) {
             break;
         }
         case FrameType::Ping: {
+            // The PONG carries our snapshot, and every peer (Android, Mac, this
+            // client) takes it from there. Once the link is ready a separate
+            // SNAPSHOT is the same data twice (docs/peer-link-quiet-redesign.md,
+            // B4); during the handshake it is kept as before.
             const JsonObject snap = snapshotLocked();
-            send(l, FrameType::Snapshot, snap);
+            if (!l.ready) send(l, FrameType::Snapshot, snap);
             send(l, FrameType::Pong, JsonObject{{"nonce", str(f, "nonce")}, {"snapshot", snap}});
             break;
         }
@@ -832,6 +861,7 @@ void PeerV2Mesh::handleAcquisition(PeerSession& s, Link& l, FrameType type, cons
 
 void PeerV2Mesh::monitorLoop() {
     while (m_running.load()) {
+        if (stats::LinkStats::instance().due(Clock::now())) logLinkStats();
         refreshLocalState();
         {
             std::scoped_lock lk{m_mutex};
@@ -854,6 +884,7 @@ void PeerV2Mesh::monitorLoop() {
                         } else {
                             l.outstandingNonce = randomUuid();
                             send(l, FrameType::Ping, JsonObject{{"nonce", l.outstandingNonce}});
+                            stats::LinkStats::instance().ping(sp->address, stats::Channel::V2);
                         }
                     }
                     if (close) closeLink(l);
