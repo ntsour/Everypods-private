@@ -79,7 +79,8 @@ let helloFields: [String: JSONValue] = ["installationId": .string(a), "sessionId
 let helloFrame = try! PeerV2Message.encode(.hello, helloFields)
 check(try! PeerV2Message.decode(helloFrame).fields == helloFields, "HELLO round trip")
 check(throwsCode("invalid_capabilities") { _ = try PeerV2Message.encode(.hello, helloFields.merging(["capabilities": .array([.string("snapshot"), .string("acquire-v1")])]) { $1 }) }, "capabilities must be sorted")
-check(throwsCode("invalid_capabilities") { _ = try PeerV2Message.encode(.hello, helloFields.merging(["capabilities": .array([.string("relay")])]) { $1 }) }, "unknown capability")
+check((try? PeerV2Message.encode(.hello, helloFields.merging(["capabilities": .array([.string("relay")])]) { $1 })) != nil, "unknown capability names are accepted")
+check(throwsCode("invalid_capabilities") { _ = try PeerV2Message.encode(.hello, helloFields.merging(["capabilities": .array([.string("Bad Name")])]) { $1 }) }, "malformed capability name")
 check(String(data: helloFrame.payload, encoding: .utf8)!.contains(#""capabilities":["acquire-v1","snapshot"]"#), "HELLO advertises acquire-v1 and snapshot")
 // Escapes: é and a surrogate pair decode; control characters are refused.
 let escaped = try! PeerV2Message.decode(frame(.relayData, #"{"subtype":"anc","data":"AAE="}"#))
@@ -325,7 +326,7 @@ do {
     check(link.sent.map(\.kind) == [.hello], "central opens with HELLO")
     let hello = link.sent[0].fields
     check(hello["initiatorId"]?.stringValue == b && hello["installationId"]?.stringValue == b && hello["connectionId"]?.stringValue == id2, "HELLO makes this Mac the initiator")
-    check(hello["capabilities"] == .array([.string("acquire-v1"), .string("snapshot")]), "HELLO capabilities")
+    check(hello["capabilities"] == .array([.string("acquire-v1"), .string("quiet-v1"), .string("snapshot")]), "HELLO capabilities")
     session.onRecord(record(.hello, remoteHello))
     check(link.bound == [a] && !session.isReady, "peer HELLO binds its identity")
     session.onRecord(record(.snapshot, remoteSnapshot))
@@ -333,9 +334,10 @@ do {
     let nonce = link.sent[2].fields["nonce"]!
     session.onRecord(record(.pong, ["nonce": nonce, "snapshot": .object(remoteSnapshot)]))
     check(session.isReady && link.ready, "matching PONG makes the session ready")
-    // PING is answered with SNAPSHOT + PONG echoing the nonce and carrying the snapshot.
+    // Once ready, PING is answered with a PONG echoing the nonce and carrying the snapshot (no separate SNAPSHOT).
+    let before = link.sent.count
     session.onRecord(record(.ping, ["nonce": .string(id1)]))
-    check(link.sent.suffix(2).map(\.kind) == [.snapshot, .pong] && link.sent.last?.fields["nonce"] == .string(id1), "PING -> SNAPSHOT + PONG")
+    check(link.sent.count == before + 1 && link.sent.last?.kind == .pong && link.sent.last?.fields["nonce"] == .string(id1), "PING -> PONG")
     check(link.sent.last?.fields["snapshot"]?.objectValue?["revision"] == .int(4), "PONG carries the current snapshot")
     // Acquisition messages reach the handler only from an acquire-v1 peer.
     session.onRecord(record(.acquireRequest, requestFields(id: id1)))
@@ -385,4 +387,45 @@ do {  // handshake watchdog, wrong identity, missing acquire-v1, one frame per r
     check(other.ended == ["v2_session_mismatch"], "snapshot must carry the HELLO session")
 }
 
-if failures == 0 { print("PeerV2: all tests passed") } else { print("PeerV2: \(failures) failure(s)"); exit(1) }
+if failures == 0 { print("PeerV2: all tests passed") } else { print("PeerV2: \(failures) failure(s)"); do {  // quiet-v1 peer: idle probe instead of the 10 s heartbeat
+    let link = FakeLink(), clock = TestClock()
+    let session = PeerV2Session(hooks: link, clock: { clock.now })
+    session.start()
+    session.onRecord(record(.hello, remoteHello.merging(["capabilities": .array([.string("acquire-v1"), .string("quiet-v1"), .string("snapshot")])]) { $1 }))
+    session.onRecord(record(.snapshot, remoteSnapshot))
+    session.onRecord(record(.pong, ["nonce": link.sent.last!.fields["nonce"]!, "snapshot": .object(remoteSnapshot)]))
+    check(session.isReady, "quiet peer: ready")
+    let afterReady = link.sent.count
+    clock.now += 59_000; session.tick()
+    check(link.sent.count == afterReady, "quiet peer: no PING in the first minute of silence")
+    clock.now += 1_000; session.tick()
+    check(link.sent.last?.kind == .ping && link.sent.count == afterReady + 1, "quiet peer: probe after 60 s")
+    let probe = link.sent.last!.fields["nonce"]!
+    session.onRecord(record(.ping, ["nonce": .string(id1)]))  // the peer probes at the same time
+    session.onRecord(record(.pong, ["nonce": probe, "snapshot": .object(remoteSnapshot)]))
+    check(link.snapshots.count == 3, "the probe's PONG delivers the snapshot, even after the peer's own PING")
+    clock.now += 30_000; session.tick()
+    check(link.sent.count == afterReady + 1, "an answered probe restarts the minute")
+    clock.now += 30_000; session.tick()
+    check(link.sent.count == afterReady + 2, "probe again after another quiet minute")
+    clock.now += 15_000; session.tick()
+    check(link.sent.count == afterReady + 3 && link.ended.isEmpty, "unanswered: one more probe after 15 s")
+    clock.now += 15_000; session.tick()
+    check(link.ended == ["heartbeat_timeout"], "two unanswered probes end the session")
+}
+do {  // quiet-v1 peer: any frame counts as an answer
+    let link = FakeLink(), clock = TestClock()
+    let session = PeerV2Session(hooks: link, clock: { clock.now })
+    session.start()
+    session.onRecord(record(.hello, remoteHello.merging(["capabilities": .array([.string("quiet-v1"), .string("snapshot")])]) { $1 }))
+    session.onRecord(record(.snapshot, remoteSnapshot))
+    session.onRecord(record(.pong, ["nonce": link.sent.last!.fields["nonce"]!, "snapshot": .object(remoteSnapshot)]))
+    clock.now += 60_000; session.tick()
+    clock.now += 10_000
+    session.onRecord(record(.snapshot, remoteSnapshot))
+    clock.now += 50_000; session.tick()
+    clock.now += 50_000; session.tick()
+    check(link.ended.isEmpty, "a SNAPSHOT after the probe keeps the link")
+}
+
+exit(1) }

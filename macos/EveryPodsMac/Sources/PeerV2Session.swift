@@ -34,6 +34,9 @@ struct PeerHeartbeat {
         return .sendPing(startPing()!)
     }
 
+    /// The PING still waiting for its PONG, if any.
+    var outstanding: String? { outstandingNonce }
+
     mutating func acknowledge(_ nonce: String) -> Bool {
         guard nonce == outstandingNonce else { return false }
         outstandingNonce = nil
@@ -64,6 +67,10 @@ protocol PeerV2SessionHooks: AnyObject {
 final class PeerV2Session {
     static let heartbeatMs: Int64 = 10_000
     static let handshakeTimeoutMs: Int64 = 5_000
+    /// quiet-v1 peers: PING only after this long with nothing received, then again after `probeRetryMs`; two
+    /// unanswered probes end the session (docs/peer-link-quiet-redesign.md, D1).
+    static let idleProbeMs: Int64 = 60_000
+    static let probeRetryMs: Int64 = 15_000
 
     private unowned let hooks: PeerV2SessionHooks
     private let clock: () -> Int64
@@ -77,6 +84,10 @@ final class PeerV2Session {
     private var initialPong = false
     private var handshakeDeadlineMs: Int64?
     private var nextHeartbeatMs: Int64
+    private var remoteQuiet = false
+    private var lastReceivedMs: Int64
+    private var probeSentMs: Int64?
+    private var probesUnanswered = 0
     private(set) var isEnded = false
     private(set) var isReady = false
 
@@ -84,6 +95,7 @@ final class PeerV2Session {
         self.hooks = hooks
         self.clock = clock
         nextHeartbeatMs = clock() + Self.heartbeatMs
+        lastReceivedMs = clock()
     }
 
     /// Sends HELLO and arms the handshake watchdog.
@@ -105,19 +117,40 @@ final class PeerV2Session {
     /// One v2 record payload (exactly one frame).
     func onRecord(_ payload: Data) {
         guard !isEnded else { return }
+        lastReceivedMs = clock()
         guarded {
             let frames = try decoder.feed(payload)
             guard frames.count == 1 else { throw V2Error("v2_record_not_one_frame") }
             try handle(frames[0])
         }
+        // Any frame proves a quiet-v1 peer alive. The probe's nonce stays until its PONG arrives, so a PONG that comes
+        // after another frame (both sides probing at once) still delivers its snapshot.
+        if isReady && remoteQuiet {
+            probeSentMs = nil
+            probesUnanswered = 0
+        }
     }
 
-    /// Call about once a second: runs the handshake watchdog and the 10 s heartbeat.
+    /// Call about once a second: runs the handshake watchdog and the heartbeat (10 s, or the idle probe toward a
+    /// quiet-v1 peer).
     func tick() {
         guard !isEnded else { return }
         let now = clock()
         guarded {
             if let deadline = handshakeDeadlineMs, !initialPong, now >= deadline { throw V2Error("handshake_timeout") }
+            if isReady && remoteQuiet {
+                if let sent = probeSentMs {
+                    guard now - sent >= Self.probeRetryMs else { return }
+                    if probesUnanswered >= 2 { throw V2Error("heartbeat_timeout") }
+                } else {
+                    guard now - lastReceivedMs >= Self.idleProbeMs else { return }
+                }
+                let nonce = heartbeat.outstanding ?? heartbeat.startPing()!
+                try send(.ping, ["nonce": .string(nonce)])
+                probeSentMs = now
+                probesUnanswered += 1
+                return
+            }
             guard now >= nextHeartbeatMs else { return }
             nextHeartbeatMs = now + Self.heartbeatMs
             guard remoteInstall != nil else { return }
@@ -152,7 +185,9 @@ final class PeerV2Session {
             try hooks.bindPeerIdentity(install)
             remoteInstall = install
             remoteSession = fields["sessionId"]?.stringValue
-            remoteAcquisitionCapable = (fields["capabilities"]?.arrayValue ?? []).compactMap(\.stringValue).contains("acquire-v1")
+            let caps = (fields["capabilities"]?.arrayValue ?? []).compactMap(\.stringValue)
+            remoteAcquisitionCapable = caps.contains("acquire-v1")
+            remoteQuiet = caps.contains("quiet-v1")
         case .snapshot:
             guard let session = remoteSession else { throw V2Error("hello_required") }
             guard fields["sessionId"]?.stringValue == session else { throw V2Error("v2_session_mismatch") }
@@ -164,8 +199,9 @@ final class PeerV2Session {
                 try send(.ping, ["nonce": .string(nonce)])
             }
         case .ping:
+            // The PONG carries the snapshot; a separate SNAPSHOT is the same data twice once the session is ready.
             let snapshot = hooks.localSnapshot()
-            try send(.snapshot, snapshot)
+            if !isReady { try send(.snapshot, snapshot) }
             try send(.pong, ["nonce": fields["nonce"] ?? .null, "snapshot": .object(snapshot)])
         case .pong:
             guard let nonce = fields["nonce"]?.stringValue else { throw V2Error("invalid_nonce") }

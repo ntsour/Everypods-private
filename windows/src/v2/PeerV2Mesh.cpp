@@ -36,6 +36,11 @@ constexpr winrt::guid kV2Service{
 constexpr auto kHandshakeDeadline = std::chrono::seconds{5};
 constexpr auto kHeartbeatInterval = std::chrono::seconds{10};
 constexpr int kMaxMissedIntervals = 2;
+// quiet-v1 peers: PING only after a minute with nothing received, again after
+// 15 s; two unanswered probes close the link (docs/peer-link-quiet-redesign.md, D1).
+constexpr auto kIdleProbe = std::chrono::seconds{60};
+constexpr auto kProbeRetry = std::chrono::seconds{15};
+constexpr int kMaxUnansweredProbes = 2;
 constexpr auto kPreparationTtl = std::chrono::seconds{5};
 // Android keeps IN_PROGRESS until the requester's terminal CANCEL. A bound
 // here keeps a lost CANCEL from blocking our own takeovers forever.
@@ -80,6 +85,11 @@ struct PeerV2Mesh::Link {
     bool helloSeen = false;
     bool ready = false;
     bool acquireCapable = false;
+    bool remoteQuiet = false;           // the peer advertised quiet-v1
+    Clock::time_point lastReceived{};   // any frame
+    bool probing = false;               // an idle probe is waiting for an answer
+    Clock::time_point probeSentAt{};
+    int probesUnanswered = 0;
     std::string connectionId;
     std::string initiatorId;
     std::string remoteInstallationId;
@@ -545,7 +555,7 @@ void PeerV2Mesh::sessionLoop(PeerSession& s, Link& l) {
             send(l, FrameType::Hello, JsonObject{
                 {"installationId", me.installationId},
                 {"sessionId", me.sessionId},
-                {"capabilities", JsonArray{Json("acquire-v1"), Json("snapshot")}},
+                {"capabilities", JsonArray{Json("acquire-v1"), Json("quiet-v1"), Json("snapshot")}},
                 {"initiatorId", me.installationId},
                 {"connectionId", l.connectionId}});
         }
@@ -590,6 +600,14 @@ void PeerV2Mesh::handleFrame(PeerSession& s, Link& l, const Frame& frame) {
     const JsonObject& f = m.fields;
     log::debug("V2 {:012X} recv {} {}", s.address, frameTypeName(m.type), frame.payload);
     std::scoped_lock lk{m_mutex};
+    l.lastReceived = Clock::now();
+    if (l.ready && l.remoteQuiet) {
+        // Any frame proves a quiet-v1 peer alive. The probe's nonce stays until
+        // its PONG arrives, so a PONG after another frame (both sides probing at
+        // once) still delivers its snapshot.
+        l.probing = false;
+        l.probesUnanswered = 0;
+    }
     if (!l.helloSeen) {
         if (m.type != FrameType::Hello) throw std::invalid_argument("hello_required");
         const auto& me = localIdentity();
@@ -617,6 +635,7 @@ void PeerV2Mesh::handleFrame(PeerSession& s, Link& l, const Frame& frame) {
         l.remoteSessionId = str(f, "sessionId");
         const auto caps = strings(f, "capabilities");
         l.acquireCapable = std::find(caps.begin(), caps.end(), "acquire-v1") != caps.end();
+        l.remoteQuiet = std::find(caps.begin(), caps.end(), "quiet-v1") != caps.end();
         l.helloSeen = true;
         log::handover("V2      peer {:012X} HELLO installation {} session {} ({})", s.address,
             remoteId, l.remoteSessionId, l.dialled ? "we dialled" : "it dialled");
@@ -625,7 +644,7 @@ void PeerV2Mesh::handleFrame(PeerSession& s, Link& l, const Frame& frame) {
             send(l, FrameType::Hello, JsonObject{
                 {"installationId", me.installationId},
                 {"sessionId", me.sessionId},
-                {"capabilities", JsonArray{Json("acquire-v1"), Json("snapshot")}},
+                {"capabilities", JsonArray{Json("acquire-v1"), Json("quiet-v1"), Json("snapshot")}},
                 {"initiatorId", l.initiatorId},
                 {"connectionId", l.connectionId}});
         }
@@ -910,6 +929,20 @@ void PeerV2Mesh::monitorLoop() {
                     if (!l.ready && now - l.connectedAt > kHandshakeDeadline) {
                         log::warn("V2 {:012X} handshake not complete in 5 s; closing", sp->address);
                         close = true;
+                    } else if (l.ready && l.remoteQuiet) {
+                        const bool due = l.probing ? now - l.probeSentAt >= kProbeRetry
+                                                   : now - l.lastReceived >= kIdleProbe;
+                        if (due && l.probing && l.probesUnanswered >= kMaxUnansweredProbes) {
+                            log::warn("V2 {:012X} idle probe unanswered twice; closing", sp->address);
+                            close = true;
+                        } else if (due) {
+                            l.probing = true;
+                            l.probeSentAt = now;
+                            ++l.probesUnanswered;
+                            l.outstandingNonce = randomUuid();
+                            send(l, FrameType::Ping, JsonObject{{"nonce", l.outstandingNonce}});
+                            stats::LinkStats::instance().ping(sp->address, stats::Channel::V2);
+                        }
                     } else if (l.helloSeen && now - l.lastHeartbeat >= kHeartbeatInterval) {
                         l.lastHeartbeat = now;
                         if (!l.outstandingNonce.empty()) {
@@ -925,6 +958,7 @@ void PeerV2Mesh::monitorLoop() {
                     }
                     if (close) { closeLink(l); continue; }
                     const auto due = !l.ready ? l.connectedAt + kHandshakeDeadline + std::chrono::milliseconds{1}
+                                   : l.remoteQuiet ? (l.probing ? l.probeSentAt + kProbeRetry : l.lastReceived + kIdleProbe)
                                    : l.helloSeen ? l.lastHeartbeat + kHeartbeatInterval
                                                  : next;
                     next = std::min(next, due);
