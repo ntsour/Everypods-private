@@ -3,6 +3,7 @@
 // Connects and disconnects the paired AirPods at the Bluetooth level. The AirPods must be paired
 // with this Mac in System Settings first (a stale pairing fails with KEY_NOT_FOUND).
 
+import CoreAudio
 import Foundation
 import IOBluetooth
 
@@ -18,7 +19,7 @@ final class AirPodsConnector: NSObject {
     /// existed, so the Mac claimed AirPods that a phone held and ignored every play press. A link that has had no
     /// AirPods audio device for `bareLinkLimit` is treated as gone (the device appears within ~0.2 s of a connect).
     var isConnected: Bool {
-        LinkStats.shared.airPodsStateLookup()  // polled every second today; phase 2 moves to notifications
+        LinkStats.shared.airPodsStateLookup()
         guard let device, device.isConnected() else { bareLinkSince = nil; return false }
         if let address = Settings.airPodsAddress, AudioRouter.hasOutputDevice(forAddress: address) {
             if staleLogged { Log.write("AirPods: audio device is back; trusting the Bluetooth link again") }
@@ -27,6 +28,10 @@ final class AirPodsConnector: NSObject {
             return true
         }
         let since = bareLinkSince ?? Date()
+        if bareLinkSince == nil, let onChange {
+            // No event marks the end of the grace period: look again when it runs out.
+            DispatchQueue.main.asyncAfter(deadline: .now() + bareLinkLimit + 0.1) { onChange() }
+        }
         bareLinkSince = since
         guard Date().timeIntervalSince(since) >= bareLinkLimit else { return true }
         if !staleLogged {
@@ -36,6 +41,47 @@ final class AirPodsConnector: NSObject {
         return false
     }
     private var bareLinkSince: Date?
+    private var onChange: (() -> Void)?
+    private var connectNotification: IOBluetoothUserNotification?
+    private var disconnectNotification: IOBluetoothUserNotification?
+
+    /// Calls `onChange` on the main queue whenever the AirPods' link or their audio device may have changed:
+    /// IOBluetooth connect and disconnect notifications, Core Audio device-list changes, and the end of the bare-link
+    /// grace period. Replaces the 1 s poll (docs/peer-link-quiet-redesign.md, D3). Call once.
+    func watch(_ onChange: @escaping () -> Void) {
+        self.onChange = onChange
+        connectNotification = IOBluetoothDevice.register(forConnectNotifications: self,
+                                                         selector: #selector(deviceConnected(_:device:)))
+        if let device, device.isConnected() { watchDisconnect(of: device) }
+        var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDevices,
+                                                 mScope: kAudioObjectPropertyScopeGlobal,
+                                                 mElement: kAudioObjectPropertyElementMain)
+        AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, DispatchQueue.main) { [weak self] _, _ in
+            self?.onChange?()
+        }
+    }
+
+    private func isOurs(_ other: IOBluetoothDevice?) -> Bool {
+        guard let other, let ours = device else { return false }
+        return other.addressString?.lowercased() == ours.addressString?.lowercased()
+    }
+
+    private func watchDisconnect(of device: IOBluetoothDevice) {
+        disconnectNotification?.unregister()
+        disconnectNotification = device.register(forDisconnectNotification: self,
+                                                 selector: #selector(deviceDisconnected(_:device:)))
+    }
+
+    @objc private func deviceConnected(_ notification: IOBluetoothUserNotification, device: IOBluetoothDevice) {
+        guard isOurs(device) else { return }
+        watchDisconnect(of: device)
+        DispatchQueue.main.async { [weak self] in self?.onChange?() }
+    }
+
+    @objc private func deviceDisconnected(_ notification: IOBluetoothUserNotification, device: IOBluetoothDevice) {
+        guard isOurs(device) else { return }
+        DispatchQueue.main.async { [weak self] in self?.onChange?() }
+    }
     private var staleLogged = false
     private let bareLinkLimit: TimeInterval = 10
     var name: String { device?.name ?? "AirPods" }

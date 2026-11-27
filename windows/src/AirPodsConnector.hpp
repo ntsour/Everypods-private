@@ -2,6 +2,8 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 
@@ -24,11 +26,23 @@ public:
     // connection state (true = ACL link up to this PC right now).
     bool isClassicallyConnected();
 
-    // Query WinRT BluetoothDevice API for connection state. Bypasses bthserv
-    // (Bluetooth Support Service) that the Win32 BluetoothFindFirstRadio /
-    // BluetoothGetDeviceInfo path routes through. WinRT goes directly through
-    // the modern Bluetooth driver stack with less overhead.
+    // Whether the AirPods' ACL link to this PC is up. While watchConnection()
+    // is subscribed for the current address this is the state the last
+    // ConnectionStatusChanged event reported (no lookup); otherwise it asks
+    // the WinRT BluetoothDevice API.
     bool isClassicallyConnectedWinRT();
+
+    // Subscribes to BluetoothDevice::ConnectionStatusChanged for the current
+    // address, replacing any earlier subscription, so nothing has to poll
+    // (docs/peer-link-quiet-redesign.md, D3). `onChange` runs on a WinRT
+    // thread-pool thread with the new state. Returns false if the AirPods are
+    // not paired (then isClassicallyConnectedWinRT() keeps looking up).
+    bool watchConnection(std::function<void(bool connected)> onChange);
+    // The address watchConnection() last subscribed to (0 if none).
+    std::uint64_t watchedAddress() const;
+    // Looks the state up afresh, logs if the subscription missed a change, and
+    // corrects the cached state. The watcher's once-a-minute safety net.
+    bool reconcileConnection();
 
     // The AirPods' Bluetooth name (cached per address), or L"AirPods".
     std::wstring displayName();
@@ -88,6 +102,11 @@ public:
     void setPersistentArm(bool persistent);
 
 private:
+    bool lookUpConnectionWinRT();
+    struct ConnectionWatch;  // WinRT types stay in the .cpp
+    mutable std::mutex m_watchMutex;
+    std::shared_ptr<ConnectionWatch> m_watch;
+
     std::uint64_t m_address;
     std::mutex    m_mutex;          // serialize connect/disconnect to avoid parallel races
     std::mutex    m_nameMutex;      // guards m_name / m_nameForAddress

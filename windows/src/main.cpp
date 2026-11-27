@@ -14,6 +14,7 @@
 #include "HandoverController.hpp"
 #include "Logger.hpp"
 #include "MediaPlaybackWatcher.hpp"
+#include "PeerDialPolicy.hpp"
 #include "PeerRegistry.hpp"
 #include "SettingsStore.hpp"
 #include "TeamsCallWatcher.hpp"
@@ -238,8 +239,13 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
                     : controller.callMicOpen() ? v2::AudioUse::Call
                     : mediaPlaying.load() ? v2::AudioUse::Media
                     : v2::AudioUse::Idle;
+        // Dial loops hold timed redials while the AirPods play here (D4).
+        g_peerLocalAudioActive.store(st.audioUse != v2::AudioUse::Idle);
         return st;
     });
+    // A connect or disconnect on this PC republishes our snapshot at once; the
+    // mesh no longer re-reads the state every 2 s.
+    controller.setOnAirPodsLinkChanged([&peerV2](bool) { peerV2.refreshLocalState(); });
 
     // Don't take the AirPods while a peer holds a v2 reservation on us: it is
     // in the middle of connecting them after a case-open.

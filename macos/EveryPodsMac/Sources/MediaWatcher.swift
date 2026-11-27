@@ -100,13 +100,20 @@ final class MediaWatcher {
     func start() {
         intent.onPlayerPlaying = { [weak self] in self?.poll() }
         intent.start()
-        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.poll() }
         watchProcessList()
         poll()
     }
 
-    /// Re-polls whenever a process starts or stops output (or the process list changes), instead of waiting
-    /// for the next 1 s tick. The tick stays as a safety net.
+    /// Core Audio listeners drive the checks. The 1 s tick runs only while a start is being confirmed (sustain, sound
+    /// check); otherwise a 30 s tick is the safety net (docs/peer-link-quiet-redesign.md, D3).
+    private func scheduleTick() {
+        let interval: TimeInterval = (playingSince != nil && !startFired) ? 1 : 30
+        if let timer, timer.isValid, timer.timeInterval == interval { return }
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in self?.poll() }
+    }
+
+    /// Re-polls whenever a process starts or stops output or input (or the process list changes).
     private func watchProcessList() {
         var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyProcessObjectList,
                                                  mScope: kAudioObjectPropertyScopeGlobal,
@@ -121,12 +128,17 @@ final class MediaWatcher {
     private func watchProcesses() {
         for process in Self.objects(AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyProcessObjectList)
         where !watchedProcesses.contains(process) {
-            var address = AudioObjectPropertyAddress(mSelector: kAudioProcessPropertyIsRunningOutput,
-                                                     mScope: kAudioObjectPropertyScopeGlobal,
-                                                     mElement: kAudioObjectPropertyElementMain)
-            let status = AudioObjectAddPropertyListenerBlock(process, &address, DispatchQueue.main) { [weak self] _, _ in
+            var output = AudioObjectPropertyAddress(mSelector: kAudioProcessPropertyIsRunningOutput,
+                                                    mScope: kAudioObjectPropertyScopeGlobal,
+                                                    mElement: kAudioObjectPropertyElementMain)
+            let status = AudioObjectAddPropertyListenerBlock(process, &output, DispatchQueue.main) { [weak self] _, _ in
                 self?.poll()
             }
+            // The mic (calls) used to be caught by the 1 s tick only.
+            var input = AudioObjectPropertyAddress(mSelector: kAudioProcessPropertyIsRunningInput,
+                                                   mScope: kAudioObjectPropertyScopeGlobal,
+                                                   mElement: kAudioObjectPropertyElementMain)
+            AudioObjectAddPropertyListenerBlock(process, &input, DispatchQueue.main) { [weak self] _, _ in self?.poll() }
             if status == noErr { watchedProcesses.insert(process) }
         }
     }
@@ -180,6 +192,7 @@ final class MediaWatcher {
             snapshot = next
             onChange?()
         }
+        scheduleTick()
     }
 
     private func playerIntent(_ next: Snapshot) -> Bool {

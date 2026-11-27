@@ -107,6 +107,14 @@ struct PeerV2Mesh::PeerSession {
     std::atomic<bool> running{true};
     std::thread worker;  // dial loop
     std::atomic<bool> wake{false};  // retryNow(): cut the backoff wait short
+    std::atomic<bool> linkEnded{false};  // a link to this peer closed: dial again
+    // The dial loop waits here instead of polling; every flag above notifies it.
+    std::mutex waitMutex;
+    std::condition_variable waitCv;
+    void notify() {
+        { std::scoped_lock lk{waitMutex}; }
+        waitCv.notify_all();
+    }
 
     // Guarded by the mesh's m_mutex.
     std::string remoteInstallationId;   // last known, survives reconnects
@@ -116,15 +124,18 @@ struct PeerV2Mesh::PeerSession {
 
 namespace {
 
-// Sleeps up to `d` in small steps; false if asked to stop meanwhile.
-// With `wake`, it also returns true early once `wake` is set (and clears it).
+// Waits up to `d` on the session's condition variable (no polling); false if
+// asked to stop meanwhile. With `ends`, it also returns early once that flag is
+// set (and clears it); `woke` then reports that it did.
 bool sleepWhile(const std::function<bool()>& keepGoing, std::chrono::milliseconds d,
-                std::atomic<bool>* wake = nullptr) {
-    for (auto left = d; left.count() > 0; left -= std::min(left, std::chrono::milliseconds{100})) {
-        if (!keepGoing()) return false;
-        if (wake && wake->exchange(false)) return true;
-        std::this_thread::sleep_for(std::min(left, std::chrono::milliseconds{100}));
+                std::mutex& m, std::condition_variable& cv,
+                std::atomic<bool>* ends = nullptr, bool* woke = nullptr) {
+    {
+        std::unique_lock lk{m};
+        cv.wait_for(lk, d, [&] { return !keepGoing() || (ends && ends->load()); });
     }
+    const bool ended = ends && ends->exchange(false);
+    if (woke) *woke = ended;
     return keepGoing();
 }
 
@@ -198,6 +209,7 @@ void PeerV2Mesh::retryNow(std::uint64_t peer) {
     }
     log::info("V2 {:012X} peer Bluetooth link is up; dialling now", peer);
     s->wake.store(true);
+    s->notify();
 }
 
 void PeerV2Mesh::removePeer(std::uint64_t peer) {
@@ -214,6 +226,7 @@ void PeerV2Mesh::removePeer(std::uint64_t peer) {
 
 void PeerV2Mesh::removeSession(const std::shared_ptr<PeerSession>& s) {
     s->running.store(false);
+    s->notify();
     std::vector<std::shared_ptr<Link>> links;
     {
         std::scoped_lock lk{m_mutex};
@@ -402,7 +415,7 @@ void PeerV2Mesh::runPeer(std::shared_ptr<PeerSession> session) {
     const auto delay = firstDialDelay(localIdentity().installationId, knownPeerInstallationId(s.address));
     if (delay.count() > 0) {
         log::info("V2 {:012X} waiting {} ms before the first dial (the peer dials first)", s.address, delay.count());
-        if (!sleepWhile(keepGoing, delay)) return;
+        if (!sleepWhile(keepGoing, delay, s.waitMutex, s.waitCv)) return;
     }
     s.wake.store(false);  // a retryNow() during the first-dial wait is spent
 
@@ -414,7 +427,8 @@ void PeerV2Mesh::runPeer(std::shared_ptr<PeerSession> session) {
             attempt = 0;
             misses = 0;  // a link is up (e.g. ours lost the duplicate arbitration)
             shortLink = false;
-            if (!sleepWhile(keepGoing, std::chrono::milliseconds{1000})) return;
+            // Until that link closes (runLink notifies); the timeout is only a safety net.
+            if (!sleepWhile(keepGoing, std::chrono::minutes{1}, s.waitMutex, s.waitCv, &s.linkEnded)) return;
             continue;
         }
         try {
@@ -467,7 +481,15 @@ void PeerV2Mesh::runPeer(std::shared_ptr<PeerSession> session) {
             misses == 0 ? "" : shortLink ? ", the peer closed the link at once" : ", no EveryPods service there");
         // The link-up wake does not end a wait for a missing service or a peer
         // that closes at once: our own dials bring that link up.
-        if (!sleepWhile(keepGoing, backoff, misses > 0 ? nullptr : &s.wake)) return;
+        bool woke = false;
+        if (!sleepWhile(keepGoing, backoff, s.waitMutex, s.waitCv, misses > 0 ? nullptr : &s.wake, &woke)) return;
+        // While this PC plays on the AirPods, hold the timed redial: paging a
+        // peer then competes with the audio link. A link-up wake still dials.
+        if (!woke && g_peerLocalAudioActive.load()) {
+            log::debug("V2 {:012X} redial held while audio plays on this PC", s.address);
+            while (!woke && g_peerLocalAudioActive.load())
+                if (!sleepWhile(keepGoing, std::chrono::seconds{30}, s.waitMutex, s.waitCv, &s.wake, &woke)) return;
+        }
         if (misses > 0) s.wake.store(false);
     }
 }
@@ -498,6 +520,8 @@ void PeerV2Mesh::runLink(std::shared_ptr<PeerSession> session, std::shared_ptr<L
         l.holdsOurAirPods = false;
         std::erase(s.links, link);
     }
+    s.linkEnded.store(true);
+    s.notify();
     closeLink(l);
     { std::scoped_lock wl{l.writeMutex}; l.socket = nullptr; l.writer = nullptr; }
 }
@@ -513,6 +537,7 @@ void PeerV2Mesh::sessionLoop(PeerSession& s, Link& l) {
         l.connected = true;
         l.connectedAt = Clock::now();
         stats::LinkStats::instance().linkUp(s.address, stats::Channel::V2);
+        wakeMonitor();  // its handshake deadline starts now
         if (l.dialled) {
             // The accepting side waits for the dialler's HELLO and answers it.
             l.connectionId = randomUuid();
@@ -859,10 +884,21 @@ void PeerV2Mesh::handleAcquisition(PeerSession& s, Link& l, FrameType type, cons
 
 // ── Monitor: local state, heartbeat, handshake deadline ─────────────────────
 
+void PeerV2Mesh::wakeMonitor() {
+    m_monitorWake.store(true);
+    { std::scoped_lock lk{m_monitorMutex}; }
+    m_monitorCv.notify_all();
+}
+
+// Sleeps until the next handshake or heartbeat deadline (a link coming up wakes
+// it early), at most a minute. It used to wake every 2 s and re-read the
+// AirPods' state each time (docs/peer-link-quiet-redesign.md, D3).
 void PeerV2Mesh::monitorLoop() {
+    constexpr auto kIdleWake = std::chrono::minutes{1};  // stats, and a cheap state reconcile
     while (m_running.load()) {
         if (stats::LinkStats::instance().due(Clock::now())) logLinkStats();
-        refreshLocalState();
+        refreshLocalState();  // reads cached state; changes are pushed by events
+        Clock::time_point next = Clock::now() + kIdleWake;
         {
             std::scoped_lock lk{m_mutex};
             const auto now = Clock::now();
@@ -887,12 +923,17 @@ void PeerV2Mesh::monitorLoop() {
                             stats::LinkStats::instance().ping(sp->address, stats::Channel::V2);
                         }
                     }
-                    if (close) closeLink(l);
+                    if (close) { closeLink(l); continue; }
+                    const auto due = !l.ready ? l.connectedAt + kHandshakeDeadline + std::chrono::milliseconds{1}
+                                   : l.helloSeen ? l.lastHeartbeat + kHeartbeatInterval
+                                                 : next;
+                    next = std::min(next, due);
                 }
             }
         }
         std::unique_lock lk{m_monitorMutex};
-        m_monitorCv.wait_for(lk, std::chrono::seconds{2}, [this] { return !m_running.load(); });
+        m_monitorCv.wait_until(lk, next, [this] { return !m_running.load() || m_monitorWake.load(); });
+        m_monitorWake.store(false);
     }
 }
 

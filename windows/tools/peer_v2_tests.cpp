@@ -177,13 +177,16 @@ static void arbitrationTests() {
 static void dialPolicyTests() {
     using namespace std::chrono;
     using namespace Propods;
-    // Android PeerRetryPolicy: 2, 4, 8, then 15 s, repeating; jitter 0.8..1.2.
+    // 2, 4, 8, 15, 30 s, 1, 2, then 5 min, repeating; jitter 0.8..1.2.
     CHECK(peerRetryDelay(0, 1.0) == milliseconds{2000});
     CHECK(peerRetryDelay(1, 1.0) == milliseconds{4000});
     CHECK(peerRetryDelay(2, 1.0) == milliseconds{8000});
     CHECK(peerRetryDelay(3, 1.0) == milliseconds{15000});
-    CHECK(peerRetryDelay(4, 1.0) == milliseconds{15000});
-    CHECK(peerRetryDelay(99, 1.0) == milliseconds{15000});
+    CHECK(peerRetryDelay(4, 1.0) == milliseconds{30000});
+    CHECK(peerRetryDelay(5, 1.0) == milliseconds{60000});
+    CHECK(peerRetryDelay(6, 1.0) == milliseconds{120000});
+    CHECK(peerRetryDelay(7, 1.0) == milliseconds{300000});
+    CHECK(peerRetryDelay(99, 1.0) == milliseconds{300000});
     CHECK(peerRetryDelay(-1, 1.0) == milliseconds{2000});
     CHECK(peerRetryDelay(0, 0.8) == milliseconds{1600});
     CHECK(peerRetryDelay(0, 1.2) == milliseconds{2400});
@@ -193,6 +196,7 @@ static void dialPolicyTests() {
     CHECK(peerRetryDelay(0, 0.1) == milliseconds{1600});
     CHECK(peerRetryDelay(0, 1.0, true) == milliseconds{15000});  // audio floor
     CHECK(peerRetryDelay(3, 1.0, true) == milliseconds{15000});
+    CHECK(peerRetryDelay(7, 1.0, true) == milliseconds{300000});
     for (int i = 0; i < 1000; ++i) {
         const double j = peerRetryJitter();
         CHECK(j >= 0.8 && j <= 1.2);

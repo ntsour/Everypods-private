@@ -96,7 +96,8 @@ private:
     winrt::Windows::Networking::Sockets::StreamSocket takePendingInbound();
     // Sleeps up to `d`; returns early when stopping or a peer link arrives, and,
     // if `interruptibleByRetry`, when retryNow() is called.
-    void waitFor(std::chrono::milliseconds d, bool interruptibleByRetry);
+    // Returns true when a link-up wake or a peer's inbound link ended the wait early.
+    bool waitFor(std::chrono::milliseconds d, bool interruptibleByRetry);
 
     std::atomic<bool> m_running{false};
     std::atomic<bool> m_connected{false};

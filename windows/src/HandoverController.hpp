@@ -31,6 +31,12 @@ public:
     ~HandoverController();
 
     void setOnStateChanged(StateChangedCallback cb) { m_onStateChanged = std::move(cb); }
+    // Called on the watcher thread after each AirPods connect or disconnect on
+    // this PC (the v2 mesh republishes its snapshot). Set before the first edge.
+    void setOnAirPodsLinkChanged(std::function<void(bool connected)> cb) {
+        std::scoped_lock lk{m_watchMutex};
+        m_onAirPodsLinkChanged = std::move(cb);
+    }
 
     // Optional probe that returns true if the AirPods appear to be out of the
     // case / nearby (BLE proximity). When set and it returns false, a media/call
@@ -164,6 +170,13 @@ private:
     // AirPods endpoint and signals state changes to connected Android peers.
     std::atomic<bool> m_watcherRunning{false};
     std::thread m_watcherThread;
+    // The watcher sleeps on this until a connection event (or the minute's
+    // reconcile) instead of polling every second.
+    std::mutex m_watchMutex;
+    std::condition_variable m_watchCv;
+    std::atomic<bool> m_btEvent{false};
+    void wakeWatcher();
+    std::function<void(bool)> m_onAirPodsLinkChanged;
 
     // Voluntary-release gate. Set when Windows accepts a peer's kRequestDisconnect
     // or kRequestHandover — i.e. Windows deliberately handed AirPods to another device.

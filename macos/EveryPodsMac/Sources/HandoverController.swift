@@ -161,7 +161,10 @@ final class HandoverController {
         proximity.start()
         peers.start()
         lastBluetoothConnected = pods.isConnected
-        pollTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.pollBluetooth() }
+        // Connect and disconnect notifications drive the edges; the minute's timer only reconciles.
+        // It used to poll every second (docs/peer-link-quiet-redesign.md, D3).
+        pods.watch { [weak self] in self?.pollBluetooth() }
+        pollTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in self?.pollBluetooth() }
         pollBluetooth()
     }
 
