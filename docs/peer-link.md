@@ -65,6 +65,12 @@ The side that accepts a v2 link answers like Android's v2 server
 - The dialler answers SNAPSHOT + PING; PONG to our PING makes the session
   ready. PING every 10 s, close after two missed responses, handshake must
   finish within 5 s. Any validation failure closes the link.
+- Toward a peer whose HELLO advertises `quiet-v1` (Windows and Mac advertise
+  it), the 10 s PING is replaced by an idle probe: a PING only after 60 s with
+  nothing received, another after 15 s, and the link closes when both go
+  unanswered. Any frame from the peer counts as an answer. Once ready, a PING
+  is answered with the PONG alone; it carries the snapshot
+  (`docs/peer-link-quiet-redesign.md`, D1).
 
 The dialling side checks that the answering HELLO echoes its own
 `initiatorId` and `connectionId`.

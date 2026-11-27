@@ -100,7 +100,14 @@ enum PeerV2Message {
         let fields: [String: JSONValue]
     }
 
-    static let capabilities = ["acquire-v1", "snapshot"]
+    /// Sorted. `quiet-v1`: this side pushes every state change, answers PING at once, and probes a quiet link only
+    /// after a minute of silence (docs/peer-link-quiet-redesign.md, D1).
+    static let capabilities = ["acquire-v1", "quiet-v1", "snapshot"]
+    /// Unknown capability names are ignored, not rejected, so a newer peer can advertise one without breaking the link.
+    private static let capabilityName = try! NSRegularExpression(pattern: "^[a-z0-9][a-z0-9-]{0,31}$")
+    static func validCapabilityName(_ s: String) -> Bool {
+        capabilityName.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)) != nil
+    }
 
     static func decode(_ frame: PeerV2Frame.Frame) throws -> Validated {
         guard let json = String(data: frame.payload, encoding: .utf8) else { throw V2Error("invalid_utf8") }
@@ -166,7 +173,7 @@ enum PeerV2Message {
             for key in ["installationId", "sessionId", "initiatorId", "connectionId"] { try uuid(f, key) }
             guard let caps = f["capabilities"]?.arrayValue else { throw V2Error("invalid_capabilities") }
             let strings = caps.compactMap(\.stringValue)
-            guard strings.count == caps.count, strings.allSatisfy({ Set(capabilities).contains($0) }),
+            guard strings.count == caps.count, strings.allSatisfy(validCapabilityName),
                   strings == Array(Set(strings)).sorted() else { throw V2Error("invalid_capabilities") }
         case .snapshot:
             try snapshot(f)
