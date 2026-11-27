@@ -31,6 +31,14 @@ enum Settings {
         return id
     }
 
+    /// CoreBluetooth identifiers of LE peripherals that completed a session with this Mac. macOS gives a bonded
+    /// phone a stable identifier (it resolves the phone's rotating address); an address it cannot resolve shows up
+    /// under a new identifier each time. Only these are connected to automatically.
+    static var knownLePeripherals: Set<String> {
+        get { Set(defaults.stringArray(forKey: "knownLePeripherals") ?? []) }
+        set { defaults.set(Array(newValue).sorted(), forKey: "knownLePeripherals") }
+    }
+
     /// Phones matched over Bluetooth LE: installation ID → the address the phone is configured under. CoreBluetooth
     /// exposes no addresses, so the first match is by Bluetooth name and is then remembered.
     static var gattPeerAddresses: [String: String] {

@@ -53,6 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// First launch: pick up the paired AirPods and any paired phone that runs the Android app.
     private func firstRunSetup() {
+        if !Settings.didFirstRun || Settings.peers.isEmpty { controller.peers.discover() }
         if Settings.airPodsAddress == nil, let airPods = PeerDiscovery.findAirPods().first {
             Settings.airPodsAddress = airPods.address
             Log.write("Setup: selected AirPods \(airPods.name)")
@@ -86,6 +87,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: Menu (rebuilt every time it opens, so it always shows current state)
 
     func menuNeedsUpdate(_ menu: NSMenu) {
+        // Opening the menu is when a new phone gets added: look for devices never linked before.
+        controller.peers.discover()
         menu.removeAllItems()
 
         menu.addItem(disabled(controller.airPodsStatus))
@@ -293,8 +296,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// "Add peer…" while no phone is visible over Bluetooth LE.
     @objc private func addPeer() {
+        if let problem = controller.peers.recentKeyProblem {
+            // Seen on 27 Nov: classic Bluetooth paired and working, but the LE keys out of sync, so the phone never
+            // completes an LE link and never shows up here.
+            alert("Phone paired, but its Bluetooth LE keys don't match",
+                  "A phone paired with this Mac refused the encrypted Bluetooth LE link (\(problem)). This happens when " +
+                  "one side was re-paired and the other kept old keys. Forget the phone in System Settings → Bluetooth, " +
+                  "unpair this Mac on the phone, pair them again from System Settings, then open this menu again.")
+            return
+        }
         alert("No phone found",
-              "Make sure the phone is paired in System Settings → Bluetooth and runs EveryPods (on Android, with Cross-Device Handover on), then try again.")
+              "Make sure the phone is paired in System Settings → Bluetooth and runs EveryPods (on Android, with Cross-Device Handover on). " +
+              "This Mac looks for new phones for two minutes after you open the menu: wait a few seconds and open it again.")
     }
 
     /// A phone found over Bluetooth LE, picked from the "Add peer" submenu.

@@ -79,7 +79,9 @@ final class HandoverController {
         if let address = Settings.airPodsAddress { headsetId = try? PeerV2Message.headsetId(fromAddress: address) }
         var held: PeerOwnership = .unknown
         if headsetId != nil {
-            if ownership == .thisMac || pods.isConnected { held = .held } else if ownership == .otherDevice { held = .released }
+            // The last state the connect/disconnect events reported: the v2 hub asks every second, and each
+            // pods.isConnected is an IOBluetooth call plus a Core Audio device lookup.
+            if ownership == .thisMac || lastBluetoothConnected { held = .held } else if ownership == .otherDevice { held = .released }
         }
         let use: PeerAudioUse = media.snapshot.inCall ? .call : media.snapshot.playing ? .media : .idle
         return PeerV2Hub.LocalState(headsetId: headsetId, ownership: held, audioUse: use, takeoverActive: takeoverInFlight)

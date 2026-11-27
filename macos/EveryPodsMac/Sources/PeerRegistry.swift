@@ -102,6 +102,12 @@ final class PeerRegistry {
         start()
     }
 
+    /// Connects to devices this Mac has not linked with before too, for two minutes (the user is adding a peer).
+    func discover() { gatt.discover() }
+
+    /// The latest sign that a paired phone's Bluetooth LE keys don't match this Mac's, if recent.
+    var recentKeyProblem: String? { gatt.recentKeyProblem }
+
     /// A phone just authorized this Mac: retry the phones that refused it, without dropping the other links.
     func retryRefused() {
         rematch()

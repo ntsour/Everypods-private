@@ -928,6 +928,15 @@ bool AirPodsConnector::setAsDefaultAudioDevice() {
     // is already the output (e.g. PC speakers, Xiaomi overnight, etc.), leaving the endpoint
     // ACTIVE but no audio flowing → idle-drop. If the endpoint is not ACTIVE yet (still
     // UNPLUGGED), this is a no-op and returns true (caller retries via HandoverController).
+    {
+        std::unique_lock pass{m_routeMutex, std::try_to_lock};
+        const auto now = std::chrono::steady_clock::now();
+        if (!pass.owns_lock() || now - m_lastRoutePass < std::chrono::milliseconds{1500}) {
+            log::debug("Routing pass already ran for this connect; skipping the duplicate");
+            return true;
+        }
+        m_lastRoutePass = now;
+    }
     HRESULT coInitHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     const bool weInited = (coInitHr == S_OK);
 
