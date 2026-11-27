@@ -104,10 +104,13 @@ final class MediaWatcher {
         poll()
     }
 
-    /// Core Audio listeners drive the checks. The 1 s tick runs only while a start is being confirmed (sustain, sound
-    /// check); otherwise a 30 s tick is the safety net (docs/peer-link-quiet-redesign.md, D3).
+    /// Core Audio listeners make starts show up at once when they fire, but they don't always: a browser's audio
+    /// process appears before its stream runs, and the later IsRunningOutput change was not always reported. With a
+    /// 30 s tick (phase 2) YouTube played on the speakers for many seconds before a takeover (27 Nov), and the click
+    /// that started it was too old to count, so the sound check ran too. The 1 s tick stays; it reads local Core Audio
+    /// properties only, nothing goes over the air.
     private func scheduleTick() {
-        let interval: TimeInterval = (playingSince != nil && !startFired) ? 1 : 30
+        let interval: TimeInterval = 1
         if let timer, timer.isValid, timer.timeInterval == interval { return }
         timer?.invalidate()
         timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in self?.poll() }
