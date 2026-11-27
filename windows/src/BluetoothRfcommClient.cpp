@@ -148,13 +148,15 @@ StreamSocket BluetoothRfcommClient::takePendingInbound() {
     return s;
 }
 
-void BluetoothRfcommClient::waitFor(std::chrono::milliseconds d, bool interruptibleByRetry) {
+bool BluetoothRfcommClient::waitFor(std::chrono::milliseconds d, bool interruptibleByRetry) {
     std::unique_lock lk{m_pendingMutex};
     m_pendingCv.wait_for(lk, d, [this, interruptibleByRetry] {
         return !m_running.load() || m_pendingInbound != nullptr
             || (interruptibleByRetry && m_retryRequested);
     });
+    const bool woke = m_pendingInbound != nullptr || (interruptibleByRetry && m_retryRequested);
     if (interruptibleByRetry) m_retryRequested = false;
+    return woke;
 }
 
 void BluetoothRfcommClient::retryNow() {
@@ -202,9 +204,50 @@ StreamSocket dialRfcomm(std::uint64_t peerAddress, const winrt::guid& serviceUui
         tag, peerAddress, deviceName, (int)device.ConnectionStatus());
     if (onName) onName(deviceName);
 
-    // Resolve the service fresh every dial (a cached record can point at a
-    // stale channel after the peer restarts); fall back to the cache once.
     auto rfcommId = RfcommServiceId::FromUuid(serviceUuid);
+    const auto connectTo = [&](const RfcommDeviceService& svc) {
+        log::debug("{} {:012X}: connecting to host='{}' service='{}'", tag, peerAddress,
+            to_string(svc.ConnectionHostName().DisplayName()), to_string(svc.ConnectionServiceName()));
+        StreamSocket socket;
+        auto connectOp = socket.ConnectAsync(svc.ConnectionHostName(), svc.ConnectionServiceName());
+        try {
+            waitOrCancel(connectOp, "RFCOMM connect");
+            connectOp.GetResults();
+        } catch (...) {
+            try { socket.Close(); } catch (...) {}
+            throw;
+        }
+        return socket;
+    };
+
+    // The peer's link is down (out of range, or just not linked): try the
+    // cached record first. An uncached lookup would page the device once and
+    // the connect a second time; an absent peer cost ~10 s of paging per dial
+    // (docs/peer-link-quiet-redesign.md, D4). If the device answers but the
+    // cached channel is stale, the fresh lookup below runs as before.
+    if (device.ConnectionStatus() != BluetoothConnectionStatus::Connected) {
+        RfcommDeviceService cached{nullptr};
+        try {
+            auto op = device.GetRfcommServicesForIdAsync(rfcommId, BluetoothCacheMode::Cached);
+            waitOrCancel(op, "RFCOMM service lookup (cached)");
+            auto result = op.GetResults();
+            if (result.Services().Size() > 0) cached = result.Services().GetAt(0);
+        } catch (...) {}
+        if (cached) {
+            try {
+                auto socket = connectTo(cached);
+                log::info("{} {:012X}: connected with the cached service record (link was down)", tag, peerAddress);
+                return socket;
+            } catch (...) {
+                if (device.ConnectionStatus() != BluetoothConnectionStatus::Connected) throw;  // unreachable
+                log::info("{} {:012X}: cached service record failed although the device answered; looking it up",
+                    tag, peerAddress);
+            }
+        }
+    }
+
+    // Resolve the service fresh (a cached record can point at a stale channel
+    // after the peer restarts); fall back to the cache once.
     RfcommDeviceService service{nullptr};
     // True when the device answered the fresh lookup without our service: it is
     // in range, and EveryPods is not listening there. An unreachable device
@@ -240,20 +283,7 @@ StreamSocket dialRfcomm(std::uint64_t peerAddress, const winrt::guid& serviceUui
                 "RFCOMM service not advertised -- is EveryPods running on that device?");
         throw std::runtime_error("RFCOMM service not found (device did not answer the lookup)");
     }
-    log::debug("{} {:012X}: connecting to host='{}' service='{}'", tag, peerAddress,
-        to_string(service.ConnectionHostName().DisplayName()),
-        to_string(service.ConnectionServiceName()));
-
-    StreamSocket socket;
-    auto connectOp = socket.ConnectAsync(service.ConnectionHostName(), service.ConnectionServiceName());
-    try {
-        waitOrCancel(connectOp, "RFCOMM connect");
-        connectOp.GetResults();
-    } catch (...) {
-        try { socket.Close(); } catch (...) {}
-        throw;
-    }
-    return socket;
+    return connectTo(service);
 }
 
 StreamSocket BluetoothRfcommClient::dial(std::uint64_t peerAddress) {
@@ -422,7 +452,14 @@ void BluetoothRfcommClient::runLoop(std::uint64_t peerAddress) {
             misses == 0 ? "" : shortLink ? ", the peer closed the link at once" : ", no EveryPods service there");
         // The link-up wake does not end a wait for a missing service or a peer
         // that closes at once: our own dials bring that link up.
-        waitFor(backoff, /*interruptibleByRetry=*/misses == 0);
+        bool woke = waitFor(backoff, /*interruptibleByRetry=*/misses == 0);
+        // While this PC plays on the AirPods, hold the timed redial: paging a
+        // peer then competes with the audio link. A link-up wake still dials.
+        if (!woke && g_peerLocalAudioActive.load() && m_running.load()) {
+            log::info("RFCOMM {:012X}: redial held while audio plays on this PC", peerAddress);
+            while (!woke && g_peerLocalAudioActive.load() && m_running.load())
+                woke = waitFor(std::chrono::seconds{30}, /*interruptibleByRetry=*/true);
+        }
         if (misses == 0) shortLink = false;
     }
 }

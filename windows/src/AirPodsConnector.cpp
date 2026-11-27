@@ -1175,9 +1175,80 @@ bool AirPodsConnector::isClassicallyConnected() {
     return err == ERROR_SUCCESS && info.fConnected;
 }
 
+struct AirPodsConnector::ConnectionWatch {
+    std::uint64_t address = 0;
+    winrt::Windows::Devices::Bluetooth::BluetoothDevice device{nullptr};
+    winrt::event_token token{};
+    std::atomic<bool> connected{false};
+    std::function<void(bool)> onChange;
+    ~ConnectionWatch() {
+        try { if (device) device.ConnectionStatusChanged(token); } catch (...) {}
+    }
+};
+
+bool AirPodsConnector::watchConnection(std::function<void(bool connected)> onChange) {
+    using namespace winrt::Windows::Devices::Bluetooth;
+    const std::uint64_t address = m_address;
+    { std::scoped_lock lk{m_watchMutex}; m_watch.reset(); }
+    if (address == 0) return false;
+    auto watch = std::make_shared<ConnectionWatch>();
+    watch->address = address;
+    watch->onChange = std::move(onChange);
+    try {
+        watch->device = BluetoothDevice::FromBluetoothAddressAsync(address).get();
+        stats::LinkStats::instance().airpodsStateLookup();
+        if (!watch->device) {
+            log::warn("AirPods {:012X}: not paired; their connection state will be looked up", address);
+            return false;
+        }
+        watch->connected.store(watch->device.ConnectionStatus() == BluetoothConnectionStatus::Connected);
+        std::weak_ptr<ConnectionWatch> weak = watch;
+        watch->token = watch->device.ConnectionStatusChanged([weak](BluetoothDevice const& sender, winrt::Windows::Foundation::IInspectable const&) {
+            auto w = weak.lock();
+            if (!w) return;
+            bool now = false;
+            try { now = sender.ConnectionStatus() == BluetoothConnectionStatus::Connected; } catch (...) { return; }
+            if (w->connected.exchange(now) != now && w->onChange) w->onChange(now);
+        });
+    } catch (const winrt::hresult_error& e) {
+        log::warn("AirPods {:012X}: cannot watch the connection: 0x{:08X}", address,
+            static_cast<std::uint32_t>(e.code().value));
+        return false;
+    }
+    log::info("AirPods {:012X}: watching the connection (now {})", address,
+        watch->connected.load() ? "connected" : "disconnected");
+    std::scoped_lock lk{m_watchMutex};
+    m_watch = std::move(watch);
+    return true;
+}
+
+std::uint64_t AirPodsConnector::watchedAddress() const {
+    std::scoped_lock lk{m_watchMutex};
+    return m_watch ? m_watch->address : 0;
+}
+
+bool AirPodsConnector::reconcileConnection() {
+    const bool fresh = lookUpConnectionWinRT();
+    std::shared_ptr<ConnectionWatch> w;
+    { std::scoped_lock lk{m_watchMutex}; w = m_watch; }
+    if (w && w->address == m_address && w->connected.exchange(fresh) != fresh) {
+        log::warn("AirPods: the connection event missed a change (now {}); corrected",
+            fresh ? "connected" : "disconnected");
+    }
+    return fresh;
+}
+
 bool AirPodsConnector::isClassicallyConnectedWinRT() {
+    {
+        std::scoped_lock lk{m_watchMutex};
+        if (m_watch && m_watch->address == m_address && m_address != 0) return m_watch->connected.load();
+    }
+    return lookUpConnectionWinRT();
+}
+
+bool AirPodsConnector::lookUpConnectionWinRT() {
     if (m_address == 0) return false;
-    stats::LinkStats::instance().airpodsStateLookup();  // phase 2 replaces this poll with an event
+    stats::LinkStats::instance().airpodsStateLookup();
     try {
         using namespace winrt::Windows::Devices::Bluetooth;
         auto device = BluetoothDevice::FromBluetoothAddressAsync(m_address).get();

@@ -21,7 +21,7 @@ packets still travel on the legacy link, so every pair needs both links.
 
 1. **Listen** on the legacy and the v2 service at startup.
 2. **Dial** every configured peer it has no link with, on legacy and on v2,
-   with backoff (2, 4, 8, then 15 s; see "Dial and retry"). A link the peer dialled counts as
+   with backoff (2, 4, 8, 15, 30 s, 1, 2, then 5 min; see "Dial and retry"). A link the peer dialled counts as
    the link to that peer: don't dial that service while it is up.
 3. **First dial order.** The peer with the smaller `installationId` dials at
    once; the other waits 3 s before its first dial, then dials anyway. A peer
@@ -74,21 +74,25 @@ The dialling side checks that the answering HELLO echoes its own
 Windows dials exactly like Android, so a restarted peer relinks quickly. Android
 references are in `android/app/src/main/java/io/automated/ventures/everypods/utils/`.
 
-1. **Resolve fresh on every dial.** Never reuse a cached channel. Windows asks
-   for the service with `BluetoothCacheMode::Uncached` and falls back to the
-   cached query once if that fails or finds nothing (the log says which was
-   used). Android creates a new socket per dial (`CrossDeviceClient.kt`,
+1. **Resolve fresh when the peer is reachable.** While the peer's Bluetooth
+   link is up, Windows asks for the service with `BluetoothCacheMode::Uncached`
+   and falls back to the cached query once if that fails or finds nothing (the
+   log says which was used). While the link is down, it connects with the
+   cached record first, so an absent peer costs one page per dial instead of
+   two; if the device answers but the channel is stale, the fresh lookup runs.
+   Android creates a new socket per dial (`CrossDeviceClient.kt`,
    `createSocket`).
 2. **8 s connect timeout**, then cancel the connect and close the socket
    (`CrossDeviceClient.kt` `CONNECT_TIMEOUT_MS`, `PeerConnectDeadline`). Windows
    applies the same 8 s to the device lookup and the service lookup.
-3. **Backoff 2, 4, 8, then 15 s**, repeating 15 s, each times a random factor
-   in 0.8..1.2 (`PeerConnectionState.kt` `PeerRetryPolicy.delaysMs`;
-   `CrossDeviceClient.kt` `Random.nextDouble(0.8, 1.2000001)`). The attempt
-   counter resets to 0 when a link comes up. Windows does not apply
-   Android's 15 s floor while local audio is active
-   (`MIN_DELAY_DURING_AUDIO_MS`); the pure function supports it but nothing
-   passes the audio state yet.
+3. **Backoff 2, 4, 8, 15, 30 s, 1, 2, then 5 min**, repeating 5 min, each
+   times a random factor in 0.8..1.2 (`CrossDeviceClient.kt`
+   `Random.nextDouble(0.8, 1.2000001)`). Android's `PeerRetryPolicy` stops at
+   15 s; Windows goes on because a peer that comes back brings its link up,
+   which redials at once (step 4). The attempt counter resets to 0 when a link
+   comes up. While this PC holds the AirPods and plays audio or has a call
+   open, Windows holds timed redials until the audio ends; a link-up wake
+   still dials (`g_peerLocalAudioActive`).
 4. **retryNow.** When the peer's Bluetooth link comes up (`ACL_CONNECTED` on
    Android, `BluetoothDevice::ConnectionStatusChanged` to `Connected` on
    Windows), cancel the backoff wait and dial at once, if there is no link

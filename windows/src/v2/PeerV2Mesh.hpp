@@ -132,6 +132,8 @@ private:
     std::thread m_monitor;
     std::mutex m_monitorMutex;
     std::condition_variable m_monitorCv;
+    std::atomic<bool> m_monitorWake{false};  // a link came up: recompute the next deadline
+    void wakeMonitor();
 };
 
 }  // namespace Propods::v2

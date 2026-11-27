@@ -20,7 +20,14 @@ HandoverController::HandoverController(
 
 HandoverController::~HandoverController() {
     m_watcherRunning.store(false);
+    wakeWatcher();
     if (m_watcherThread.joinable()) m_watcherThread.join();
+}
+
+void HandoverController::wakeWatcher() {
+    m_btEvent.store(true);
+    { std::scoped_lock lk{m_watchMutex}; }
+    m_watchCv.notify_all();
 }
 
 void HandoverController::startAudioWatcher() {
@@ -33,7 +40,18 @@ void HandoverController::startAudioWatcher() {
             return;  // Exit thread, but don't crash the app
         }
 
-        // Initialised to actual state so the first poll doesn't produce a synthetic edge.
+        // The AirPods' connection comes from ConnectionStatusChanged; the
+        // watcher wakes on each event and once a minute to reconcile. It used
+        // to look the state up every second (docs/peer-link-quiet-redesign.md, D3).
+        constexpr auto kReconcile = std::chrono::minutes{1};
+        constexpr auto kFallbackPoll = std::chrono::seconds{1};  // AirPods not paired: no event to watch
+        const auto subscribe = [this] {
+            return m_airpods.watchConnection([this](bool) { wakeWatcher(); });
+        };
+        bool watching = subscribe();
+        auto nextReconcile = std::chrono::steady_clock::now() + kReconcile;
+
+        // Initialised to actual state so the first pass doesn't produce a synthetic edge.
         bool lastBtConnected = m_airpods.isClassicallyConnectedWinRT();
         while (m_watcherRunning.load()) {
             try {
@@ -120,19 +138,33 @@ void HandoverController::startAudioWatcher() {
                     // state != LocalPc: RequestDisconnect / RequestHandover already updated state
                     // before the BT stack confirmed the drop — expected, no-op.
                 }
+                if (btConnected != lastBtConnected) {
+                    std::function<void(bool)> cb;
+                    { std::scoped_lock lk{m_watchMutex}; cb = m_onAirPodsLinkChanged; }
+                    if (cb) cb(btConnected);
+                }
                 lastBtConnected = btConnected;
             } catch (const std::exception& e) {
-                log::warn("Audio watcher: exception during poll: {}", e.what());
-                // Continue polling, don't crash
+                log::warn("Audio watcher: exception: {}", e.what());
+                // Keep watching, don't crash
             }
 
-            // Sliced sleep so shutdown is responsive (100 ms × 10 = 1000 ms poll interval).
-            // Reduced from 500 ms to 1000 ms to cut legacy-BT and COM audio enumeration
-            // overhead in half. BT-edge precision of 1 s is still fast enough for
-            // handover responsiveness (the protocol handshake takes 1-3 s anyway).
-            for (int i = 0; i < 10 && m_watcherRunning.load(); ++i) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            const auto wakeAt = watching ? nextReconcile : std::chrono::steady_clock::now() + kFallbackPoll;
+            {
+                std::unique_lock lk{m_watchMutex};
+                m_watchCv.wait_until(lk, wakeAt, [this] { return !m_watcherRunning.load() || m_btEvent.load(); });
+                m_btEvent.store(false);
             }
+            if (!m_watcherRunning.load()) break;
+            try {
+                // The AirPods were re-paired (tray): watch the new address.
+                if (m_airpods.address() != m_airpods.watchedAddress()) watching = subscribe();
+                const auto now = std::chrono::steady_clock::now();
+                if (watching && now >= nextReconcile) {
+                    m_airpods.reconcileConnection();
+                    nextReconcile = now + kReconcile;
+                }
+            } catch (...) {}
         }
     });
 }

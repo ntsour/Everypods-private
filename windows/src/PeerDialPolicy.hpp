@@ -6,6 +6,7 @@
 // types here so the unit tests can cover them.
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <random>
 #include <stdexcept>
@@ -15,8 +16,13 @@ namespace Propods {
 // Android CrossDeviceClient.CONNECT_TIMEOUT_MS.
 inline constexpr std::chrono::milliseconds kPeerConnectTimeout{8000};
 
-// Android PeerRetryPolicy.delaysMs = 2000, 4000, 8000, 15000 (the last repeats);
-// jitter factor 0.8..1.2 (CrossDeviceClient: Random.nextDouble(0.8, 1.2000001)).
+// 2, 4, 8, 15, 30 s, 1, 2, then 5 min (the last repeats); jitter factor 0.8..1.2
+// (CrossDeviceClient: Random.nextDouble(0.8, 1.2000001)). Android's
+// PeerRetryPolicy stops at 15 s; a peer that is out of range was dialled every
+// ~13 s for 82 minutes (2026-11-26), each dial paging it for ~10 s. A peer that
+// comes back brings its Bluetooth link up, which wakes the wait at once
+// (retryNow), so the long steps only slow dials that cannot work
+// (docs/peer-link-quiet-redesign.md, D4).
 inline constexpr double kPeerJitterMin = 0.8;
 inline constexpr double kPeerJitterMax = 1.2;
 // PeerRetryPolicy.MIN_DELAY_DURING_AUDIO_MS: the floor while local audio is active.
@@ -26,13 +32,18 @@ inline constexpr std::chrono::milliseconds kPeerMinDelayDuringAudio{15000};
 // dials since the last successful link (0 after a link came up).
 inline std::chrono::milliseconds peerRetryDelay(int attempt, double jitterFactor,
                                                 bool localAudioActive = false) {
-    static constexpr long long kStepsMs[] = {2000, 4000, 8000, 15000};
-    const int idx = std::clamp(attempt, 0, 3);
+    static constexpr long long kStepsMs[] = {2000, 4000, 8000, 15000, 30000, 60000, 120000, 300000};
+    const int idx = std::clamp(attempt, 0, 7);
     long long base = kStepsMs[idx];
     if (localAudioActive) base = std::max(base, kPeerMinDelayDuringAudio.count());
     const double j = std::clamp(jitterFactor, kPeerJitterMin, kPeerJitterMax);
     return std::chrono::milliseconds{static_cast<long long>(static_cast<double>(base) * j)};
 }
+
+// True while this PC holds the AirPods and plays audio or has a call open (set
+// by main). Dial loops then hold a timed redial until the audio ends; a peer's
+// link coming up still dials at once (docs/peer-link-quiet-redesign.md, D4).
+inline std::atomic<bool> g_peerLocalAudioActive{false};
 
 // Thrown by dialRfcomm() when the peer's Bluetooth device answers but has no
 // EveryPods service (EveryPods not running there, or a device that only links
