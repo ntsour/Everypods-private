@@ -111,3 +111,11 @@ add_executable(peer_v2_tests
 )
 target_include_directories(peer_v2_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(peer_v2_tests PRIVATE bcrypt.lib)
+
+# Phase 0 LE checks (docs/windows-peer-links-le-plan.md): a throwaway console tool, not shipped.
+add_executable(le_spike
+    tools/le_spike.cpp
+    src/v2/PeerV2Identity.cpp
+)
+target_include_directories(le_spike PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(le_spike PRIVATE windowsapp.lib bcrypt.lib)
