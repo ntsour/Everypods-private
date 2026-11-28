@@ -19,6 +19,8 @@ Status: proposal, 2026-11-28. Nothing here is implemented.
 
 ## 2. What the idle drop tests showed (27 Nov)
 
+The full analysis, the classic fallback options and the decision are in `windows-idle-drop-analysis.md`.
+
 | # | Setup | Classic links to phones | AirPods link after the call | Drop |
 |---|---|---|---|---|
 | 1 | EveryPods on, phones on, AirPods taken from the Pixel | 2. PC **peripheral** on the Pad link (Role Change 20:15:35). AirPods link created by the PC with role switch off | never in sniff, no traffic | yes, 58 s after the call (reason 0x08) |
@@ -31,6 +33,26 @@ Status: proposal, 2026-11-28. Nothing here is implemented.
 **Not established:**
 - **What exactly about those links causes it.** Test 2 had another classic ACL and no drop.
 - **The leading candidate:** the PC acting as peripheral on a phone link, a scatternet that the Intel controller (driver 24.20.0.3) handles badly. Plain traffic on a second ACL is the other. Gate G1 separates them.
+
+**28 Nov update: the drop reproduced and the trigger is visible.**
+- G1 (three captures with the links already up and the AirPods connected from Settings) gave no drop.
+- The handover scenario, with the capture started before the handover, dropped 2 times out of 3.
+- In all three runs, EveryPods set up the AirPods link the same way: the PC dialled it and set it so control couldn't be handed over.
+
+| Run | A2DP suspended | Xiaomi link brought out of sniff | AirPods link silent from (drop − 20 s) | Result |
+|---|---|---|---|---|
+| 09:57 | 09:57:43.9 | 09:57:32.7 (still streaming), 09:58:33.6 (AirPods already in sniff) | — | AirPods entered sniff 09:58:24 (+40 s), no drop |
+| 10:02 | 10:02:07.8 | 10:02:35.73 (PC's idle-probe PING) | ≈ 10:02:35.8 | lost (0x08) 10:02:55.8 |
+| 10:04 | 10:04:11.1 | 10:04:37.08 (PC's idle-probe PING) | ≈ 10:04:39.9 | lost (0x08) 10:04:59.9 |
+| 27 Nov 20:16 | SCO closed 20:16:18.6 | 20:16:49.4–56.0 (idle probe) | ≈ 20:16:56.9 | lost (0x08) 20:17:16.9 |
+
+How the AirPods link gets lost:
+- After the audio stops, the AirPods link stays in active mode with no traffic for about 40 s, until the AirPods ask for sniff. In every run where the Xiaomi link was woken during that window, the AirPods link went silent within 3 s and was lost 20 s later.
+- Waking the Pixel's link at the same moments (10:02:28, 10:04:29) did no harm.
+- On 27 Nov the PC was peripheral on the Xiaomi link (Role Change at link setup). The Intel controller then apparently stops serving its own idle piconet with the AirPods while it follows the Xiaomi's.
+- The timing makes the drop look random. The trigger has to land inside that 40 s window, and the PC's idle probe, 60 s after the handover messages, often does. That's why G1, with no handover, never dropped.
+
+**G2 must therefore carry traffic:** run `le_spike hold --ping 2`, which exchanges a record with each phone every 2 s, so LE traffic is certain to overlap the AirPods' idle window.
 
 This matters for the fix. If the role is the cause, any classic link can trigger it, and no API lets an app pin the role on Windows or Android.
 
@@ -95,7 +117,7 @@ Each time: call, hang up, wait 3 minutes or until a drop.
 Claude restarts the phone app and toggles Bluetooth over adb between runs, and reads the phones' `PeerGatt` log for the address each phone sees.
 
 **G2** (Propods quit, AirPods connected from Windows settings):
-1. `le_spike hold --minutes 12`
+1. `le_spike hold --minutes 15 --ping 2` (LE traffic every 2 s, like the probes that trigger the classic drop)
 2. In an admin PowerShell, run `bt-capture.ps1` (call, then idle), three times within the hold.
 3. Upload the three zips and the le-spike log.
 

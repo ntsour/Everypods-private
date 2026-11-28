@@ -7,9 +7,10 @@
 //   le_spike connect [--addr AA:BB:..] [--classic AA:BB:..] [--tries N] [--no-hello] [--cached]
 //                                         G3: connect, discover the service, subscribe, wait for the phone's HELLO,
 //                                         then disconnect; repeated N times per phone, with timings and a summary
-//   le_spike hold [--minutes N] [--gatt] [--addr AA:BB:..]
+//   le_spike hold [--minutes N] [--gatt] [--ping S] [--addr AA:BB:..]
 //                                         G2: keep an idle LE link to every advertising phone (or one) and log
-//                                         every change, while the AirPods idle test runs
+//                                         every change, while the AirPods idle test runs. --ping S sends a PING
+//                                         every S seconds (the phone answers PONG), so the links carry traffic
 //
 // Every line also goes to le-spike-<time>.log in the current folder.
 
@@ -194,6 +195,7 @@ struct Options {
     bool cached = false;
     double minutes = 10;
     bool gatt = false;                     // hold: also discover and subscribe
+    double ping = 0;                       // hold: send a PING record every N s (needs --gatt), so the links carry traffic
     double waitHello = 10;
 };
 
@@ -620,8 +622,18 @@ int cmdHold(const Options& o) {
     log("Holding {} link(s) for {:.0f} min. Run the AirPods idle test now. Ctrl+C stops early.", links.size(), o.minutes);
     const auto start = Clock::now();
     auto nextStatus = Clock::now() + std::chrono::minutes(1);
+    auto nextPing = Clock::now();
+    std::uint32_t seq = 0;
     while (secondsSince(start) < o.minutes * 60) {
-        sleepFor(1);
+        sleepFor(o.ping > 0 && o.ping < 1 ? o.ping : 1);
+        if (o.ping > 0 && Clock::now() >= nextPing) {
+            nextPing = Clock::now() + std::chrono::milliseconds(static_cast<int>(o.ping * 1000));
+            ++seq;
+            const std::vector<std::uint8_t> p{static_cast<std::uint8_t>(seq >> 24), static_cast<std::uint8_t>(seq >> 16),
+                                              static_cast<std::uint8_t>(seq >> 8), static_cast<std::uint8_t>(seq)};
+            for (auto& l : links)
+                if (l->rx && !l->send(kPing, p, false)) log("[{}] PING {} not sent", l->label, seq);
+        }
         for (auto& l : links) {
             if (o.gatt && l->servicesChanged.exchange(false)) {
                 log("[{}] rediscovering after GattServicesChanged", l->label);
@@ -660,7 +672,7 @@ void usage() {
         "le_spike devices\n"
         "le_spike scan    [--seconds N] [--active]\n"
         "le_spike connect [--addr AA:BB:CC:DD:EE:FF] [--classic AA:BB:CC:DD:EE:FF] [--tries N] [--no-hello] [--cached] [--seconds N]\n"
-        "le_spike hold    [--minutes N] [--gatt] [--addr AA:BB:CC:DD:EE:FF] [--seconds N]\n";
+        "le_spike hold    [--minutes N] [--gatt] [--ping SECONDS] [--addr AA:BB:CC:DD:EE:FF] [--seconds N]\n";
 }
 
 }  // namespace
@@ -682,6 +694,7 @@ int main(int argc, char** argv) {
         else if (a == "--cached") o.cached = true;
         else if (a == "--minutes") o.minutes = std::stod(next());
         else if (a == "--gatt") o.gatt = true;
+        else if (a == "--ping") { o.ping = std::stod(next()); o.gatt = true; }
         else { std::cout << "unknown option " << a << "\n"; usage(); return 2; }
     }
     const auto stamp = now().substr(0, 19);
